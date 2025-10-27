@@ -17,6 +17,7 @@ MODEL_URLS = {
 MODEL_PATHS = {
     "full": "models/u2net.pth",
     "lite": "models/u2netp.pth",
+    "other": "models/u2net.onnx",
 }
 
 def download_model(model_key):

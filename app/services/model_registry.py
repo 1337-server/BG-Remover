@@ -116,6 +116,13 @@ def _cuda_provider_options(device_id: int) -> MutableMapping[str, Any]:
     }
 
 
+def _resolve_model_path(model_name: str, model_dir: str | os.PathLike[str] | None = None) -> Path:
+    """Return the absolute ONNX path for ``model_name`` within ``model_dir``."""
+
+    resolved_dir = _resolve_model_dir(model_dir)
+    return resolved_dir / f"{model_name}.onnx"
+
+
 def _resolve_model_dir(model_dir: str | os.PathLike[str] | None) -> Path:
     """Return the directory containing cached ONNX model weights."""
 
@@ -235,6 +242,47 @@ def _warm_session(session: ort.InferenceSession) -> None:
             session.run(None, feed_dict)
     except Exception:  # pragma: no cover - hardware specific behaviour
         LOGGER.exception("Failed to warm ONNX Runtime session", exc_info=True)
+
+
+def rebuild_session_with_cuda(
+    model_name: str,
+    *,
+    device_id: int,
+    model_dir: str | os.PathLike[str] | None = None,
+) -> ort.InferenceSession | None:
+    """Rebuild ``model_name`` using CUDA and update the registry cache.
+
+    The function returns ``None`` when ONNX Runtime is unavailable or the model
+    weights cannot be located. When successful, the cached session will be
+    replaced to ensure subsequent lookups reuse the CUDA provider.
+    """
+
+    if ort is None:
+        LOGGER.warning("Cannot rebuild %s session with CUDA; onnxruntime missing.", model_name)
+        return None
+
+    model_path = _resolve_model_path(model_name, model_dir=model_dir)
+    if not model_path.exists():
+        LOGGER.warning("Cannot rebuild %s session with CUDA; %s not found.", model_name, model_path)
+        return None
+
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    provider_options = [_cuda_provider_options(device_id), {}]
+
+    try:
+        session = ort.InferenceSession(  # type: ignore[attr-defined]
+            str(model_path),
+            providers=providers,
+            provider_options=provider_options,
+        )
+    except Exception:
+        LOGGER.exception("Failed to rebuild %s session with CUDA provider", model_name)
+        return None
+
+    with _PRELOAD_LOCK:
+        _PRELOADED_SESSIONS[model_name] = session
+
+    return session
 
 
 def _log_vram_usage() -> None:

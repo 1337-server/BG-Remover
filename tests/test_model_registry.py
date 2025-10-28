@@ -152,6 +152,43 @@ def test_preload_models_is_cached(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert first["u2net"] is second["u2net"]
 
 
+def test_rebuild_session_with_cuda_updates_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rebuilding with CUDA should replace the cached session and return it."""
+
+    created_sessions: list[_FakeSession] = []
+
+    def fake_inference_session(path: str, providers, provider_options):  # type: ignore[override]
+        assert Path(path).exists()
+        assert providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        assert provider_options[0]["device_id"] == 0
+        session = _FakeSession(["CUDAExecutionProvider", "CPUExecutionProvider"])
+        created_sessions.append(session)
+        return session
+
+    fake_ort = SimpleNamespace(InferenceSession=fake_inference_session)
+
+    monkeypatch.setattr(model_registry, "ort", fake_ort)
+
+    model_path = tmp_path / "u2net.onnx"
+    model_path.write_bytes(b"fake")
+
+    rebuilt = model_registry.rebuild_session_with_cuda("u2net", device_id=0, model_dir=tmp_path)
+
+    assert rebuilt is not None
+    assert rebuilt in created_sessions
+    assert model_registry.get_session("u2net") is rebuilt
+
+
+def test_rebuild_session_with_cuda_requires_weights(tmp_path: Path) -> None:
+    """Rebuilding with CUDA should return ``None`` when weights are missing."""
+
+    rebuilt = model_registry.rebuild_session_with_cuda("u2net", device_id=0, model_dir=tmp_path)
+
+    assert rebuilt is None
+
+
 def test_provider_priority_prefers_tensorrt(monkeypatch: pytest.MonkeyPatch) -> None:
     """RTX 50-series GPUs should prioritise TensorRT when CUDA 12.9 is available."""
 

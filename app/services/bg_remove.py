@@ -398,6 +398,75 @@ def _session_model_name(session: Session) -> str:
     return metadata.get("model", "u2net") if metadata else "u2net"
 
 
+def _retry_warmup_with_cuda(context: SessionContext, dummy_image: Image.Image) -> bool:
+    """Attempt to rebuild the session with CUDA after a TensorRT failure."""
+
+    available = accelerator.onnx_providers_available()
+    if "CUDAExecutionProvider" not in available:
+        _log_json(
+            logging.WARNING,
+            "warmup_cuda_unavailable",
+            model=context.model_name,
+            providers=available,
+        )
+        return False
+
+    _log_json(
+        logging.WARNING,
+        "warmup_fallback",
+        model=context.model_name,
+        from_provider=context.provider,
+        to_provider="CUDAExecutionProvider",
+    )
+
+    rebuilt = model_registry.rebuild_session_with_cuda(context.model_name, device_id=context.device_id)
+    if rebuilt is None:
+        _log_json(
+            logging.WARNING,
+            "warmup_cuda_rebuild_failed",
+            model=context.model_name,
+            device_id=context.device_id,
+        )
+        return False
+
+    previous_session = context.session
+    _SESSION_METADATA.pop(id(previous_session), None)
+
+    context.session = rebuilt
+    context.provider = "CUDAExecutionProvider"
+    context.runtime = "cuda"
+    context.provider_options = {"device_id": int(context.device_id)}
+    context.providers_available = list(rebuilt.get_providers())
+    context.gpu_available = True
+    context.warning = None
+    context.accelerator_message = "Using GPU (CUDAExecutionProvider)"
+
+    _register_session_context(context)
+
+    try:
+        start = time.perf_counter()
+        _run_inference(dummy_image, context.session, context.model_name, log_timing=False)
+    except Exception as exc:  # pragma: no cover - hardware specific behaviour
+        _log_json(
+            logging.WARNING,
+            "warmup_cuda_retry_failed",
+            model=context.model_name,
+            provider=context.provider,
+            exc_info=exc,
+        )
+        return False
+
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    _log_json(
+        logging.INFO,
+        "warmup_complete",
+        model=context.model_name,
+        provider=context.provider,
+        elapsed_ms=round(elapsed_ms, 2),
+    )
+    return True
+
+
 def _warm_up_session(context: SessionContext) -> None:
     """Execute a one-time warm-up inference for ``context`` to prime CUDA kernels."""
 
@@ -419,14 +488,17 @@ def _warm_up_session(context: SessionContext) -> None:
             provider=context.provider,
             elapsed_ms=round(elapsed_ms, 2),
         )
-    except Exception:
+    except Exception as exc:
         _log_json(
             logging.WARNING,
             "warmup_failed",
             model=context.model_name,
             provider=context.provider,
-            exc_info=True,
+            exc_info=exc,
         )
+        if context.provider == "TensorrtExecutionProvider":
+            if _retry_warmup_with_cuda(context, dummy_image):
+                return
 
 
 def _initialise_session_context(
@@ -747,7 +819,24 @@ def _run_inference(
     if log_timing:
         LOGGER.info("%s inference completed in %.2f ms", _describe_session(session), elapsed_ms)
 
-    pred = sanitize_mask(outputs[0][:, 0, :, :])
+    if not outputs:
+        raise RuntimeError(f"{_describe_session(session)} returned no outputs during inference")
+
+    first_output = np.asarray(outputs[0])
+    if first_output.size == 0:
+        message = (
+            f"{_describe_session(session)} produced an empty output tensor "
+            f"with shape {first_output.shape}"
+        )
+        raise RuntimeError(message)
+    if first_output.ndim < 4:
+        message = (
+            f"{_describe_session(session)} produced an unexpected tensor shape: "
+            f"{first_output.shape}"
+        )
+        raise RuntimeError(message)
+
+    pred = sanitize_mask(first_output[:, 0, :, :])
     pred = np.squeeze(pred)
     mask = Image.fromarray((pred * 255).astype(np.uint8), mode="L")
     mask = mask.resize(image.size, Image.Resampling.LANCZOS)

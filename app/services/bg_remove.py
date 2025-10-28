@@ -7,24 +7,19 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, TYPE_CHECKING
+from typing import Any, Iterable, List, Optional
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 try:
     import cv2  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
     cv2 = None  # type: ignore
 
-if TYPE_CHECKING:  # pragma: no cover - type hints only
-    from rembg.session import Session as SessionType
-else:
-    SessionType = Any  # type: ignore
-
 try:  # pragma: no cover - optional dependency during testing
+    from rembg import new_session as _rembg_new_session
     from rembg import remove as _rembg_remove
-    from rembg.session import new_session as _rembg_new_session
 except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
     _rembg_remove = None
     _rembg_new_session = None
@@ -32,7 +27,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
 else:
     _REMBG_IMPORT_ERROR = None
 
-Session = SessionType
+Session = Any
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 MAX_WORK_DIMENSION = 8000
@@ -64,7 +59,7 @@ class RemovalResult:
 
 
 def create_session(model_name: str = "u2net") -> Session:
-    """Create a new :class:`rembg.session.Session` for the desired model."""
+    """Create a new ``rembg`` session for the desired model."""
 
     if _rembg_new_session is None:
         raise RuntimeError("rembg is required to create a background removal session.") from _REMBG_IMPORT_ERROR
@@ -134,14 +129,7 @@ def _feather_alpha(alpha: np.ndarray, radius: int) -> np.ndarray:
     return blurred.astype(np.uint8)
 
 
-def _run_rembg(
-    image: Image.Image,
-    session: Session,
-    alpha_matting: bool,
-    am_foreground: int,
-    am_background: int,
-    am_erode: int,
-) -> Image.Image:
+def _run_rembg(image: Image.Image, session: Session) -> Image.Image:
     """Execute ``rembg.remove`` and return an RGBA mask image."""
 
     if _rembg_remove is None:
@@ -150,16 +138,45 @@ def _run_rembg(
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
-    result_bytes = _rembg_remove(
-        buffer.getvalue(),
-        session=session,
-        alpha_matting=alpha_matting,
-        alpha_matting_foreground_threshold=am_foreground,
-        alpha_matting_background_threshold=am_background,
-        alpha_matting_erode_size=am_erode,
-    )
-    result_image = Image.open(io.BytesIO(result_bytes)).convert("RGBA")
+    result_bytes = _rembg_remove(buffer.read(), session=session)
+    result_stream = io.BytesIO(result_bytes)
+    result_image = Image.open(result_stream).convert("RGBA")
+    result_image.load()
     return result_image
+
+
+def _apply_alpha_matting(
+    alpha: np.ndarray,
+    *,
+    foreground_threshold: int,
+    background_threshold: int,
+    erode_size: int,
+) -> np.ndarray:
+    """Apply basic alpha refinement inspired by legacy rembg settings."""
+
+    fg = int(np.clip(foreground_threshold, 0, 255))
+    bg = int(np.clip(background_threshold, 0, 254))
+    if fg <= bg:
+        fg = min(255, bg + 1)
+
+    normalized = alpha.astype(np.float32)
+    normalized = np.clip(normalized - bg, 0, None)
+    scale = max(fg - bg, 1)
+    normalized = np.clip(normalized * (255.0 / scale), 0, 255)
+    refined = normalized.astype(np.uint8)
+
+    if erode_size > 0:
+        if cv2 is not None:
+            kernel = np.ones((erode_size, erode_size), dtype=np.uint8)
+            refined = cv2.erode(refined, kernel, iterations=1)
+        else:
+            filter_size = max(3, (erode_size // 2) * 2 + 1)
+            mask_image = Image.fromarray(refined)
+            for _ in range(max(1, erode_size // 3 + 1)):
+                mask_image = mask_image.filter(ImageFilter.MinFilter(filter_size))
+            refined = np.asarray(mask_image, dtype=np.uint8)
+
+    return refined
 
 
 def remove_bg_file(
@@ -197,28 +214,22 @@ def remove_bg_file(
             if max(work_image.size) > MAX_WORK_DIMENSION:
                 resized = work_image.copy()
                 resized.thumbnail((MAX_WORK_DIMENSION, MAX_WORK_DIMENSION), Image.Resampling.LANCZOS)
-                mask_image = _run_rembg(
-                    resized,
-                    session,
-                    alpha_matting,
-                    am_foreground,
-                    am_background,
-                    am_erode,
-                )
+                mask_image = _run_rembg(resized, session)
                 alpha_channel = mask_image.split()[-1]
                 alpha_channel = alpha_channel.resize(rgba_source.size, Image.Resampling.LANCZOS)
             else:
-                mask_image = _run_rembg(
-                    work_image,
-                    session,
-                    alpha_matting,
-                    am_foreground,
-                    am_background,
-                    am_erode,
-                )
+                mask_image = _run_rembg(work_image, session)
                 alpha_channel = mask_image.split()[-1]
 
             alpha_np = np.asarray(alpha_channel, dtype=np.uint8)
+
+            if alpha_matting:
+                alpha_np = _apply_alpha_matting(
+                    alpha_np,
+                    foreground_threshold=am_foreground,
+                    background_threshold=am_background,
+                    erode_size=am_erode,
+                )
 
             if use_colorkey_fallback:
                 fallback_mask = build_colorkey_mask(rgba_source, tolerance=colorkey_tolerance)

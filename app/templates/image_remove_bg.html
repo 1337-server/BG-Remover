@@ -185,17 +185,42 @@
       const formData = new FormData(singleForm);
       showSpinner(singleSpinner, true);
       try {
-        const response = await fetch('/image/remove-bg?json=1', {
+        const response = await fetch('/image/remove-bg', {
           method: 'POST',
           body: formData,
         });
-        const data = await response.json();
+
         if (!response.ok) {
-          throw new Error(data.error || 'Background removal failed.');
+          const errorPayload = await response.json().catch(() => null);
+          const message = errorPayload?.error || 'Background removal failed.';
+          throw new Error(message);
         }
+
+        const blob = await response.blob();
+        const resultHeader = response.headers.get('X-Removal-Result');
+        let resultData = null;
+        if (resultHeader) {
+          try {
+            resultData = JSON.parse(resultHeader);
+          } catch (parseError) {
+            console.error('Unable to parse removal summary:', parseError);
+          }
+        }
+
+        if (singlePreview.dataset.objectUrl) {
+          URL.revokeObjectURL(singlePreview.dataset.objectUrl);
+          delete singlePreview.dataset.objectUrl;
+        }
+
+        const objectUrl = URL.createObjectURL(blob);
+        singlePreview.src = objectUrl;
+        singlePreview.dataset.objectUrl = objectUrl;
         singleResult.hidden = false;
-        singlePreview.src = `data:${data.mime_type};base64,${data.image_base64}`;
-        singleSummary.textContent = JSON.stringify(data.result, null, 2);
+        if (resultData) {
+          singleSummary.textContent = JSON.stringify(resultData, null, 2);
+        } else {
+          singleSummary.textContent = 'Background removal completed successfully.';
+        }
       } catch (error) {
         alert(error.message);
       } finally {

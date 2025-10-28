@@ -1,6 +1,7 @@
 """Flask routes for interactive background removal."""
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import uuid
@@ -145,7 +146,13 @@ def remove_bg_view() -> Response:
         shutil.rmtree(temp_dir, ignore_errors=True)
         return _
 
-    return send_file(result.path_out or output_path, mimetype="image/png", download_name=f"{input_path.stem}_no_bg.png")
+    response = send_file(
+        result.path_out or output_path,
+        mimetype="image/png",
+        download_name=f"{input_path.stem}_no_bg.png",
+    )
+    response.headers["X-Removal-Result"] = json.dumps(result.to_dict())
+    return response
 
 
 @image_converter_bp.route("/image/remove-bg/download/<token>")

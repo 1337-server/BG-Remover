@@ -66,6 +66,9 @@ def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypat
     app.register_blueprint(image_converter.image_converter_bp)
     app.config.update(TESTING=True)
 
+    image_converter._FILE_REGISTRY.clear()
+    image_converter._PREVIEW_REGISTRY.clear()
+
     class DummySocket:
         def __init__(self) -> None:
             self.events: list[tuple[str, dict]] = []
@@ -114,6 +117,31 @@ def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypat
     assert "progress" in emitted_events
     assert "preview" in emitted_events
     assert "completed" in emitted_events
+
+    preview_event = next(payload for event, payload in dummy_socket.events if event == "preview")
+    assert preview_event["preview_url"].startswith("/image/remove-bg/live/preview/")
+    client_preview_response = client.get(preview_event["preview_url"])
+    assert client_preview_response.status_code == 200
+    assert client_preview_response.mimetype == "image/png"
+    assert client.get(preview_event["preview_url"]).status_code == 404
+
+    completed_event = next(payload for event, payload in dummy_socket.events if event == "completed")
+    assert completed_event["result_url"].startswith("/image/remove-bg/live/result/")
+    assert completed_event["download_url"].startswith("/image/remove-bg/file/")
+
+    result_response = client.get(completed_event["result_url"])
+    assert result_response.status_code == 200
+    assert result_response.mimetype == "image/webp"
+    assert client.get(completed_event["result_url"]).status_code == 404
+
+    download_response = client.get(completed_event["download_url"])
+    assert download_response.status_code == 200
+    assert download_response.mimetype == "image/webp"
+    assert "attachment" in download_response.headers.get("Content-Disposition", "").lower()
+    assert client.get(completed_event["download_url"]).status_code == 404
+
+    assert not image_converter._PREVIEW_REGISTRY
+    assert not image_converter._FILE_REGISTRY
 
 
 def test_remove_bg_live_returns_service_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

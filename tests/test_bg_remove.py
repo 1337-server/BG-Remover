@@ -32,63 +32,31 @@ def _reset_session_state() -> None:
     """Reset module-level caches to ensure deterministic test outcomes."""
 
     bg_remove._SESSION_CONTEXT = None
-    bg_remove._SESSION_CONFIG_SIGNATURE = None
-    bg_remove._SESSION_POOLS.clear()
-    bg_remove._PRELOADED_SIGNATURES.clear()
-    bg_remove._STARTUP_LOGGED_SIGNATURES.clear()
+    bg_remove._SESSION_CACHE.clear()
     bg_remove._SESSION_METADATA.clear()
-    bg_remove._CPU_WARNING_LOGGED = False
-    bg_remove._CUDA_HINT_LOGGED = False
 
 
-def test_create_session_uses_gpu_priority(monkeypatch: pytest.MonkeyPatch) -> None:
-    """GPU providers should be selected when available."""
+def test_create_session_initialises_cpu_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a session should yield a CPU execution provider and warm-up the model."""
 
     _reset_session_state()
 
-    fake_session = _FakeSession(["CUDAExecutionProvider", "CPUExecutionProvider"])
-
-    monkeypatch.setattr(bg_remove, "_PRELOAD_MODEL_NAMES", ("u2net",))
-    monkeypatch.setattr(bg_remove.runtime_compat, "ensure_runtime_ready", lambda: None)
-    monkeypatch.setattr(bg_remove.model_registry, "preload_models", lambda **_: {"u2net": fake_session})
-    monkeypatch.setattr(bg_remove.model_registry, "get_session", lambda name: fake_session)
-    monkeypatch.setattr(
-        bg_remove.model_registry,
-        "get_available_providers",
-        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
-    )
-    monkeypatch.setattr(bg_remove.accelerator, "detect_gpu_name", lambda: "NVIDIA GeForce RTX 5090")
-    monkeypatch.setattr(bg_remove.accelerator, "is_rtx_50xx", lambda _: True)
-
-    context = bg_remove.create_session(config={"BG_ACCELERATOR": "cuda"})
-
-    assert context.runtime == "cuda"
-    assert context.provider == "CUDAExecutionProvider"
-    assert context.warning is None
-    assert bg_remove._SESSION_METADATA[id(fake_session)]["model"] == "u2net"
-    assert fake_session.run_calls >= 1, "warm-up should invoke at least one inference"
-
-
-def test_create_session_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When CUDA is unavailable the context should report a CPU fallback."""
-
-    _reset_session_state()
-
-    fake_session = _FakeSession(["CPUExecutionProvider"], value=0.0)
+    fake_session = _FakeSession(["CPUExecutionProvider"])
 
     monkeypatch.setattr(bg_remove, "_PRELOAD_MODEL_NAMES", ("u2net",))
     monkeypatch.setattr(bg_remove.runtime_compat, "ensure_runtime_ready", lambda: None)
     monkeypatch.setattr(bg_remove.model_registry, "preload_models", lambda **_: {"u2net": fake_session})
     monkeypatch.setattr(bg_remove.model_registry, "get_session", lambda name: fake_session)
     monkeypatch.setattr(bg_remove.model_registry, "get_available_providers", lambda: ["CPUExecutionProvider"])
-    monkeypatch.setattr(bg_remove.accelerator, "detect_gpu_name", lambda: "NVIDIA GeForce RTX 5090")
-    monkeypatch.setattr(bg_remove.accelerator, "is_rtx_50xx", lambda _: True)
 
-    context = bg_remove.create_session(config={"BG_ACCELERATOR": "cuda", "BG_WARN_ON_CPU": True})
+    context = bg_remove.create_session(model_name="u2net")
 
-    assert context.runtime == "cpu"
     assert context.provider == "CPUExecutionProvider"
-    assert context.warning == "GPU requested but unavailable — falling back to CPU"
+    payload = context.runtime_payload()
+    assert payload["runtime"] == "cpu"
+    assert payload["accelerator_message"] == "Using CPU (CPUExecutionProvider)"
+    assert bg_remove._SESSION_METADATA[id(fake_session)]["model"] == "u2net"
+    assert fake_session.run_calls >= 1, "warm-up should invoke at least one inference"
 
 
 def test_build_colorkey_mask_detects_foreground() -> None:

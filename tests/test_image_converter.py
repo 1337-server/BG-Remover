@@ -94,11 +94,17 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
         destination.write_bytes(b"png")
         return RemovalResult(Path(input_path), destination, True, None, 8.4)
 
-    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda: None)
     monkeypatch.setattr(
         image_converter,
         "get_runtime_payload",
-        lambda: {"runtime": "cuda", "gpu_name": "Test GPU", "warning": None},
+        lambda: {
+            "runtime": "cpu",
+            "provider": "CPUExecutionProvider",
+            "gpu_name": None,
+            "warning": None,
+            "accelerator_message": "Using CPU (CPUExecutionProvider)",
+        },
     )
     monkeypatch.setattr(image_converter, "remove_bg_file", fake_remove_bg_file)
 
@@ -123,11 +129,9 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
     assert "selection" in payload
     selection = payload["selection"]
     assert selection["removal_model"] == image_converter.DEFAULT_REMOVAL_MODEL_KEY
-    assert selection["hardware_accelerator"] == image_converter.DEFAULT_HARDWARE_ACCELERATOR_KEY
     assert selection["output_directory"] is None
     assert selection["preview_size"] is None
-    assert payload["runtime"] == "cuda"
-    assert payload["gpu_name"] == "Test GPU"
+    assert payload["runtime"] == "cpu"
     assert payload.get("warning") is None
 
 
@@ -137,7 +141,7 @@ def test_single_image_post_requires_file() -> None:
     app = _create_app()
     client = app.test_client()
 
-    image_converter.ensure_global_session = lambda config=None: None  # type: ignore[assignment]
+    image_converter.ensure_global_session = lambda: None  # type: ignore[assignment]
     image_converter.get_runtime_payload = lambda: {"runtime": "cpu", "warning": None}  # type: ignore[assignment]
 
     response = client.post(
@@ -149,7 +153,7 @@ def test_single_image_post_requires_file() -> None:
     assert response.status_code == 400
     payload = response.get_json()
     assert payload["error"] == "Please upload an image or provide a folder path."
-    assert payload["runtime"] in {"cpu", "cuda"}
+    assert payload["runtime"] == "cpu"
     assert "warning" in payload
 
 
@@ -164,11 +168,16 @@ def test_single_image_post_includes_warning(monkeypatch: pytest.MonkeyPatch) -> 
         return RemovalResult(Path(input_path), destination, True, None, 5.0)
 
     monkeypatch.setattr(image_converter, "remove_bg_file", fake_remove_bg_file)
-    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda: None)
     monkeypatch.setattr(
         image_converter,
         "get_runtime_payload",
-        lambda: {"runtime": "cpu", "gpu_name": "Fallback GPU", "warning": "Running on CPU"},
+        lambda: {
+            "runtime": "cpu",
+            "provider": "CPUExecutionProvider",
+            "gpu_name": None,
+            "warning": "Using CPU fallback",
+        },
     )
 
     client = app.test_client()
@@ -181,8 +190,7 @@ def test_single_image_post_includes_warning(monkeypatch: pytest.MonkeyPatch) -> 
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["runtime"] == "cpu"
-    assert payload["gpu_name"] == "Fallback GPU"
-    assert payload["warning"] == "Running on CPU"
+    assert payload["warning"] == "Using CPU fallback"
 
 
 def test_accelerator_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,15 +198,15 @@ def test_accelerator_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
 
     app = _create_app()
 
-    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda: None)
     monkeypatch.setattr(
         image_converter,
         "get_accelerator_status",
         lambda: {
-            "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
-            "selected": "cuda",
-            "gpu_name": "RTX 5090",
-            "rtx_50_series": True,
+            "providers": ["CPUExecutionProvider"],
+            "selected": "cpu",
+            "gpu_name": None,
+            "rtx_50_series": False,
         },
     )
 
@@ -208,10 +216,10 @@ def test_accelerator_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 200
     payload = response.get_json()
     assert payload == {
-        "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
-        "selected": "cuda",
-        "gpu_name": "RTX 5090",
-        "rtx_50_series": True,
+        "providers": ["CPUExecutionProvider"],
+        "selected": "cpu",
+        "gpu_name": None,
+        "rtx_50_series": False,
     }
 
 

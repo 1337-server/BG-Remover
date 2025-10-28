@@ -58,7 +58,7 @@ class RegistryItem:
 
 _FILE_REGISTRY: dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: dict[str, RegistryItem] = {}
-_SESSION_CACHE: dict[tuple[str, str, int], SessionContext] = {}
+_SESSION_CACHE: dict[str, SessionContext] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
@@ -75,12 +75,6 @@ _REMOVAL_MODEL_LOOKUP: dict[str, str] = {
     option["key"]: option["model_name"] for option in REMOVAL_MODEL_OPTIONS
 }
 DEFAULT_REMOVAL_MODEL_KEY = REMOVAL_MODEL_OPTIONS[0]["key"]
-HARDWARE_ACCELERATOR_OPTIONS = [
-    {"key": "auto", "label": "Auto (recommended)"},
-    {"key": "gpu", "label": "GPU"},
-    {"key": "cpu", "label": "CPU"},
-]
-DEFAULT_HARDWARE_ACCELERATOR_KEY = HARDWARE_ACCELERATOR_OPTIONS[0]["key"]
 DEFAULT_SINGLE_OPTIONS: dict[str, Any] = {
     "am_foreground": 240,
     "am_background": 10,
@@ -88,7 +82,6 @@ DEFAULT_SINGLE_OPTIONS: dict[str, Any] = {
     "colorkey_tolerance": 14,
     "feather_radius": 3,
     "removal_model": DEFAULT_REMOVAL_MODEL_KEY,
-    "hardware_accelerator": DEFAULT_HARDWARE_ACCELERATOR_KEY,
 }
 DEFAULT_CHECKBOX_OPTIONS: dict[str, bool] = {
     # UI toggles that have sensible disabled defaults.
@@ -132,18 +125,14 @@ def _collect_single_options(form: Mapping[str, str], defaults: dict[str, int]) -
     }
 
 
-def _get_session_context(model_name: str, config: Mapping[str, Any]) -> SessionContext:
+def _get_session_context(model_name: str) -> SessionContext:
     """Return a cached background removal session for ``model_name``."""
 
-    accelerator_mode = str(config.get("BG_ACCELERATOR", "auto")).strip().lower()
-    device_id = int(config.get("BG_CUDA_DEVICE_ID", 0) or 0)
-    cache_key = (model_name, accelerator_mode, device_id)
-
     with _SESSION_CACHE_LOCK:
-        context = _SESSION_CACHE.get(cache_key)
+        context = _SESSION_CACHE.get(model_name)
         if context is None:
-            context = create_session(model_name=model_name, config=config)
-            _SESSION_CACHE[cache_key] = context
+            context = create_session(model_name=model_name)
+            _SESSION_CACHE[model_name] = context
         return context
 
 
@@ -156,7 +145,7 @@ def remove_bg_view() -> ResponseReturnValue:
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
     defaults.update(DEFAULT_CHECKBOX_OPTIONS)
 
-    ensure_global_session(config=current_app.config if current_app else None)
+    ensure_global_session()
     runtime_info = get_runtime_payload()
 
     if request.method == "GET":
@@ -166,7 +155,6 @@ def remove_bg_view() -> ResponseReturnValue:
             format_options=FORMAT_OPTIONS,
             accelerator_runtime=runtime_info,
             removal_model_options=REMOVAL_MODEL_OPTIONS,
-            hardware_accelerator_options=HARDWARE_ACCELERATOR_OPTIONS,
         )
 
     form = request.form
@@ -182,13 +170,6 @@ def remove_bg_view() -> ResponseReturnValue:
     model_name = _REMOVAL_MODEL_LOOKUP.get(
         removal_model_key, _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY]
     )
-    hardware_accelerator = (
-        form.get("hardware_accelerator") or DEFAULT_HARDWARE_ACCELERATOR_KEY
-    ).strip().lower()
-    valid_accelerators = {option["key"] for option in HARDWARE_ACCELERATOR_OPTIONS}
-    if hardware_accelerator not in valid_accelerators:
-        hardware_accelerator = DEFAULT_HARDWARE_ACCELERATOR_KEY
-
     preview_size = None
     preview_size_raw = form.get("preview_size")
     if preview_size_raw:
@@ -197,25 +178,14 @@ def remove_bg_view() -> ResponseReturnValue:
         except (TypeError, ValueError):
             preview_size = None
 
-    session_config: dict[str, Any] = {}
-    if current_app:
-        session_config.update(current_app.config)
-
-    accelerator_mode = hardware_accelerator
-    if accelerator_mode == "gpu":
-        accelerator_mode = "cuda"
-    session_config["BG_ACCELERATOR"] = accelerator_mode
-
     session_context = None
     if current_app and current_app.config.get("TESTING"):
         session = None
         runtime_info = get_runtime_payload()
-        gpu_available = bool(runtime_info.get("gpu_available"))
     else:
-        session_context = _get_session_context(model_name, session_config)
+        session_context = _get_session_context(model_name)
         session = session_context.session
         runtime_info = session_context.runtime_payload()
-        gpu_available = bool(runtime_info.get("gpu_available"))
 
     json_requested = request.args.get("json") == "1"
 
@@ -249,8 +219,6 @@ def remove_bg_view() -> ResponseReturnValue:
         payload["selection"] = {
             "removal_model": removal_model_key,
             "model_name": model_name,
-            "hardware_accelerator": hardware_accelerator,
-            "gpu_available": gpu_available,
             "output_directory": output_dir,
             "preview_size": preview_size,
         }
@@ -314,8 +282,6 @@ def remove_bg_view() -> ResponseReturnValue:
             "selection": {
                 "removal_model": removal_model_key,
                 "model_name": model_name,
-                "hardware_accelerator": hardware_accelerator,
-                "gpu_available": gpu_available,
                 "preview_size": preview_size,
                 "output_directory": str(persistent_output_dir) if persistent_output_dir else None,
             },
@@ -425,7 +391,7 @@ def preview_file(token: str) -> Response:
 def accelerator_health() -> Response:
     """Return diagnostic accelerator information for health checks."""
 
-    ensure_global_session(config=current_app.config if current_app else None)
+    ensure_global_session()
     return jsonify(get_accelerator_status())
 
 

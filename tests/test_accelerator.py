@@ -1,59 +1,32 @@
-"""Tests for the accelerator selection utilities."""
+"""Unit tests for the accelerator helper functions."""
 from __future__ import annotations
 
-import pytest
+import sys
+from types import SimpleNamespace
 
 from app.services import accelerator
 
 
-def test_pick_execution_provider_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CUDA should be selected when the provider is available."""
+def test_onnx_providers_available_returns_list(monkeypatch) -> None:
+    """The helper should proxy provider lists from onnxruntime."""
 
-    def fake_providers() -> list[str]:
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-
-    monkeypatch.setattr(accelerator, "onnx_providers_available", fake_providers)
-
-    provider, options = accelerator.pick_execution_provider("auto", 2)
-    assert provider == "CUDAExecutionProvider"
-    assert options == {"device_id": 2}
+    stub = SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"])
+    monkeypatch.setitem(sys.modules, "onnxruntime", stub)
+    try:
+        assert accelerator.onnx_providers_available() == ["CPUExecutionProvider"]
+    finally:
+        monkeypatch.delitem(sys.modules, "onnxruntime", raising=False)
 
 
-def test_pick_execution_provider_uses_tensorrt_when_cuda_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """TensorRT should be selected when CUDA is unavailable but TensorRT exists."""
+def test_onnx_providers_available_handles_errors(monkeypatch) -> None:
+    """Failures during provider queries should return an empty list."""
 
-    def fake_providers() -> list[str]:
-        return ["TensorrtExecutionProvider", "CPUExecutionProvider"]
+    def raise_error() -> list[str]:
+        raise RuntimeError("test error")
 
-    monkeypatch.setattr(accelerator, "onnx_providers_available", fake_providers)
-
-    provider, options = accelerator.pick_execution_provider("auto", 1)
-    assert provider == "TensorrtExecutionProvider"
-    assert options == {"device_id": 1}
-
-
-def test_pick_execution_provider_cpu_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CPU mode should be returned when CUDA providers are unavailable."""
-
-    monkeypatch.setattr(accelerator, "onnx_providers_available", lambda: ["CPUExecutionProvider"])
-
-    provider, options = accelerator.pick_execution_provider("auto", 0)
-    assert provider == "CPUExecutionProvider"
-    assert options == {}
-
-
-@pytest.mark.parametrize(
-    "name,expected",
-    [
-        ("NVIDIA GeForce RTX 5090", True),
-        ("rtx 50 pro", True),
-        ("RTX 4090", False),
-        ("Some Other GPU", False),
-    ],
-)
-def test_is_rtx_50xx_detection(name: str, expected: bool) -> None:
-    """RTX 50-series detection should match known model names."""
-
-    assert accelerator.is_rtx_50xx(name) is expected
+    stub = SimpleNamespace(get_available_providers=raise_error)
+    monkeypatch.setitem(sys.modules, "onnxruntime", stub)
+    try:
+        assert accelerator.onnx_providers_available() == []
+    finally:
+        monkeypatch.delitem(sys.modules, "onnxruntime", raising=False)

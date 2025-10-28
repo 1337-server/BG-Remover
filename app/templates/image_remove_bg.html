@@ -9,17 +9,8 @@
 <div class="mb-3">
   <div class="d-flex flex-wrap gap-2 align-items-center" id="accelerator-status">
     <span class="badge bg-secondary" id="accelerator-runtime-badge">
-      Runtime: {{ (runtime.runtime or 'cpu') | upper }}
+      {{ runtime.accelerator_message or 'Using CPU (CPUExecutionProvider)' }}
     </span>
-    <span class="badge bg-info text-dark" id="accelerator-gpu-badge">
-      GPU: {{ runtime.gpu_name or 'Not detected' }}
-    </span>
-  </div>
-  <div class="alert alert-warning mt-2 {% if not runtime.warning %}d-none{% endif %}" id="accelerator-alert" role="alert">
-    <div class="d-flex justify-content-between align-items-start gap-2">
-      <div id="accelerator-alert-text">{{ runtime.warning }}</div>
-      <button class="btn-close" type="button" aria-label="Dismiss warning" id="accelerator-alert-dismiss"></button>
-    </div>
   </div>
 </div>
 <div class="card shadow-sm">
@@ -50,7 +41,6 @@
           class="needs-validation"
           novalidate
           data-help-container
-          data-gpu-available="{{ 'true' if gpu_available else 'false' }}"
         >
           <div
             class="alert alert-danger d-none"
@@ -102,32 +92,6 @@
               <option value="{{ option.key }}" {% if option.key == defaults.removal_model %}selected{% endif %}>{{ option.label }}</option>
               {% endfor %}
             </select>
-          </div>
-          <div class="mb-3">
-            <div class="form-label d-flex align-items-center gap-2">
-              <span>Hardware Accelerator</span>
-              <button
-                type="button"
-                class="help-icon btn btn-link p-0"
-                data-help-element
-                data-bs-toggle="tooltip"
-                data-bs-placement="top"
-                data-bs-html="true"
-                data-bs-custom-class="help-tooltip"
-                data-bs-title="<p class='mb-2'>If your computer or server has an NVIDIA GPU, the app can use it to make removal much faster.</p><ul class='mb-0 ps-3'><li><strong>Auto</strong> – detects the best option automatically (GPU if available, otherwise CPU).</li><li><strong>GPU</strong> – forces GPU use.</li><li><strong>CPU</strong> – runs on your processor only (slower but works everywhere).</li></ul><p class='mb-0 mt-2'>A yellow warning will appear if the GPU is unavailable and the app switches to CPU.</p>"
-                aria-label="Help: Hardware Accelerator"
-              >
-                <span aria-hidden="true">?</span>
-              </button>
-            </div>
-            <select class="form-select" id="single-hardware" name="hardware_accelerator">
-              {% for option in hardware_accelerator_options %}
-              <option value="{{ option.key }}" {% if option.key == defaults.hardware_accelerator %}selected{% endif %}>{{ option.label }}</option>
-              {% endfor %}
-            </select>
-            <div class="alert alert-warning d-none mt-2" id="single-hardware-warning" role="alert">
-              💡 <strong>Heads up:</strong> GPU acceleration isn't available right now, so the app will fall back to CPU processing.
-            </div>
           </div>
           <div class="mb-3">
             <div class="form-label d-flex align-items-center gap-2">
@@ -312,7 +276,7 @@
             <div class="pt-3">
               <p>When you upload a photo, an AI model analyzes every pixel to find the main subject (for example, a person or an object) and separates it from the background.</p>
               <p>It then creates a new image with the background removed — usually transparent — so you can reuse it anywhere (design projects, thumbnails, product listings, etc.).</p>
-              <p>If you have a GPU, the process runs on your graphics card, which can be 5-10× faster. If not, it runs on your CPU — slower, but identical in quality.</p>
+              <p>Processing runs on the server's CPU. Faster processors complete batches more quickly, but every image receives the same high-quality mask.</p>
               <p class="mb-0">You can experiment with the settings above. Nothing is permanent until you save the result, so feel free to try different models and edge smoothness levels to see what looks best.</p>
             </div>
           </details>
@@ -582,7 +546,7 @@
             <div class="pt-3">
               <p>Point the tool at a folder and it scans every supported image, removing backgrounds one after another using your chosen settings.</p>
               <p>Each file keeps its original name with a <code>_no_bg</code> suffix (or goes into a ZIP if you enable that option), so nothing gets overwritten.</p>
-              <p>Processing happens on the server. If a GPU is available, large folders finish much faster; otherwise the CPU handles the work with the same quality.</p>
+              <p>Processing happens on the server. The CPU handles every file, so results are consistent even on machines without dedicated graphics hardware.</p>
               <p class="mb-0">You can re-run the same folder whenever you update the settings — previous outputs stay intact unless you replace them manually.</p>
             </div>
           </details>
@@ -676,267 +640,17 @@
 
     enforceNumericBounds();
 
-    const gpuProviderNames = ['TensorrtExecutionProvider', 'CUDAExecutionProvider'];
-    let hasGpuProviders = false;
-    let hardwareSelect = null;
-    let hardwareWarning = null;
-
-    const updateHardwareWarning = () => {
-      if (!hardwareSelect || !hardwareWarning) {
-        return;
-      }
-      const shouldWarn = hardwareSelect.value === 'gpu' && !hasGpuProviders;
-      hardwareWarning.classList.toggle('d-none', !shouldWarn);
-    };
-
-    const acceleratorInitialState = {{ accelerator_runtime|tojson }} || {};
+        const acceleratorInitialState = {{ accelerator_runtime|tojson }} || {};
     const acceleratorRuntimeBadge = document.getElementById('accelerator-runtime-badge');
-    const acceleratorGpuBadge = document.getElementById('accelerator-gpu-badge');
-    const acceleratorAlert = document.getElementById('accelerator-alert');
-    const acceleratorAlertText = document.getElementById('accelerator-alert-text');
-    const acceleratorAlertDismiss = document.getElementById('accelerator-alert-dismiss');
-    let acceleratorWarningDismissed = false;
-
-    if (acceleratorAlertDismiss) {
-      acceleratorAlertDismiss.addEventListener('click', () => {
-        acceleratorWarningDismissed = true;
-        if (acceleratorAlert) {
-          acceleratorAlert.classList.add('d-none');
-        }
-      });
-    }
 
     const updateAcceleratorUi = (state = {}) => {
-      const runtimeValue = (state.runtime || 'cpu').toString();
-      const providersAvailable = Array.isArray(state.providers_available)
-        ? state.providers_available.map((provider) => provider.toString())
-        : [];
-      hasGpuProviders = providersAvailable.some((provider) =>
-        gpuProviderNames.includes(provider),
-      );
+      const message = (state.accelerator_message || 'Using CPU (CPUExecutionProvider)').toString();
       if (acceleratorRuntimeBadge) {
-        acceleratorRuntimeBadge.textContent = `Runtime: ${runtimeValue.toUpperCase()}`;
-      }
-      if (acceleratorGpuBadge) {
-        const gpuName = state.gpu_name ? state.gpu_name.toString() : '';
-        if (gpuName) {
-          acceleratorGpuBadge.textContent = `GPU: ${gpuName}`;
-        } else {
-          acceleratorGpuBadge.textContent = 'GPU: Not detected';
-        }
-      }
-      if (acceleratorAlert && acceleratorAlertText) {
-        let warningText = state.warning ? state.warning.toString() : '';
-        if (!warningText && runtimeValue === 'cpu' && hasGpuProviders) {
-          warningText =
-            'GPU acceleration was unavailable. Running on CPU; performance will be slower.';
-        }
-        if (warningText) {
-          if (acceleratorAlertText.textContent !== warningText) {
-            acceleratorWarningDismissed = false;
-          }
-          acceleratorAlertText.textContent = warningText;
-          if (!acceleratorWarningDismissed) {
-            acceleratorAlert.classList.remove('d-none');
-          }
-        } else {
-          acceleratorAlert.classList.add('d-none');
-          acceleratorAlertText.textContent = '';
-          acceleratorWarningDismissed = false;
-        }
-      }
-      updateHardwareWarning();
-    };
-
-    updateAcceleratorUi(acceleratorInitialState);
-    updateHardwareWarning();
-
-    const singleFormatSelect = document.getElementById('single-format');
-
-    const showSpinner = (element, show) => {
-      if (!element) {
-        return;
-      }
-      element.classList.toggle('d-none', !show);
-    };
-
-    const createAlertManager = (container) => {
-      const normalizeMessages = (messages) => {
-        if (Array.isArray(messages)) {
-          return messages.filter((message) => Boolean(message));
-        }
-        if (messages == null) {
-          return [];
-        }
-        return [messages].filter((message) => Boolean(message));
-      };
-
-      const hideContainer = () => {
-        if (!container) {
-          return;
-        }
-        container.classList.add('d-none');
-        container.innerHTML = '';
-      };
-
-      if (!container) {
-        return {
-          show: (messages) => {
-            normalizeMessages(messages).forEach((message) => console.error(message));
-          },
-          clear: () => {},
-        };
-      }
-
-      const showMessages = (messages) => {
-        const items = normalizeMessages(messages);
-        if (!items.length) {
-          hideContainer();
-          return;
-        }
-
-        container.innerHTML = '';
-        if (items.length === 1) {
-          container.textContent = items[0];
-        } else {
-          const list = document.createElement('ul');
-          list.classList.add('mb-0');
-          items.forEach((message) => {
-            const listItem = document.createElement('li');
-            listItem.textContent = message;
-            list.appendChild(listItem);
-          });
-          container.appendChild(list);
-        }
-
-        container.classList.remove('d-none');
-        if (typeof container.focus === 'function') {
-          container.focus({ preventScroll: true });
-        }
-      };
-
-      return {
-        show: showMessages,
-        clear: hideContainer,
-      };
-    };
-
-    const formatDownloadLabel = (downloadName, formatKey, mimeType) => {
-      if (downloadName) {
-        const extension = (downloadName.split('.').pop() || '').toUpperCase();
-        if (extension) {
-          return `Download ${extension}`;
-        }
-      }
-      if (formatKey) {
-        return `Download ${formatKey.toString().toUpperCase()}`;
-      }
-      if (mimeType) {
-        const subtype = mimeType.split('/')[1] || '';
-        if (subtype) {
-          return `Download ${subtype.toUpperCase()}`;
-        }
-      }
-      return 'Download result';
-    };
-
-    const resolveDownloadName = (downloadName, formatKey, mimeType) => {
-      if (downloadName) {
-        return downloadName;
-      }
-      const baseName = (activeFilename || 'image').replace(/\.[^./]+$/, '') || 'image';
-      let extension = '';
-      if (formatKey) {
-        extension = formatKey.toString().toLowerCase();
-      }
-      if (!extension && mimeType) {
-        const subtype = mimeType.split('/')[1] || '';
-        if (subtype) {
-          extension = subtype.toLowerCase();
-        }
-      }
-      if (!extension && singleFormatSelect && singleFormatSelect.value) {
-        extension = singleFormatSelect.value.toLowerCase();
-      }
-      if (!extension) {
-        extension = 'png';
-      }
-      return `${baseName}_no_bg.${extension}`;
-    };
-
-    const base64ToBlob = (base64, mimeType) => {
-      const binaryString = atob(base64);
-      const length = binaryString.length;
-      const bytes = new Uint8Array(length);
-      for (let index = 0; index < length; index += 1) {
-        bytes[index] = binaryString.charCodeAt(index);
-      }
-      return new Blob([bytes], { type: mimeType });
-    };
-
-    const singleForm = document.getElementById('single-form');
-    const singleSpinner = document.getElementById('single-spinner');
-    const singleResult = document.getElementById('single-result');
-    const singlePreview = document.getElementById('single-preview');
-    const singleSummary = document.getElementById('single-summary');
-    const singleDownload = document.getElementById('single-download');
-    const singleStatusText = document.getElementById('single-status-text');
-    const singleFileInput = document.getElementById('single-file');
-    const singleAlert = document.getElementById('single-form-alert');
-    const singleAlertManager = createAlertManager(singleAlert);
-
-    const folderForm = document.getElementById('folder-form');
-
-    const createTooltipInstances = (scope) => {
-      if (!scope || typeof bootstrap === 'undefined' || !bootstrap?.Tooltip) {
-        return [];
-      }
-      return Array.from(scope.querySelectorAll('[data-bs-toggle="tooltip"]')).map(
-        (element) => new bootstrap.Tooltip(element),
-      );
-    };
-
-    const setupHelpHints = (container, toggle) => {
-      if (!container) {
-        return;
-      }
-      const tooltipInstances = createTooltipInstances(container);
-      const applyState = (enabled) => {
-        container.classList.toggle('help-hints-hidden', !enabled);
-        tooltipInstances.forEach((tooltip) => {
-          if (!tooltip) {
-            return;
-          }
-          if (enabled) {
-            tooltip.enable();
-          } else {
-            tooltip.hide();
-            tooltip.disable();
-          }
-        });
-      };
-      if (toggle) {
-        applyState(Boolean(toggle.checked));
-        toggle.addEventListener('change', (event) => {
-          applyState(Boolean(event.target.checked));
-        });
-      } else {
-        applyState(true);
+        acceleratorRuntimeBadge.textContent = message;
       }
     };
 
-    setupHelpHints(singleForm, document.getElementById('single-help-toggle'));
-    setupHelpHints(folderForm, document.getElementById('folder-help-toggle'));
-
-    hardwareSelect = document.getElementById('single-hardware');
-    hardwareWarning = document.getElementById('single-hardware-warning');
-
-    if (hardwareSelect) {
-      hardwareSelect.addEventListener('change', updateHardwareWarning);
-    }
-    updateHardwareWarning();
-
-    const previewSizeInput = document.getElementById('single-preview-size');
+const previewSizeInput = document.getElementById('single-preview-size');
     const previewSizeLabel = document.getElementById('single-preview-size-label');
     const previewContainer = document.getElementById('single-preview-container');
 

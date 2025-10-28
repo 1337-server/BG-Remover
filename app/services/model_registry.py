@@ -41,27 +41,66 @@ _PRELOAD_SIGNATURE: tuple[str, tuple[str, ...], str, int] | None = None
 _AVAILABLE_PROVIDERS: list[str] = []
 _PRELOAD_LOCK = Lock()
 
-_CACHE_DIR = (Path(__file__).resolve().parent / ".." / "cache").resolve()
-_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_CACHE_DIR = Path(
+    os.environ.get(
+        "BG_ONNXRUNTIME_CACHE_DIR",
+        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache") / "br-remover" / "onnxruntime",
+    )
+).expanduser()
 _TIMING_CACHE_PATH = _CACHE_DIR / "timing_cache"
+_CACHE_READY: bool | None = None
+
+
+def _ensure_cache_dirs() -> bool:
+    """Ensure that the ONNX runtime cache directories exist and are writable."""
+
+    global _CACHE_READY
+    if _CACHE_READY is not None:
+        return _CACHE_READY
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        LOGGER.warning(
+            "Unable to initialise ONNX runtime cache directory; GPU caching disabled",
+            extra={"cache_dir": str(_CACHE_DIR), "error": str(exc)},
+        )
+        _CACHE_READY = False
+    else:
+        _CACHE_READY = True
+    return _CACHE_READY
 
 
 def _tensorrt_provider_options(device_id: int) -> MutableMapping[str, Any]:
     """Return tuned TensorRT execution provider options for fast warm starts."""
 
+    cache_available = _ensure_cache_dirs()
     options: dict[str, Any] = {
         "device_id": int(device_id),
-        "trt_engine_cache_enable": True,
-        "trt_engine_cache_path": str(_CACHE_DIR),
         "trt_fp16_enable": True,
-        "trt_timing_cache_enable": True,
-        "trt_timing_cache_path": str(_TIMING_CACHE_PATH),
         "trt_force_sequential_engine_build": False,
         "trt_int8_enable": False,
         "trt_dla_enable": False,
         "trt_cuda_graph_enable": True,
         "trt_detailed_build_log": True,
     }
+
+    if cache_available:
+        options.update(
+            {
+                "trt_engine_cache_enable": True,
+                "trt_engine_cache_path": str(_CACHE_DIR),
+                "trt_timing_cache_enable": True,
+                "trt_timing_cache_path": str(_TIMING_CACHE_PATH),
+            }
+        )
+    else:
+        options.update(
+            {
+                "trt_engine_cache_enable": False,
+                "trt_timing_cache_enable": False,
+            }
+        )
     return options
 
 

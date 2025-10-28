@@ -69,17 +69,27 @@ def onnx_providers_available() -> List[str]:
 
 
 def pick_execution_provider(mode: str, device_id: int) -> Tuple[str, Dict[str, int]]:
-    """Select the execution provider matching ``mode`` and availability."""
+    """Select the best available execution provider for ``mode``.
+
+    The provider selection honours the ONNX Runtime priority order of
+    TensorRT, CUDA, and finally the CPU execution provider. When GPU support
+    is requested and a compatible GPU provider is present, a dictionary of
+    provider options including the requested ``device_id`` is returned.
+    """
 
     normalised_mode = (mode or "auto").strip().lower()
     if normalised_mode == "cpu":
-        return "cpu", {}
+        return "CPUExecutionProvider", {}
 
     providers = onnx_providers_available()
-    if normalised_mode in {"cuda", "auto"} and "CUDAExecutionProvider" in providers:
-        return "cuda", {"device_id": int(device_id)}
+    preferred_gpu_providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
 
-    return "cpu", {}
+    if normalised_mode in {"cuda", "auto"}:
+        for provider_name in preferred_gpu_providers:
+            if provider_name in providers:
+                return provider_name, {"device_id": int(device_id)}
+
+    return "CPUExecutionProvider", {}
 
 
 def is_rtx_50xx(name: str) -> bool:

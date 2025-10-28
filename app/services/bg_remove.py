@@ -210,8 +210,10 @@ class SessionContext:
 
         return {
             "runtime": self.runtime,
+            "provider": self.provider,
             "gpu_name": self.gpu_name,
             "warning": self.warning,
+            "providers_available": self.providers_available,
         }
 
 
@@ -320,14 +322,26 @@ def create_session(
     runtime_compat.ensure_runtime_ready()
 
     providers_available = accelerator.onnx_providers_available()
-    provider_key, provider_options = accelerator.pick_execution_provider(requested_mode, device_id)
-    runtime = "cuda" if provider_key == "cuda" else "cpu"
-    provider_name = "CUDAExecutionProvider" if runtime == "cuda" else "CPUExecutionProvider"
-    providers_argument: List[Any]
-    if runtime == "cuda":
-        providers_argument = [("CUDAExecutionProvider", dict(provider_options or {})), "CPUExecutionProvider"]
-    else:
-        providers_argument = ["CPUExecutionProvider"]
+    provider_name, _ = accelerator.pick_execution_provider(requested_mode, device_id)
+
+    gpu_providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+    provider_options_map: Dict[str, Mapping[str, Any]] = {
+        name: {"device_id": int(device_id)} for name in gpu_providers
+    }
+    provider_options_map["CPUExecutionProvider"] = {}
+
+    provider_chain: List[tuple[str, Any]] = []
+    for candidate in gpu_providers:
+        if candidate in providers_available:
+            options = dict(provider_options_map.get(candidate, {}))
+            provider_chain.append((candidate, (candidate, options)))
+
+    # Always append CPU fallback to ensure we can continue when GPU init fails.
+    provider_chain.append(("CPUExecutionProvider", "CPUExecutionProvider"))
+    attempted_gpu = any(name in gpu_providers for name, _ in provider_chain[:-1])
+
+    chain_description = " -> ".join(name for name, _ in provider_chain)
+    LOGGER.info("Execution provider priority: %s", chain_description)
 
     gpu_name = accelerator.detect_gpu_name()
     rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
@@ -342,26 +356,39 @@ def create_session(
 
     warning_message: Optional[str] = None
     session_obj: Optional[Session] = None
+    active_chain: List[tuple[str, Any]] = list(provider_chain)
+    last_error: Optional[BaseException] = None
 
-    try:
-        session_obj = _rembg_new_session(model_name, providers=providers_argument)
-    except Exception as exc:
-        if runtime == "cuda":
+    while active_chain:
+        current_argument = [entry for _, entry in active_chain]
+        current_provider = active_chain[0][0]
+        try:
+            session_obj = _rembg_new_session(model_name, providers=current_argument)
+        except Exception as exc:
+            last_error = exc
             LOGGER.exception(
-                "Falling back to CPU background removal after CUDA initialisation failure: %s",
-                exc,
+                "Failed to initialise %s provider; attempting next fallback", current_provider
             )
-            runtime = "cpu"
-            provider_name = "CPUExecutionProvider"
-            providers_argument = ["CPUExecutionProvider"]
-            warning_message = "Running on CPU, performance will be slower."
-            session_obj = _rembg_new_session(model_name, providers=providers_argument)
+            active_chain.pop(0)
+            continue
         else:
-            raise
+            provider_name = current_provider
+            break
 
     if session_obj is None:
-        session_obj = _rembg_new_session(model_name, providers=providers_argument)
+        assert last_error is not None
+        raise last_error
 
+    resolved_providers = []
+    try:
+        resolved_providers = list(getattr(session_obj, "providers", []))
+    except Exception:  # pragma: no cover - provider inspection best effort
+        LOGGER.debug("Unable to introspect session providers", exc_info=True)
+
+    if resolved_providers:
+        provider_name = resolved_providers[0]
+
+    runtime = "cuda" if provider_name in gpu_providers else "cpu"
     LOGGER.info("Selected execution provider: %s", provider_name)
 
     if gpu_name and "CUDAExecutionProvider" not in providers_available:
@@ -375,9 +402,14 @@ def create_session(
             )
             _CUDA_HINT_LOGGED = True
 
+    cpu_fallback = runtime == "cpu" and attempted_gpu
+    if cpu_fallback and warning_message is None:
+        warning_message = (
+            "GPU acceleration was unavailable. Running on CPU; performance will be slower."
+        )
+
     should_warn = warn_on_cpu and runtime == "cpu" and requested_mode != "cpu"
-    if should_warn:
-        warning_message = warning_message or "Running on CPU, performance will be slower."
+    if should_warn and warning_message:
         global _CPU_WARNING_LOGGED
         if not _CPU_WARNING_LOGGED:
             LOGGER.warning(warning_message)
@@ -387,11 +419,11 @@ def create_session(
         session=session_obj,
         runtime=runtime,
         provider=provider_name,
-        provider_options=dict(provider_options or {}),
+        provider_options=dict(provider_options_map.get(provider_name, {})),
         providers_available=providers_available,
         gpu_name=gpu_name,
         rtx_50_series=rtx_50_series,
-        warning=warning_message if should_warn else None,
+        warning=warning_message if should_warn or cpu_fallback else None,
         device_id=device_id,
     )
 
@@ -433,7 +465,14 @@ def get_runtime_payload() -> Dict[str, Any]:
 
     context = _SESSION_CONTEXT
     if context is None:
-        return {"runtime": "cpu", "gpu_name": None, "warning": None}
+        providers_available = accelerator.onnx_providers_available()
+        return {
+            "runtime": "cpu",
+            "provider": "CPUExecutionProvider",
+            "gpu_name": None,
+            "warning": None,
+            "providers_available": providers_available,
+        }
     return context.runtime_payload()
 
 
@@ -446,14 +485,17 @@ def get_accelerator_status() -> Dict[str, Any]:
         gpu_name = accelerator.detect_gpu_name()
         runtime = "cpu"
         rtx = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name)) if gpu_name else False
+        provider_name = "CPUExecutionProvider"
     else:
         providers = context.providers_available
         gpu_name = context.gpu_name
         runtime = context.runtime
         rtx = context.rtx_50_series
+        provider_name = context.provider
     return {
         "providers": providers,
         "selected": "cuda" if runtime == "cuda" else "cpu",
+        "provider": provider_name,
         "gpu_name": gpu_name,
         "rtx_50_series": rtx,
     }

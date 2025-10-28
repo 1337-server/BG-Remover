@@ -398,6 +398,9 @@
 
     const updateAcceleratorUi = (state = {}) => {
       const runtimeValue = (state.runtime || 'cpu').toString();
+      const providersAvailable = Array.isArray(state.providers_available)
+        ? state.providers_available.map((provider) => provider.toString())
+        : [];
       if (acceleratorRuntimeBadge) {
         acceleratorRuntimeBadge.textContent = `Runtime: ${runtimeValue.toUpperCase()}`;
       }
@@ -410,7 +413,16 @@
         }
       }
       if (acceleratorAlert && acceleratorAlertText) {
-        const warningText = state.warning ? state.warning.toString() : '';
+        let warningText = state.warning ? state.warning.toString() : '';
+        if (!warningText && runtimeValue === 'cpu') {
+          const hasGpuProviders = providersAvailable.some((provider) =>
+            ['TensorrtExecutionProvider', 'CUDAExecutionProvider'].includes(provider)
+          );
+          if (hasGpuProviders) {
+            warningText =
+              'GPU acceleration was unavailable. Running on CPU; performance will be slower.';
+          }
+        }
         if (warningText) {
           if (acceleratorAlertText.textContent !== warningText) {
             acceleratorWarningDismissed = false;

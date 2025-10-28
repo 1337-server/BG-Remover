@@ -7,8 +7,8 @@ import pytest
 from flask.testing import FlaskClient
 from PIL import Image
 
+import bg_removal as bg_remove
 from app import create_app
-from app.services import bg_remove
 
 
 @pytest.fixture()

@@ -52,7 +52,7 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install --upgrade pip
 pip install -r requirements.txt
-python serve.py
+python app.py
 ```
 
 Troubleshooting tips:
@@ -87,7 +87,7 @@ Key behaviour:
 Start the web UI once the dependencies are installed:
 
 ```bash
-python serve.py
+python app.py
 # or
 python -m app
 ```
@@ -121,18 +121,17 @@ Static analysis helpers are included:
 
 ```bash
 ruff check .
-mypy app
-python -m compileall main.py app tests
+mypy app.py bg_removal.py main.py
+python -m compileall main.py app.py bg_removal.py tests
 ```
 
 ---
 
 ### 📂 Project layout
 
-* `main.py` – CLI entrypoint.
-* `app/services/model_registry.py` – shared ONNX Runtime session preloading and warm-up utilities.
-* `app/services/bg_remove.py` – background removal helpers built on preloaded ONNX Runtime sessions.
-* `app/routes/image_converter.py` – Flask blueprint exposing the UI + JSON endpoints.
+* `app.py` – Flask application, routes, and dev-server entry point.
+* `bg_removal.py` – rembg session management plus background removal helpers.
+* `main.py` – CLI entry point for batch processing.
 * `templates/` – Base template + background removal form.
 * `tests/` – Pytest-based regression tests for the service utilities.
 

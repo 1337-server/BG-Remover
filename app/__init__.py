@@ -1,6 +1,7 @@
 """Application factory for the background remover web service."""
 from __future__ import annotations
 
+from app.services import runtime_compat
 from app.services.bg_remove import ensure_global_session
 
 try:  # pragma: no cover - optional during testing
@@ -20,6 +21,9 @@ def create_app() -> "Flask":
 
     app = Flask(__name__)
 
+    # Initialise the runtime stack before creating the rembg session. This
+    # ensures NumPy/ONNXRuntime compatibility issues are surfaced early.
+    runtime_compat.ensure_runtime_ready()
     # Initialise the global background removal session once at startup.
     ensure_global_session()
 

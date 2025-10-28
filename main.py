@@ -5,6 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from app.services import runtime_compat
 from app.services.bg_remove import (
     RemovalResult,
     ensure_global_session,
@@ -103,6 +104,7 @@ def main() -> None:
 
     args = parse_args()
     input_path = Path(args.input).expanduser() if args.input else Path.cwd()
+    runtime_compat.ensure_runtime_ready()
     ensure_global_session()
 
     if input_path.is_dir():

@@ -27,10 +27,10 @@ PNG output with transparency preserved.
    source .venv/bin/activate   # macOS/Linux
    .venv\Scripts\activate      # Windows
    ```
-3. Install runtime dependencies:
+3. Install runtime dependencies (force-reinstall if upgrading from an older environment):
 
    ```bash
-   pip install -r requirements.txt
+   pip install --upgrade --force-reinstall -r requirements.txt
    ```
 
 The first run of either the CLI or web service initialises a single rembg session and caches the U²-Net
@@ -80,7 +80,8 @@ Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 * **Folder Processing** tab – supply a server-side folder, optional output directory, recursive mode,
   alpha-matting settings, and request a ZIP bundle of the processed results.
 
-The Flask app initialises a single rembg session on startup so repeated requests remain fast.
+The Flask app initialises a single rembg session on startup so repeated requests remain fast. Set
+`BR_FORCE_CPU=1` to disable CUDA when troubleshooting GPU driver mismatches.
 
 ---
 

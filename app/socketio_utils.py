@@ -1,4 +1,5 @@
-"""Utilities for optional Eventlet integration with Flask-SocketIO."""
+"""Utilities for coordinating Flask-SocketIO's async mode and Eventlet patching."""
+
 from __future__ import annotations
 
 import logging

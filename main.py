@@ -1,4 +1,4 @@
-"""Command-line interface for the background removal service."""
+"""Command-line interface for the background remover utilities."""
 from __future__ import annotations
 
 import argparse

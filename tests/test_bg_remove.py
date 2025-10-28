@@ -103,7 +103,7 @@ def test_remove_bg_file_default_output_path(tmp_path: Path, monkeypatch: pytest.
     image = Image.new("RGB", (4, 4), color=(255, 0, 0))
     image.save(input_file)
 
-    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None: object())
+    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None, **_: object())
 
     def fake_run_rembg(image: Image.Image, session: object) -> Image.Image:
         """Return a solid opaque mask for deterministic behaviour."""
@@ -128,7 +128,7 @@ def test_remove_bg_file_respects_requested_format(tmp_path: Path, monkeypatch: p
     image = Image.new("RGBA", (4, 4), color=(0, 128, 255, 200))
     image.save(input_file)
 
-    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None: object())
+    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None, **_: object())
 
     def fake_run_rembg(image: Image.Image, session: object) -> Image.Image:
         """Return a semi-transparent mask for deterministic output."""
@@ -155,7 +155,7 @@ def test_remove_bg_file_emits_callbacks(tmp_path: Path, monkeypatch: pytest.Monk
     image = Image.new("RGB", (4, 4), color=(255, 0, 0))
     image.save(input_file)
 
-    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None: object())
+    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None, **_: object())
 
     def fake_run_rembg(image: Image.Image, session: object) -> Image.Image:
         return Image.new("RGBA", image.size, color=(255, 255, 255, 128))

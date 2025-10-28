@@ -1,12 +1,11 @@
 """Flask routes for interactive background removal."""
 from __future__ import annotations
 
-import base64
-import io
 import json
 import shutil
 import tempfile
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
@@ -39,8 +38,20 @@ from app.services.bg_remove import (
 image_converter_bp = Blueprint("image_converter", __name__)
 
 _ZIP_REGISTRY: Dict[str, Path] = {}
-_FILE_REGISTRY: Dict[str, Path] = {}
-_PREVIEW_REGISTRY: Dict[str, Path] = {}
+
+
+@dataclass
+class RegistryItem:
+    """Metadata describing an entry stored in a download registry."""
+
+    path: Path
+    mimetype: str | None = None
+    delete_after_read: bool = False
+    download_name: str | None = None
+
+
+_FILE_REGISTRY: Dict[str, RegistryItem] = {}
+_PREVIEW_REGISTRY: Dict[str, RegistryItem] = {}
 
 BACKGROUND_PREVIEW_NAMESPACE = "/ws/background-preview"
 FORMAT_OPTIONS = [
@@ -204,15 +215,6 @@ def remove_bg_view() -> Response:
     response.headers["X-Removal-Result"] = json.dumps(result.to_dict())
     return response
 
-
-def _encode_image_to_base64(image: Image.Image) -> str:
-    """Return a base64-encoded PNG representation of ``image``."""
-
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
 def _emit_progress(socket_id: str, job_id: str, stage: str, percent: float) -> None:
     """Send a progress update to the connected websocket client."""
 
@@ -228,15 +230,49 @@ def _emit_progress(socket_id: str, job_id: str, stage: str, percent: float) -> N
     )
 
 
+def _register_registry_item(
+    registry: Dict[str, RegistryItem],
+    *,
+    path: Path,
+    mimetype: str | None = None,
+    delete_after_read: bool = False,
+    download_name: str | None = None,
+) -> tuple[str, RegistryItem]:
+    """Store ``path`` in the ``registry`` and return the associated token."""
+
+    token = uuid.uuid4().hex
+    entry = RegistryItem(
+        path=path,
+        mimetype=mimetype,
+        delete_after_read=delete_after_read,
+        download_name=download_name,
+    )
+    registry[token] = entry
+    return token, entry
+
+
 def _emit_preview(socket_id: str, job_id: str, stage: str, image: Image.Image) -> None:
-    """Send a preview frame to the websocket client."""
+    """Send a preview frame reference to the websocket client."""
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as preview_file:
+        image.save(preview_file, format="PNG")
+        temp_path = Path(preview_file.name)
+
+    token, _ = _register_registry_item(
+        _PREVIEW_REGISTRY,
+        path=temp_path,
+        mimetype="image/png",
+        delete_after_read=True,
+    )
 
     socketio.emit(
         "preview",
         {
             "job_id": job_id,
             "stage": stage,
-            "image": _encode_image_to_base64(image),
+            "preview_token": token,
+            "preview_url": f"/image/remove-bg/live/preview/{token}",
+            "mime_type": "image/png",
         },
         namespace=BACKGROUND_PREVIEW_NAMESPACE,
         to=socket_id,
@@ -251,6 +287,34 @@ def _emit_error(socket_id: str, job_id: str, message: str) -> None:
         {"job_id": job_id, "message": message},
         namespace=BACKGROUND_PREVIEW_NAMESPACE,
         to=socket_id,
+    )
+
+
+def _serve_registry_item(
+    registry: Dict[str, RegistryItem], token: str, *, as_attachment: bool
+) -> Response:
+    """Return the file referenced by ``token`` from ``registry``."""
+
+    entry = registry.pop(token, None)
+    if entry is None or not entry.path.exists():
+        abort(404)
+
+    if entry.delete_after_read:
+        @after_this_request
+        def cleanup(response: Response) -> Response:
+            try:
+                entry.path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return response
+
+    mimetype = entry.mimetype or get_mime_type_for_path(entry.path)
+    download_name = entry.download_name or entry.path.name if as_attachment else None
+    return send_file(
+        entry.path,
+        mimetype=mimetype,
+        as_attachment=as_attachment,
+        download_name=download_name,
     )
 
 
@@ -292,17 +356,42 @@ def _process_live_job(
         if not result.success or result.path_out is None:
             raise RuntimeError(result.error or "Background removal failed.")
 
-        with result.path_out.open("rb") as file_obj:
-            encoded = base64.b64encode(file_obj.read()).decode("ascii")
-
         download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=format_spec.extension) as download_file:
+            download_path = Path(download_file.name)
+
+        shutil.copyfile(result.path_out, download_path)
+
+        download_token, _ = _register_registry_item(
+            _FILE_REGISTRY,
+            path=download_path,
+            mimetype=format_spec.mime_type,
+            delete_after_read=True,
+            download_name=download_name,
+        )
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=format_spec.extension) as final_preview_file:
+            preview_path = Path(final_preview_file.name)
+
+        shutil.copyfile(result.path_out, preview_path)
+
+        preview_token, _ = _register_registry_item(
+            _PREVIEW_REGISTRY,
+            path=preview_path,
+            mimetype=format_spec.mime_type,
+            delete_after_read=True,
+        )
+
         _emit_progress(socket_id, job_id, "complete", 100.0)
         socketio.emit(
             "completed",
             {
                 "job_id": job_id,
                 "result": result.to_dict(),
-                "image": encoded,
+                "result_token": preview_token,
+                "result_url": f"/image/remove-bg/live/result/{preview_token}",
+                "download_token": download_token,
+                "download_url": f"/image/remove-bg/file/{download_token}",
                 "mime_type": format_spec.mime_type,
                 "download_name": download_name,
                 "format": format_spec.key,
@@ -388,25 +477,28 @@ def download_zip(token: str) -> Response:
 def download_file(token: str) -> Response:
     """Serve an exported image referenced by a temporary token."""
 
-    path = _FILE_REGISTRY.pop(token, None)
-    if path is None or not path.exists():
-        abort(404)
-    return send_file(
-        path,
-        mimetype=get_mime_type_for_path(path),
-        as_attachment=True,
-        download_name=path.name,
-    )
+    return _serve_registry_item(_FILE_REGISTRY, token, as_attachment=True)
 
 
 @image_converter_bp.route("/image/remove-bg/preview/<token>")
 def preview_file(token: str) -> Response:
     """Serve an inline preview for a processed image."""
 
-    path = _PREVIEW_REGISTRY.pop(token, None)
-    if path is None or not path.exists():
-        abort(404)
-    return send_file(path, mimetype=get_mime_type_for_path(path), as_attachment=False)
+    return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
+
+
+@image_converter_bp.route("/image/remove-bg/live/preview/<token>")
+def stream_live_preview(token: str) -> Response:
+    """Stream a single live preview frame referenced by ``token``."""
+
+    return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
+
+
+@image_converter_bp.route("/image/remove-bg/live/result/<token>")
+def stream_live_result(token: str) -> Response:
+    """Stream the final live result image referenced by ``token``."""
+
+    return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
 
 
 def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
@@ -419,11 +511,20 @@ def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
     for result in results:
         data = result.to_dict()
         if result.success and result.path_out is not None:
-            download_token = uuid.uuid4().hex
-            preview_token = uuid.uuid4().hex
-            _FILE_REGISTRY[download_token] = result.path_out
-            _PREVIEW_REGISTRY[preview_token] = result.path_out
             format_spec = get_output_format_spec(result.path_out.suffix)
+            download_token, _ = _register_registry_item(
+                _FILE_REGISTRY,
+                path=result.path_out,
+                mimetype=format_spec.mime_type,
+                delete_after_read=False,
+                download_name=result.path_out.name,
+            )
+            preview_token, _ = _register_registry_item(
+                _PREVIEW_REGISTRY,
+                path=result.path_out,
+                mimetype=format_spec.mime_type,
+                delete_after_read=False,
+            )
             data["download_url"] = url_for("image_converter.download_file", token=download_token)
             data["preview_url"] = url_for("image_converter.preview_file", token=preview_token)
             data["mime_type"] = format_spec.mime_type

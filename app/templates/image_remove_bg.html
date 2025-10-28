@@ -247,22 +247,26 @@
 
     let socketId = null;
     let currentJobId = null;
-    let downloadObjectUrl = null;
     let activeFilename = 'image';
+    let finalPreviewObjectUrl = null;
 
     const socket = io('/ws/background-preview');
 
     const clearDownloadUrl = () => {
-      if (downloadObjectUrl) {
-        URL.revokeObjectURL(downloadObjectUrl);
-        downloadObjectUrl = null;
-      }
       singleDownload.classList.add('d-none');
       singleDownload.removeAttribute('href');
+      singleDownload.removeAttribute('download');
       const defaultLabel = singleFormatSelect && singleFormatSelect.value
         ? `Download ${singleFormatSelect.value.toUpperCase()}`
         : 'Download result';
       singleDownload.textContent = defaultLabel;
+    };
+
+    const clearFinalPreviewObjectUrl = () => {
+      if (finalPreviewObjectUrl) {
+        URL.revokeObjectURL(finalPreviewObjectUrl);
+        finalPreviewObjectUrl = null;
+      }
     };
 
     clearDownloadUrl();
@@ -275,37 +279,60 @@
       singleProgressText.textContent = stage ? `Stage: ${formatStage(stage)}` : 'Processing…';
     };
 
-    const setLivePreview = (base64Image) => {
+    const setLivePreview = (previewUrl) => {
+      if (!previewUrl) {
+        return;
+      }
       singlePreviewSection.hidden = false;
-      singleLivePreview.src = `data:image/png;base64,${base64Image}`;
+      singleLivePreview.src = previewUrl;
     };
 
-    const setFinalPreview = (base64Image, mimeType, downloadName) => {
-      const finalMime = mimeType || 'image/png';
-      singlePreview.src = `data:${finalMime};base64,${base64Image}`;
+    const setFinalPreview = async (resultUrl, mimeType, downloadUrl, downloadName, formatKey) => {
+      if (resultUrl) {
+        try {
+          const response = await fetch(resultUrl, { cache: 'no-store' });
+          if (!response.ok) {
+            throw new Error(`Failed to fetch preview (${response.status})`);
+          }
+          const blob = await response.blob();
+          clearFinalPreviewObjectUrl();
+          finalPreviewObjectUrl = URL.createObjectURL(blob);
+          singlePreviewSection.hidden = false;
+          singlePreview.src = finalPreviewObjectUrl;
+          singleLivePreview.src = finalPreviewObjectUrl;
+        } catch (error) {
+          console.error('Unable to load the final preview image.', error);
+        }
+      }
       singleResult.hidden = false;
 
       clearDownloadUrl();
-      const binary = atob(base64Image);
-      const buffer = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) {
-        buffer[index] = binary.charCodeAt(index);
+      if (downloadUrl) {
+        singleDownload.href = downloadUrl;
+        let resolvedDownloadName = downloadName || '';
+        if (!resolvedDownloadName) {
+          const baseName = activeFilename.replace(/\.[^./]+$/, '');
+          const fallbackExtension = (formatKey || (mimeType ? mimeType.split('/')[1] : '') || 'png')
+            .toString()
+            .toLowerCase();
+          resolvedDownloadName = `${baseName || 'image'}_no_bg.${fallbackExtension}`;
+        }
+        if (resolvedDownloadName) {
+          singleDownload.download = resolvedDownloadName;
+        }
+        let extension = '';
+        if (resolvedDownloadName) {
+          extension = (resolvedDownloadName.split('.').pop() || '').toUpperCase();
+        }
+        if (!extension && formatKey) {
+          extension = formatKey.toUpperCase();
+        }
+        if (!extension && mimeType) {
+          extension = (mimeType.split('/')[1] || '').toUpperCase();
+        }
+        singleDownload.textContent = extension ? `Download ${extension}` : 'Download result';
+        singleDownload.classList.remove('d-none');
       }
-      const blob = new Blob([buffer], { type: finalMime });
-      downloadObjectUrl = URL.createObjectURL(blob);
-      const baseName = activeFilename.replace(/\.[^./]+$/, '');
-      const fallbackExtension = (finalMime.split('/')[1] || 'png').toLowerCase();
-      const suggestedName = downloadName
-        || `${baseName || 'image'}_no_bg.${fallbackExtension}`;
-      singleDownload.href = downloadObjectUrl;
-      singleDownload.download = suggestedName;
-      const extension = (suggestedName.split('.').pop() || fallbackExtension).toUpperCase();
-      if (extension) {
-        singleDownload.textContent = `Download ${extension}`;
-      } else {
-        singleDownload.textContent = 'Download result';
-      }
-      singleDownload.classList.remove('d-none');
     };
 
     socket.on('connect', () => {
@@ -324,16 +351,21 @@
     });
 
     socket.on('preview', (payload) => {
-      if (!currentJobId || payload.job_id !== currentJobId || !payload.image) {
+      if (!currentJobId || payload.job_id !== currentJobId) {
         return;
       }
-      setLivePreview(payload.image);
+      const previewUrl = payload.preview_url
+        || (payload.preview_token ? `/image/remove-bg/live/preview/${payload.preview_token}` : null);
+      if (!previewUrl) {
+        return;
+      }
+      setLivePreview(previewUrl);
       if (payload.stage) {
         singleResultStage.textContent = `Latest stage: ${formatStage(payload.stage)}`;
       }
     });
 
-    socket.on('completed', (payload) => {
+    socket.on('completed', async (payload) => {
       if (!currentJobId || payload.job_id !== currentJobId) {
         return;
       }
@@ -341,10 +373,11 @@
       updateProgress(100, 'complete');
       singleProgressText.textContent = 'Processing complete.';
       singleResultStage.textContent = 'Background removal completed successfully.';
-      if (payload.image) {
-        setLivePreview(payload.image);
-        setFinalPreview(payload.image, payload.mime_type, payload.download_name);
-      }
+      const resultUrl = payload.result_url
+        || (payload.result_token ? `/image/remove-bg/live/result/${payload.result_token}` : null);
+      const downloadUrl = payload.download_url
+        || (payload.download_token ? `/image/remove-bg/file/${payload.download_token}` : null);
+      await setFinalPreview(resultUrl, payload.mime_type, downloadUrl, payload.download_name, payload.format);
       if (payload.result) {
         singleSummary.textContent = JSON.stringify(payload.result, null, 2);
       } else {
@@ -389,6 +422,8 @@
       singleSummary.textContent = '';
       singleResultStage.textContent = '';
       clearDownloadUrl();
+      clearFinalPreviewObjectUrl();
+      singlePreview.removeAttribute('src');
       updateProgress(0, 'queued');
       singleProgressText.textContent = 'Uploading image…';
 

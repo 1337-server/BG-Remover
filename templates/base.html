@@ -1,95 +1,175 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Background Remover{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    >
     <script>
-      /**
-       * Ensure the stored theme preference is applied before the first paint to prevent flashes.
-       */
-      (() => {
-        const THEME_STORAGE_KEY = 'bg-remover-theme';
-        const prefersDarkScheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        const storedTheme = window.localStorage ? localStorage.getItem(THEME_STORAGE_KEY) : null;
-        const resolvedTheme = storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : (prefersDarkScheme ? 'dark' : 'light');
-        const rootElement = document.documentElement;
-
-        rootElement.setAttribute('data-bs-theme', resolvedTheme);
-        rootElement.style.colorScheme = resolvedTheme;
+      (function applyStoredTheme() {
+        const storageKey = 'bg-remover-theme';
+        const root = document.documentElement;
+        const prefersDark = typeof window.matchMedia === 'function'
+          ? window.matchMedia('(prefers-color-scheme: dark)')
+          : null;
+        const stored = window.localStorage ? localStorage.getItem(storageKey) : null;
+        const resolved = stored === 'dark' || stored === 'light'
+          ? stored
+          : (prefersDark && prefersDark.matches ? 'dark' : 'light');
+        root.setAttribute('data-theme', resolved);
+        if (resolved === 'dark') {
+          root.classList.add('dark');
+        } else {
+          root.classList.remove('dark');
+        }
       })();
     </script>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/base.css') }}" rel="stylesheet">
+    <script>
+      window.tailwind = window.tailwind || {};
+      window.tailwind.config = {
+        darkMode: 'class',
+        safelist: [
+          'ring-[var(--color-accent-strong)]',
+          'bg-[var(--color-surface-elevated)]',
+          'text-[var(--color-text-muted)]',
+          'border-[var(--color-border-muted)]',
+        ],
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'system-ui', 'sans-serif'],
+            },
+            boxShadow: {
+              focus: '0 0 0 3px rgba(59, 130, 246, 0.35)',
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
     {% block extra_head %}{% endblock %}
   </head>
-  <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-      <div class="container-fluid">
-        <a class="navbar-brand" href="/">BG Remover</a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-          <span class="navbar-toggler-icon"></span>
-        </button>
-        <div class="collapse navbar-collapse" id="navbarNav">
-          <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-            <li class="nav-item">
-              <a class="nav-link" href="{{ url_for('image_converter.remove_background_view') }}">Remove Background</a>
-            </li>
-          </ul>
-          <div class="d-flex">
-            <button class="btn btn-outline-light" id="theme-toggle" type="button" aria-pressed="false">Switch to dark mode</button>
+  <body class="min-h-screen bg-[var(--color-surface)] text-[var(--color-text)] antialiased">
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+    <div class="flex min-h-screen flex-col">
+      <header class="sticky top-0 z-40 border-b border-[var(--color-border-muted)] bg-[var(--color-surface-elevated)]/90 backdrop-blur">
+        <div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
+          <div class="flex items-center gap-3">
+            <a href="{{ url_for('image_converter.remove_background_view') }}" class="flex items-center gap-2 text-base font-semibold text-[var(--color-text-strong)]">
+              <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-accent-soft)] text-[var(--color-accent-strong)] shadow-sm">
+                <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M7 7h10M7 12h5m-5 5h10" />
+                </svg>
+              </span>
+              <span class="hidden text-lg sm:inline">BG Remover</span>
+              <span class="sm:hidden">BG Remover</span>
+            </a>
+            <nav aria-label="Primary" class="hidden items-center gap-3 text-sm font-medium text-[var(--color-text-muted)] sm:flex">
+              <a
+                href="{{ url_for('image_converter.remove_background_view') }}"
+                class="rounded-full px-3 py-1 transition-colors duration-150 hover:text-[var(--color-text-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--color-accent-strong)] focus-visible:ring-offset-[var(--color-surface-elevated)]"
+              >
+                Remove Background
+              </a>
+            </nav>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-full border border-transparent bg-[var(--color-surface-soft)] px-3 py-2 text-sm font-medium text-[var(--color-text-muted)] shadow-sm transition hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-strong)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-elevated)]"
+              data-theme-toggle
+              aria-pressed="false"
+            >
+              <span class="theme-toggle-icon" aria-hidden="true"></span>
+              <span class="theme-toggle-label">Toggle theme</span>
+            </button>
+            <button
+              type="button"
+              class="inline-flex h-10 w-10 items-center justify-center rounded-full border border-transparent bg-[var(--color-accent-soft)] text-[var(--color-accent-strong)] shadow-sm transition hover:bg-[var(--color-accent-strong)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-strong)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-elevated)]"
+              data-help-modal-open
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="help-modal"
+            >
+              <span class="sr-only">Open help</span>
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 18h.01M11 14h1a2 2 0 100-4h-.5a2 2 0 01-2-2V7a2 2 0 012-2h1.5a2 2 0 012 2" />
+              </svg>
+            </button>
           </div>
         </div>
+      </header>
+      <main id="main-content" class="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
+        {% block content %}{% endblock %}
+      </main>
+      <footer class="border-t border-[var(--color-border-muted)] bg-[var(--color-surface-elevated)]">
+        <div class="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 py-4 text-sm text-[var(--color-text-muted)] sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+          <p>&copy; {{ current_year|default(2024) }} Background Remover</p>
+          <p class="flex items-center gap-2">
+            <span class="inline-flex h-2 w-2 rounded-full bg-[var(--color-accent-strong)]"></span>
+            Processing powered by your configured runtime.
+          </p>
+        </div>
+      </footer>
+    </div>
+
+    <div
+      id="help-modal"
+      class="pointer-events-none fixed inset-0 z-50 hidden items-center justify-center bg-[var(--color-overlay)]/60 px-4 py-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="help-modal-title"
+    >
+      <div class="max-h-[85vh] w-full max-w-2xl transform rounded-2xl bg-[var(--color-surface-elevated)] p-6 shadow-2xl transition-all" data-help-modal-panel>
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="help-modal-title" class="text-lg font-semibold text-[var(--color-text-strong)]">Need a quick tour?</h2>
+            <p class="mt-1 text-sm text-[var(--color-text-muted)]">
+              Upload a photo or point to a folder, tweak the options, and let the app remove the background. Tooltips marked with “?” explain each setting in context.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-surface-soft)] text-[var(--color-text-muted)] transition hover:text-[var(--color-text-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-strong)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-elevated)]"
+            data-help-modal-close
+          >
+            <span class="sr-only">Close help</span>
+            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="mt-4 space-y-3 text-sm text-[var(--color-text-muted)]">
+          <p>Switch between single-image and batch folder processing using the tabs on the page. Advanced options are tucked away under an “Advanced refinements” accordion.</p>
+          <p>Use the theme switch in the header to match your environment, and keep an eye on the status banner to see which accelerator is active.</p>
+          <p>If you encounter any issues, error messages appear inline above the relevant form so you can correct them quickly.</p>
+        </div>
+        <div class="mt-6 flex justify-end">
+          <button
+            type="button"
+            class="inline-flex items-center rounded-full bg-[var(--color-accent-strong)] px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--color-accent-strong-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-accent-strong)]"
+            data-help-modal-close
+          >
+            Got it
+          </button>
+        </div>
       </div>
-    </nav>
-    <main class="container py-4">
-      {% block content %}{% endblock %}
-    </main>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-      document.addEventListener('DOMContentLoaded', () => {
-        const themeToggleButton = document.getElementById('theme-toggle');
+    </div>
 
-        if (themeToggleButton) {
-          const THEME_STORAGE_KEY = 'bg-remover-theme';
-          const rootElement = document.documentElement;
+    <div
+      id="toast-region"
+      class="pointer-events-none fixed bottom-4 right-4 z-50 flex w-full max-w-sm flex-col gap-3"
+      aria-live="polite"
+      aria-atomic="true"
+    ></div>
 
-          /**
-           * Apply the requested theme to the root element and update the toggle button label.
-           * @param {string | null} themeName - The desired theme name, "light" or "dark".
-           */
-          const applyTheme = (themeName) => {
-            // Ensure an expected value is always set on the root element.
-            const resolvedTheme = themeName === 'dark' ? 'dark' : 'light';
-            rootElement.setAttribute('data-bs-theme', resolvedTheme);
-            rootElement.style.colorScheme = resolvedTheme;
-            themeToggleButton.setAttribute('aria-pressed', String(resolvedTheme === 'dark'));
-            themeToggleButton.textContent = resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
-          };
-
-          // Load the previously stored theme preference, if any, otherwise fall back to light mode.
-          const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
-          applyTheme(storedTheme);
-
-          themeToggleButton.addEventListener('click', () => {
-            const currentTheme = rootElement.getAttribute('data-bs-theme') === 'dark' ? 'dark' : 'light';
-            const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-            applyTheme(nextTheme);
-            localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
-          });
-        }
-
-        /**
-         * Activate Bootstrap tooltip widgets on every element that declares a tooltip trigger.
-         * The check guards against errors if Bootstrap fails to load.
-         */
-        if (window.bootstrap && typeof window.bootstrap.Tooltip === 'function') {
-          const tooltipTriggerList = Array.from(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-          tooltipTriggerList.forEach((tooltipTriggerEl) => new window.bootstrap.Tooltip(tooltipTriggerEl));
-        }
-      });
-    </script>
+    <script src="{{ url_for('static', filename='js/ui.js') }}" defer></script>
     {% block extra_scripts %}{% endblock %}
   </body>
 </html>

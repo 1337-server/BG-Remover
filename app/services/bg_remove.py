@@ -55,6 +55,92 @@ def _run_session_in_thread(
     return future.result()
 
 
+def _primary_provider(session: Session) -> str:
+    """Return the leading execution provider registered for ``session``."""
+
+    providers = list(getattr(session, "get_providers", lambda: [])())
+    return providers[0] if providers else "CPUExecutionProvider"
+
+
+def _run_with_provider_fallback(
+    session: Session,
+    model_name: str,
+    feed_factory: Callable[[Session], Mapping[str, np.ndarray]],
+    *,
+    output_names: Sequence[str] | None = None,
+    log_event: str = "onnx_inference",
+) -> tuple[list[Any], Session]:
+    """Run inference while retrying on CUDA when TensorRT yields empty outputs."""
+
+    def _log_attempt(provider: str, *, fallback: bool) -> None:
+        _log_json(
+            logging.INFO,
+            f"{log_event}_attempt",
+            model=model_name,
+            provider=provider,
+            fallback=fallback,
+        )
+
+    def _log_success(provider: str, *, fallback: bool) -> None:
+        _log_json(
+            logging.INFO,
+            f"{log_event}_success",
+            model=model_name,
+            provider=provider,
+            fallback=fallback,
+        )
+
+    current_session = session
+    provider_name = _primary_provider(current_session)
+    _log_attempt(provider_name, fallback=False)
+    outputs = _run_session_in_thread(current_session, output_names, feed_factory(current_session))
+    if outputs:
+        _log_success(provider_name, fallback=False)
+        return outputs, current_session
+
+    if provider_name != "TensorrtExecutionProvider":
+        _log_json(
+            logging.ERROR,
+            f"{log_event}_empty_outputs",
+            model=model_name,
+            provider=provider_name,
+            fallback=False,
+        )
+        raise RuntimeError("ONNX Runtime session returned no outputs during inference")
+
+    LOGGER.warning(
+        "TensorRT returned no outputs for %s; attempting CUDAExecutionProvider fallback",
+        _describe_session(current_session),
+    )
+    _log_json(
+        logging.WARNING,
+        f"{log_event}_fallback",
+        model=model_name,
+        provider=provider_name,
+        fallback=True,
+        reason="empty_outputs",
+    )
+
+    fallback_session = _reload_session_with_cuda(current_session, model_name)
+    fallback_provider = _primary_provider(fallback_session)
+    _log_attempt(fallback_provider, fallback=True)
+    outputs = _run_session_in_thread(fallback_session, output_names, feed_factory(fallback_session))
+    if outputs:
+        _log_success(fallback_provider, fallback=True)
+        return outputs, fallback_session
+
+    _log_json(
+        logging.ERROR,
+        f"{log_event}_failed",
+        model=model_name,
+        provider=fallback_provider,
+        fallback=True,
+    )
+    raise RuntimeError(
+        "ONNX Runtime session returned no outputs even after falling back to the CUDA provider"
+    )
+
+
 def _locate_session_context(
     target: Session,
 ) -> tuple[SessionContext | None, tuple[str, int, bool] | None, str | None]:
@@ -517,7 +603,19 @@ def _warm_up_session(context: SessionContext) -> None:
 
     try:
         start = time.perf_counter()
-        _run_inference(dummy_image, context.session, context.model_name, log_timing=False)
+        tensor = _prepare_input_tensor(dummy_image, context.model_name)
+
+        def _build_feed(target_session: Session) -> Mapping[str, np.ndarray]:
+            input_name = target_session.get_inputs()[0].name
+            return {input_name: tensor}
+
+        _unused_outputs, resolved_session = _run_with_provider_fallback(
+            context.session,
+            context.model_name,
+            _build_feed,
+            log_event="onnx_warmup",
+        )
+        context.session = resolved_session
         elapsed_ms = (time.perf_counter() - start) * 1000
         _log_json(
             logging.INFO,
@@ -824,6 +922,23 @@ def _feather_alpha(alpha: np.ndarray, radius: int) -> np.ndarray:
     return blurred.astype(np.uint8)
 
 
+def _prepare_input_tensor(image: Image.Image, model_name: str) -> np.ndarray:
+    """Return a normalised network input tensor for ``model_name``."""
+
+    spec = _get_model_spec(model_name)
+    resized = image.convert("RGB").resize(spec.input_size, Image.Resampling.LANCZOS)
+    np_image = np.asarray(resized, dtype=np.float32)
+    # Maintain the 0-1 scaling expected by U²Net/ISNet models by dividing by a fixed constant.
+    np_image /= 255.0
+
+    normalised = np.empty_like(np_image, dtype=np.float32)
+    for index in range(3):
+        normalised[:, :, index] = (np_image[:, :, index] - spec.mean[index]) / spec.std[index]
+
+    tensor = normalised.transpose((2, 0, 1))[np.newaxis, ...].astype(np.float32)
+    return tensor
+
+
 def _run_inference(
         image: Image.Image,
         session: Session,
@@ -833,37 +948,20 @@ def _run_inference(
 ) -> Image.Image:
     """Execute ONNX Runtime inference and return an alpha mask image."""
 
-    spec = _get_model_spec(model_name)
-    resized = image.convert("RGB").resize(spec.input_size, Image.Resampling.LANCZOS)
-    np_image = np.asarray(resized, dtype=np.float32)
-    # Maintain the 0-1 scaling expected by U²Net/ISNet models by dividing by the
-    # constant 255 rather than the brightest pixel value in the current image.
-    np_image /= 255.0
+    tensor = _prepare_input_tensor(image, model_name)
 
-    normalised = np.empty_like(np_image, dtype=np.float32)
-    for index in range(3):
-        normalised[:, :, index] = (np_image[:, :, index] - spec.mean[index]) / spec.std[index]
-
-    tensor = normalised.transpose((2, 0, 1))[np.newaxis, ...].astype(np.float32)
-    input_name = session.get_inputs()[0].name
-    feed = {input_name: tensor}
+    def _build_feed(target_session: Session) -> Mapping[str, np.ndarray]:
+        input_name = target_session.get_inputs()[0].name
+        return {input_name: tensor}
 
     start = time.perf_counter()
-    outputs = _run_session_in_thread(session, None, feed)
-    if not outputs:
-        LOGGER.warning(
-            "No outputs returned from %s; attempting CUDA provider reload",
-            _describe_session(session),
-        )
-        session = _reload_session_with_cuda(session, model_name)
-        input_name = session.get_inputs()[0].name
-        feed = {input_name: tensor}
-        start = time.perf_counter()
-        outputs = _run_session_in_thread(session, None, feed)
-        if not outputs:
-            raise RuntimeError(
-                "ONNX Runtime session returned no outputs after CUDA provider reload"
-            )
+    outputs, session = _run_with_provider_fallback(
+        session,
+        model_name,
+        _build_feed,
+        log_event="onnx_inference",
+    )
+    feed = _build_feed(session)
     elapsed_ms = (time.perf_counter() - start) * 1000
     if log_timing:
         LOGGER.info("%s inference completed in %.2f ms", _describe_session(session), elapsed_ms)

@@ -309,15 +309,19 @@ def remove_bg_live() -> Response:
 
     job_id = uuid.uuid4().hex
 
-    socketio.start_background_task(
-        _process_live_job,
-        job_id,
-        socket_id,
-        temp_dir,
-        input_path,
-        output_path,
-        options,
-    )
+    try:
+        socketio.start_background_task(
+            _process_live_job,
+            job_id,
+            socket_id,
+            temp_dir,
+            input_path,
+            output_path,
+            options,
+        )
+    except RuntimeError as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return _service_unavailable(str(exc))
 
     return jsonify({"status": "processing", "job_id": job_id})
 
@@ -423,3 +427,10 @@ def _bad_request(message: str) -> Response:
 
     payload = {"error": message}
     return jsonify(payload), 400
+
+
+def _service_unavailable(message: str) -> Response:
+    """Return a 503 response for temporarily unavailable features."""
+
+    payload = {"error": message}
+    return jsonify(payload), 503

@@ -5,7 +5,8 @@ import base64
 import json
 import logging
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,112 @@ else:
 from app.services import accelerator, model_registry, runtime_compat
 
 LOGGER = logging.getLogger(__name__)
+
+_INFERENCE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="onnx-inference")
+
+
+def _run_session_in_thread(
+    session: Session,
+    output_names: Sequence[str] | None,
+    feed: Mapping[str, np.ndarray],
+) -> list[Any]:
+    """Execute ``session.run`` using a native thread pool to avoid Eventlet interference."""
+
+    def _call() -> list[Any]:
+        return session.run(output_names, feed)
+
+    future = _INFERENCE_EXECUTOR.submit(_call)
+    return future.result()
+
+
+def _locate_session_context(
+    target: Session,
+) -> tuple[SessionContext | None, tuple[str, int, bool] | None, str | None]:
+    """Return cached context information for ``target`` if it belongs to a session pool."""
+
+    if _SESSION_CONTEXT is not None and _SESSION_CONTEXT.session is target:
+        return _SESSION_CONTEXT, _SESSION_CONFIG_SIGNATURE, _SESSION_CONTEXT.model_name
+
+    for signature, pool in _SESSION_POOLS.items():
+        for model_name, context in pool.items():
+            if context.session is target:
+                return context, signature, model_name
+
+    return None, None, None
+
+
+def _reload_session_with_cuda(session: Session, model_name: str) -> Session:
+    """Reload ``session`` with a CUDA provider when inference outputs are empty."""
+
+    context, _unused_signature, cached_name = _locate_session_context(session)
+    resolved_model = cached_name or model_name
+    device_id = context.device_id if context is not None else 0
+    previous_provider = context.provider if context is not None else None
+
+    _log_json(
+        logging.WARNING,
+        "onnx_provider_fallback",
+        model=resolved_model,
+        previous_provider=previous_provider,
+        action="reload_cuda",
+    )
+
+    try:
+        model_registry.preload_models(
+            config={"BG_ACCELERATOR": "cuda", "BG_CUDA_DEVICE_ID": device_id},
+            model_names=(resolved_model,),
+            warm=False,
+        )
+    except Exception as exc:  # pragma: no cover - dependent on runtime environment
+        _log_json(
+            logging.ERROR,
+            "onnx_provider_fallback_failed",
+            model=resolved_model,
+            previous_provider=previous_provider,
+            error=str(exc),
+        )
+        raise
+
+    new_session = model_registry.get_session(resolved_model)
+    if new_session is None:
+        raise RuntimeError("Unable to obtain a CUDA-enabled ONNX Runtime session during fallback")
+
+    providers = list(getattr(new_session, "get_providers", lambda: [])())
+    provider_name = providers[0] if providers else "CPUExecutionProvider"
+    runtime = "cuda" if provider_name in {"CUDAExecutionProvider", "TensorrtExecutionProvider"} else "cpu"
+    available_providers = model_registry.get_available_providers()
+
+    old_identifier = id(session)
+    _SESSION_METADATA.pop(old_identifier, None)
+
+    if context is not None:
+        with _POOL_LOCK:
+            context.session = new_session
+            context.provider = provider_name
+            context.runtime = runtime
+            context.providers_available = available_providers or context.providers_available
+            context.gpu_available = runtime == "cuda"
+            if runtime == "cuda":
+                context.warning = None
+                context.accelerator_message = None
+        _register_session_context(context)
+    else:
+        _SESSION_METADATA[id(new_session)] = {
+            "model": resolved_model,
+            "provider": provider_name,
+            "runtime": runtime,
+        }
+
+    _log_json(
+        logging.INFO,
+        "onnx_provider_fallback_complete",
+        model=resolved_model,
+        provider=provider_name,
+        runtime=runtime,
+        providers_available=available_providers,
+    )
+
+    return new_session
 
 ProgressCallback = Callable[[str, float], None]
 PreviewCallback = Callable[[Image.Image, str], None]
@@ -742,7 +849,21 @@ def _run_inference(
     feed = {input_name: tensor}
 
     start = time.perf_counter()
-    outputs = session.run(None, feed)
+    outputs = _run_session_in_thread(session, None, feed)
+    if not outputs:
+        LOGGER.warning(
+            "No outputs returned from %s; attempting CUDA provider reload",
+            _describe_session(session),
+        )
+        session = _reload_session_with_cuda(session, model_name)
+        input_name = session.get_inputs()[0].name
+        feed = {input_name: tensor}
+        start = time.perf_counter()
+        outputs = _run_session_in_thread(session, None, feed)
+        if not outputs:
+            raise RuntimeError(
+                "ONNX Runtime session returned no outputs after CUDA provider reload"
+            )
     elapsed_ms = (time.perf_counter() - start) * 1000
     if log_timing:
         LOGGER.info("%s inference completed in %.2f ms", _describe_session(session), elapsed_ms)
@@ -768,7 +889,10 @@ def _run_inference(
     if primary_output is None:
         output_names = [meta.name for meta in getattr(session, "get_outputs", lambda: [])()]
         if output_names:
-            primary_output = _select_primary_output(session.run(output_names, feed))
+            named_outputs = _run_session_in_thread(session, output_names, feed)
+            if not named_outputs:
+                raise RuntimeError("ONNX Runtime session returned no named outputs during inference")
+            primary_output = _select_primary_output(named_outputs)
     if primary_output is None:
         raise RuntimeError("ONNX Runtime session returned no outputs during inference")
 

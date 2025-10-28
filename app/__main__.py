@@ -1,11 +1,11 @@
-"""Development server entry point for the Flask-SocketIO web UI."""
+"""Module entry point for ``python -m app``."""
 from __future__ import annotations
 
 from app.runner import run_socketio_server
 
 
 def main() -> None:
-    """Start the Socket.IO-enabled development server."""
+    """Execute the Socket.IO web server when the package is run as a module."""
 
     run_socketio_server()
 

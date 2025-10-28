@@ -1,0 +1,121 @@
+/* Styles for contextual help hints on the background removal page. */
+
+.help-icon {
+  --help-icon-size: 1.9rem;
+  align-items: center;
+  background-color: var(--bs-body-bg);
+  border: 1px solid var(--bs-border-color-translucent);
+  border-radius: 50%;
+  color: var(--bs-body-color);
+  display: inline-flex;
+  font-weight: 600;
+  height: var(--help-icon-size);
+  justify-content: center;
+  line-height: 1;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  width: var(--help-icon-size);
+}
+
+.help-icon:focus,
+.help-icon:hover {
+  background-color: var(--bs-primary-bg-subtle);
+  border-color: var(--bs-primary);
+  color: var(--bs-primary-text-emphasis);
+  text-decoration: none;
+}
+
+[data-bs-theme='dark'] .help-icon {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: var(--bs-light);
+}
+
+.help-icon span[aria-hidden='true'] {
+  font-size: 0.95rem;
+}
+
+.help-tooltip {
+  --bs-tooltip-max-width: 22rem;
+  --bs-tooltip-font-size: 0.875rem;
+  --bs-tooltip-padding-y: 0.75rem;
+  --bs-tooltip-padding-x: 0.85rem;
+  --bs-tooltip-bg: rgba(33, 37, 41, 0.95);
+  --bs-tooltip-color: #f8f9fa;
+}
+
+[data-bs-theme='dark'] .help-tooltip {
+  --bs-tooltip-bg: rgba(248, 249, 250, 0.95);
+  --bs-tooltip-color: #1b1f24;
+}
+
+.help-tooltip .tooltip-inner {
+  text-align: left;
+}
+
+.help-hints-hidden [data-help-element] {
+  display: none !important;
+}
+
+.learn-more-box {
+  background-color: var(--bs-secondary-bg);
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  padding: 0.75rem 1rem;
+}
+
+.learn-more-box summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  list-style: none;
+}
+
+.learn-more-box summary::-webkit-details-marker {
+  display: none;
+}
+
+.learn-more-box[open] {
+  box-shadow: 0 0 0 0.15rem rgba(13, 110, 253, 0.1);
+}
+
+.learn-more-box summary::after,
+.advanced-options > summary::after {
+  content: '▾';
+  font-size: 0.85rem;
+  margin-left: auto;
+  transition: transform 0.2s ease;
+}
+
+.learn-more-box[open] summary::after,
+.advanced-options[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.advanced-options {
+  border: 1px dashed var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  overflow: hidden;
+}
+
+.advanced-options > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.75rem 1rem;
+}
+
+.advanced-options > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-options[open] > summary {
+  border-bottom: 1px dashed var(--bs-border-color);
+}
+
+.advanced-options > div {
+  padding: 0.75rem 1rem;
+}
+
+#single-preview-container {
+  transition: max-width 0.2s ease;
+}

@@ -26,6 +26,7 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
+from app.services import runtime_compat
 from app.services.bg_remove import (
     OUTPUT_FORMATS,
     RemovalResult,
@@ -61,12 +62,30 @@ FORMAT_OPTIONS = [
     for spec in OUTPUT_FORMATS
 ]
 DEFAULT_OUTPUT_FORMAT_KEY = get_output_format_spec(None).key
+REMOVAL_MODEL_OPTIONS = [
+    {"key": "general", "label": "General Model", "model_name": "isnet-general-use"},
+    {"key": "human", "label": "Human Model", "model_name": "u2net_human_seg"},
+    {"key": "object", "label": "Object Model", "model_name": "u2net"},
+    {"key": "anime", "label": "Anime / Illustration Model", "model_name": "isnet-anime"},
+]
+_REMOVAL_MODEL_LOOKUP: Dict[str, str] = {
+    option["key"]: option["model_name"] for option in REMOVAL_MODEL_OPTIONS
+}
+DEFAULT_REMOVAL_MODEL_KEY = REMOVAL_MODEL_OPTIONS[0]["key"]
+HARDWARE_ACCELERATOR_OPTIONS = [
+    {"key": "auto", "label": "Auto (recommended)"},
+    {"key": "gpu", "label": "GPU"},
+    {"key": "cpu", "label": "CPU"},
+]
+DEFAULT_HARDWARE_ACCELERATOR_KEY = HARDWARE_ACCELERATOR_OPTIONS[0]["key"]
 DEFAULT_SINGLE_OPTIONS: Dict[str, Any] = {
     "am_foreground": 240,
     "am_background": 10,
     "am_erode": 10,
     "colorkey_tolerance": 14,
     "feather_radius": 3,
+    "removal_model": DEFAULT_REMOVAL_MODEL_KEY,
+    "hardware_accelerator": DEFAULT_HARDWARE_ACCELERATOR_KEY,
 }
 DEFAULT_CHECKBOX_OPTIONS: Dict[str, bool] = {
     # UI toggles that have sensible disabled defaults.
@@ -127,7 +146,9 @@ def remove_bg_view() -> Response:
             "image_remove_bg.html",
             defaults=defaults,
             format_options=FORMAT_OPTIONS,
-            accelerator_runtime=runtime_info,
+            removal_model_options=REMOVAL_MODEL_OPTIONS,
+            hardware_accelerator_options=HARDWARE_ACCELERATOR_OPTIONS,
+            gpu_available=runtime_compat.has_cuda_support(),
         )
 
     form = request.form
@@ -138,6 +159,22 @@ def remove_bg_view() -> Response:
         format_spec = get_output_format_spec(form.get("output_format"))
     except ValueError as exc:
         return _bad_request(str(exc))
+
+    removal_model_key = (form.get("removal_model") or DEFAULT_REMOVAL_MODEL_KEY).strip().lower()
+    model_name = _REMOVAL_MODEL_LOOKUP.get(removal_model_key, _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY])
+    hardware_accelerator = (form.get("hardware_accelerator") or DEFAULT_HARDWARE_ACCELERATOR_KEY).strip().lower()
+    if hardware_accelerator not in {option["key"] for option in HARDWARE_ACCELERATOR_OPTIONS}:
+        hardware_accelerator = DEFAULT_HARDWARE_ACCELERATOR_KEY
+
+    preview_size = None
+    preview_size_raw = form.get("preview_size")
+    if preview_size_raw:
+        try:
+            preview_size = int(preview_size_raw)
+        except (TypeError, ValueError):
+            preview_size = None
+
+    gpu_available = runtime_compat.has_cuda_support()
 
     json_requested = request.args.get("json") == "1"
 
@@ -153,6 +190,8 @@ def remove_bg_view() -> Response:
                 folder_path,
                 output_dir,
                 output_format=format_spec.key,
+                model_name=model_name,
+                hardware_accelerator=hardware_accelerator,
                 recursive=recursive,
                 alpha_matting=options["alpha_matting"],
                 am_foreground=options["am_foreground"],
@@ -167,7 +206,14 @@ def remove_bg_view() -> Response:
         runtime_info = get_runtime_payload()
         payload = _serialise_results(results)
         payload["selected_format"] = format_spec.key
-        payload.update(runtime_info)
+        payload["selection"] = {
+            "removal_model": removal_model_key,
+            "model_name": model_name,
+            "hardware_accelerator": hardware_accelerator,
+            "gpu_available": gpu_available,
+            "output_directory": output_dir,
+            "preview_size": preview_size,
+        }
 
         if request.args.get("zip") == "1":
             try:
@@ -186,12 +232,24 @@ def remove_bg_view() -> Response:
     temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_"))
     input_path = temp_dir / filename
     file_storage.save(input_path)
-    output_path = format_spec.normalise_filename(temp_dir / input_path.stem)
+    persistent_output_dir: Path | None = None
+    single_output_dir_text = (form.get("single_output_dir") or "").strip()
+    output_base = temp_dir / input_path.stem
+    if single_output_dir_text:
+        candidate = Path(single_output_dir_text).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        persistent_output_dir = candidate
+        output_base = candidate / input_path.stem
+
+    output_path = format_spec.normalise_filename(output_base)
     download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
 
     result = remove_bg_file(
         input_path,
         output_path,
+        model_name=model_name,
+        hardware_accelerator=hardware_accelerator,
         alpha_matting=options["alpha_matting"],
         am_foreground=options["am_foreground"],
         am_background=options["am_background"],
@@ -215,6 +273,14 @@ def remove_bg_view() -> Response:
             "mime_type": format_spec.mime_type,
             "download_name": download_name,
             "format": format_spec.key,
+            "selection": {
+                "removal_model": removal_model_key,
+                "model_name": model_name,
+                "hardware_accelerator": hardware_accelerator,
+                "gpu_available": gpu_available,
+                "preview_size": preview_size,
+                "output_directory": str(persistent_output_dir) if persistent_output_dir else None,
+            },
         }
         response_data.update(runtime_info)
         shutil.rmtree(temp_dir, ignore_errors=True)

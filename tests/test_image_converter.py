@@ -102,9 +102,12 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
     assert payload["download_name"].endswith(".png")
     assert payload["result"]["success"] is True
     assert payload["image_base64"] == "cG5n"
-    assert payload["runtime"] == "cuda"
-    assert payload["gpu_name"] == "Test GPU"
-    assert payload.get("warning") is None
+    assert "selection" in payload
+    selection = payload["selection"]
+    assert selection["removal_model"] == image_converter.DEFAULT_REMOVAL_MODEL_KEY
+    assert selection["hardware_accelerator"] == image_converter.DEFAULT_HARDWARE_ACCELERATOR_KEY
+    assert selection["output_directory"] is None
+    assert selection["preview_size"] is None
 
 
 def test_single_image_post_requires_file() -> None:

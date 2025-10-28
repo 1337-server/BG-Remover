@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Remove Background{% endblock %}
+{% block extra_head %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/help_tips.css') }}">
+{% endblock %}
 {% block content %}
 {% set runtime = accelerator_runtime or {} %}
 <div class="mb-3">
@@ -33,7 +37,21 @@
     </ul>
     <div class="tab-content pt-3">
       <div class="tab-pane fade show active" id="single" role="tabpanel" aria-labelledby="single-tab">
-        <form id="single-form" enctype="multipart/form-data" class="needs-validation" novalidate>
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+          <h2 class="h4 mb-0">Single Image</h2>
+          <div class="form-check form-switch" data-help-toggle>
+            <input class="form-check-input" type="checkbox" id="single-help-toggle" checked>
+            <label class="form-check-label" for="single-help-toggle">Show help hints</label>
+          </div>
+        </div>
+        <form
+          id="single-form"
+          enctype="multipart/form-data"
+          class="needs-validation"
+          novalidate
+          data-help-container
+          data-gpu-available="{{ 'true' if gpu_available else 'false' }}"
+        >
           <div
             class="alert alert-danger d-none"
             id="single-form-alert"
@@ -43,62 +61,217 @@
             tabindex="-1"
           ></div>
           <div class="mb-3">
-            <label class="form-label" for="single-file">Image file</label>
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Upload your image</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Choose any photo you want to process. The system will detect the subject and remove the background automatically.</p><p class='mb-2'>Supported formats: <strong>JPG</strong>, <strong>PNG</strong>, and <strong>WebP</strong>. Transparent images are supported too.</p><p class='mb-0'>For best results, use clear, well-lit photos where the main subject is easy to see.</p>"
+                aria-label="Help: Upload your image"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
             <input class="form-control" type="file" id="single-file" name="image_file" accept="image/*" required>
             <div class="invalid-feedback">Please choose an image to upload.</div>
           </div>
           <div class="mb-3">
-            <label class="form-label" for="single-format">Output format</label>
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Removal Model</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Determines the method used to separate the subject from the background.</p><ul class='mb-0 ps-3'><li><strong>General Model</strong> – works for most photos (people, animals, objects).</li><li><strong>Human Model</strong> – best when the main subject is a person.</li><li><strong>Object Model</strong> – optimised for products or isolated objects.</li><li><strong>Anime / Illustration Model</strong> – tuned for drawn or digital images.</li></ul><p class='mb-0 mt-2'>A more advanced model may take longer to process but often gives a cleaner edge.</p>"
+                aria-label="Help: Removal Model"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <select class="form-select" id="single-model" name="removal_model">
+              {% for option in removal_model_options %}
+              <option value="{{ option.key }}" {% if option.key == defaults.removal_model %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Hardware Accelerator</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>If your computer or server has an NVIDIA GPU, the app can use it to make removal much faster.</p><ul class='mb-0 ps-3'><li><strong>Auto</strong> – detects the best option automatically (GPU if available, otherwise CPU).</li><li><strong>GPU</strong> – forces GPU use.</li><li><strong>CPU</strong> – runs on your processor only (slower but works everywhere).</li></ul><p class='mb-0 mt-2'>A yellow warning will appear if the GPU is unavailable and the app switches to CPU.</p>"
+                aria-label="Help: Hardware Accelerator"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <select class="form-select" id="single-hardware" name="hardware_accelerator">
+              {% for option in hardware_accelerator_options %}
+              <option value="{{ option.key }}" {% if option.key == defaults.hardware_accelerator %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+            <div class="alert alert-warning d-none mt-2" id="single-hardware-warning" role="alert">
+              💡 <strong>Heads up:</strong> GPU acceleration isn't available right now, so the app will fall back to CPU processing.
+            </div>
+          </div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Final File Type</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Choose how your processed image will be saved:</p><ul class='mb-0 ps-3'><li><strong>PNG (transparent)</strong> – keeps transparency so you can layer it over other backgrounds.</li><li><strong>JPG (white background)</strong> – smaller file size but no transparency.</li><li><strong>WEBP</strong> – modern format with excellent compression and transparency support.</li></ul><p class='mb-0 mt-2'>Pick PNG if you plan to edit or overlay the result later.</p>"
+                aria-label="Help: Final File Type"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
             <select class="form-select" id="single-format" name="output_format">
               {% for option in format_options %}
               <option value="{{ option.key }}" data-extension="{{ option.extension }}" {% if option.key == defaults.output_format %}selected{% endif %}>{{ option.label }}</option>
               {% endfor %}
             </select>
           </div>
-          <div class="form-check form-switch mb-3">
-            <input class="form-check-input" type="checkbox" id="single-alpha" name="alpha_matting" value="1" {% if defaults.alpha_matting %}checked{% endif %}>
-            <label class="form-check-label" for="single-alpha">Alpha matting (better hair/edges)</label>
-          </div>
-          <div class="row g-3">
-            <div class="col-md-4">
-              <label class="form-label" for="single-foreground">Alpha matting foreground</label>
-              <input class="form-control" type="number" id="single-foreground" name="am_foreground" min="0" max="255" value="{{ defaults.am_foreground }}">
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Preview Size</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Controls how large the preview will be.</p><p class='mb-2'>Lower resolutions load faster but may look slightly blurred.</p><p class='mb-0'>This does not change the quality of your final saved image — it only affects what you see on screen.</p>"
+                aria-label="Help: Preview Size"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
             </div>
-            <div class="col-md-4">
-              <label class="form-label" for="single-background">Alpha matting background</label>
-              <input class="form-control" type="number" id="single-background" name="am_background" min="0" max="255" value="{{ defaults.am_background }}">
-            </div>
-            <div class="col-md-4">
-              <label class="form-label" for="single-erode">Alpha matting erode size</label>
-              <input class="form-control" type="number" id="single-erode" name="am_erode" min="0" max="255" value="{{ defaults.am_erode }}">
-            </div>
-          </div>
-          <div class="row g-3 mt-1">
-            <div class="col-md-6">
-              <label class="form-label" for="single-tolerance">Color-key tolerance</label>
-              <input class="form-control" type="number" id="single-tolerance" name="colorkey_tolerance" min="0" max="255" value="{{ defaults.colorkey_tolerance }}">
-            </div>
-            <div class="col-md-6">
-              <label class="form-label" for="single-feather">Feather radius</label>
-              <input class="form-control" type="number" id="single-feather" name="feather_radius" min="0" max="50" value="{{ defaults.feather_radius }}">
+            <input class="form-range" type="range" id="single-preview-size" name="preview_size" min="320" max="1280" step="160" value="1024">
+            <div class="form-text" data-help-element>
+              Preview displayed at <span id="single-preview-size-label">1024&nbsp;px</span> on the longest edge.
             </div>
           </div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Edge Smoothing</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Adjusts how soft or sharp the edges of the cut-out appear.</p><ul class='mb-0 ps-3'><li>Lower values = sharp edges (good for clean product photos).</li><li>Higher values = softer blending (good for portraits or hair).</li></ul><p class='mb-0 mt-2'>Use this if the outline of the subject looks too harsh or jagged.</p>"
+                aria-label="Help: Edge Smoothing"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <input class="form-range" type="range" id="single-feather" name="feather_radius" min="0" max="50" step="1" value="{{ defaults.feather_radius }}">
+            <div class="d-flex justify-content-between small text-muted">
+              <span>Sharper</span>
+              <span>Current: <span id="single-feather-value">{{ defaults.feather_radius }}</span></span>
+              <span>Softer</span>
+            </div>
+          </div>
+          <div class="mb-4">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Output Folder</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Where the processed image will be saved on your system.</p><p class='mb-2'>You can choose any folder with write permissions.</p><p class='mb-0'>The app will automatically add a “_no_bg” suffix to the filename.</p>"
+                aria-label="Help: Output Folder"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <input class="form-control" type="text" id="single-output-dir" name="single_output_dir" placeholder="e.g. ~/Pictures/Background-Free" autocomplete="off">
+            <div class="form-text" data-help-element>Leave blank if you prefer to choose the location manually when downloading.</div>
+          </div>
+          <details class="advanced-options mt-4">
+            <summary class="fw-semibold">Advanced refinements</summary>
+            <div>
+              <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" id="single-alpha" name="alpha_matting" value="1" {% if defaults.alpha_matting %}checked{% endif %}>
+                <label class="form-check-label" for="single-alpha">Alpha matting (better hair/edges)</label>
+              </div>
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label" for="single-foreground">Alpha matting foreground</label>
+                  <input class="form-control" type="number" id="single-foreground" name="am_foreground" min="0" max="255" value="{{ defaults.am_foreground }}">
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label" for="single-background">Alpha matting background</label>
+                  <input class="form-control" type="number" id="single-background" name="am_background" min="0" max="255" value="{{ defaults.am_background }}">
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label" for="single-erode">Alpha matting erode size</label>
+                  <input class="form-control" type="number" id="single-erode" name="am_erode" min="0" max="255" value="{{ defaults.am_erode }}">
+                </div>
+              </div>
+              <div class="row g-3 mt-3">
+                <div class="col-md-6">
+                  <label class="form-label" for="single-tolerance">Color-key tolerance</label>
+                  <input class="form-control" type="number" id="single-tolerance" name="colorkey_tolerance" min="0" max="255" value="{{ defaults.colorkey_tolerance }}">
+                </div>
+              </div>
+            </div>
+          </details>
+          <details class="learn-more-box mt-4" data-help-element>
+            <summary class="fw-semibold">💡 How it Works</summary>
+            <div class="pt-3">
+              <p>When you upload a photo, an AI model analyzes every pixel to find the main subject (for example, a person or an object) and separates it from the background.</p>
+              <p>It then creates a new image with the background removed — usually transparent — so you can reuse it anywhere (design projects, thumbnails, product listings, etc.).</p>
+              <p>If you have a GPU, the process runs on your graphics card, which can be 5-10× faster. If not, it runs on your CPU — slower, but identical in quality.</p>
+              <p class="mb-0">You can experiment with the settings above. Nothing is permanent until you save the result, so feel free to try different models and edge smoothness levels to see what looks best.</p>
+            </div>
+          </details>
           <div class="mt-4 d-flex gap-2">
             <button class="btn btn-primary" type="submit">Remove background</button>
             <div class="spinner-border text-primary d-none" id="single-spinner" role="status" aria-hidden="true"></div>
           </div>
         </form>
-<div class="mt-4" id="single-result" hidden>
-  <h2 class="h5">Result</h2>
-  <div class="checkerboard rounded p-3">
-    <img id="single-preview" alt="Processed preview" class="img-fluid rounded" />
-  </div>
-  <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
-    <a class="btn btn-success d-none" id="single-download" href="#" download>Download result</a>
-    <span class="text-muted" id="single-status-text"></span>
-  </div>
-  <pre class="mt-3 bg-light p-3 rounded" id="single-summary"></pre>
-</div>
+        <div class="mt-4" id="single-result" hidden>
+          <h2 class="h5">Result</h2>
+          <div class="checkerboard rounded p-3" id="single-preview-container">
+            <img id="single-preview" alt="Processed preview" class="img-fluid rounded" />
+          </div>
+          <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+            <a class="btn btn-success d-none" id="single-download" href="#" download>Download result</a>
+            <span class="text-muted" id="single-status-text"></span>
+          </div>
+          <pre class="mt-3 bg-light p-3 rounded" id="single-summary"></pre>
+        </div>
       </div>
       <div class="tab-pane fade" id="folder" role="tabpanel" aria-labelledby="folder-tab">
         <form id="folder-form" novalidate>
@@ -390,6 +563,100 @@
     const singleAlert = document.getElementById('single-form-alert');
     const singleAlertManager = createAlertManager(singleAlert);
 
+    const helpToggle = document.getElementById('single-help-toggle');
+    let tooltipInstances = [];
+    if (typeof bootstrap !== 'undefined' && bootstrap?.Tooltip) {
+      tooltipInstances = Array.from(document.querySelectorAll('#single [data-bs-toggle="tooltip"]')).map(
+        (element) => new bootstrap.Tooltip(element),
+      );
+    }
+
+    const toggleHelpHints = (enabled) => {
+      if (!singleForm) {
+        return;
+      }
+      singleForm.classList.toggle('help-hints-hidden', !enabled);
+      tooltipInstances.forEach((tooltip) => {
+        if (!tooltip) {
+          return;
+        }
+        if (enabled) {
+          tooltip.enable();
+        } else {
+          tooltip.hide();
+          tooltip.disable();
+        }
+      });
+    };
+
+    if (helpToggle) {
+      toggleHelpHints(helpToggle.checked);
+      helpToggle.addEventListener('change', (event) => {
+        toggleHelpHints(event.target.checked);
+      });
+    } else {
+      toggleHelpHints(true);
+    }
+
+    const hardwareSelect = document.getElementById('single-hardware');
+    const hardwareWarning = document.getElementById('single-hardware-warning');
+    const gpuAvailable = (singleForm?.dataset?.gpuAvailable || '').toLowerCase() === 'true';
+
+    const updateHardwareWarning = () => {
+      if (!hardwareSelect || !hardwareWarning) {
+        return;
+      }
+      const shouldWarn = !gpuAvailable && hardwareSelect.value === 'gpu';
+      hardwareWarning.classList.toggle('d-none', !shouldWarn);
+    };
+
+    if (hardwareSelect) {
+      hardwareSelect.addEventListener('change', updateHardwareWarning);
+      updateHardwareWarning();
+    }
+
+    const previewSizeInput = document.getElementById('single-preview-size');
+    const previewSizeLabel = document.getElementById('single-preview-size-label');
+    const previewContainer = document.getElementById('single-preview-container');
+
+    const applyPreviewSize = () => {
+      if (!previewSizeInput) {
+        return;
+      }
+      const value = Number(previewSizeInput.value) || 0;
+      if (previewSizeLabel) {
+        previewSizeLabel.textContent = value ? `${value} px` : 'Auto';
+      }
+      const sizeText = value > 0 ? `${value}px` : '';
+      if (previewContainer) {
+        previewContainer.style.maxWidth = sizeText;
+      }
+      if (singlePreview) {
+        singlePreview.style.maxWidth = sizeText;
+      }
+    };
+
+    if (previewSizeInput) {
+      previewSizeInput.addEventListener('input', applyPreviewSize);
+      previewSizeInput.addEventListener('change', applyPreviewSize);
+      applyPreviewSize();
+    }
+
+    const edgeSlider = document.getElementById('single-feather');
+    const edgeValueLabel = document.getElementById('single-feather-value');
+
+    const syncEdgeValue = () => {
+      if (edgeSlider && edgeValueLabel) {
+        edgeValueLabel.textContent = edgeSlider.value;
+      }
+    };
+
+    if (edgeSlider) {
+      edgeSlider.addEventListener('input', syncEdgeValue);
+      edgeSlider.addEventListener('change', syncEdgeValue);
+      syncEdgeValue();
+    }
+
     let downloadObjectUrl = null;
     let activeFilename = 'image';
 
@@ -486,13 +753,18 @@
           } else if (singlePreview) {
             singlePreview.removeAttribute('src');
           }
+          applyPreviewSize();
 
           singleResult.hidden = false;
           if (singleStatusText) {
             singleStatusText.textContent = describeStatus(payload.result);
           }
           if (payload.result) {
-            singleSummary.textContent = JSON.stringify(payload.result, null, 2);
+            const summaryData = { ...payload.result };
+            if (payload.selection) {
+              summaryData.selection = payload.selection;
+            }
+            singleSummary.textContent = JSON.stringify(summaryData, null, 2);
           } else {
             singleSummary.textContent = 'Background removal completed successfully.';
           }

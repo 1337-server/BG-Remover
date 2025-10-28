@@ -55,10 +55,24 @@
             <div class="spinner-border text-primary d-none" id="single-spinner" role="status" aria-hidden="true"></div>
           </div>
         </form>
+        <div class="mt-4" id="single-preview-section" hidden>
+          <h2 class="h5">Live Preview</h2>
+          <div class="checkerboard rounded p-3 mb-3">
+            <img id="single-live-preview" alt="Live preview" class="img-fluid rounded" />
+          </div>
+          <div class="progress">
+            <div class="progress-bar" id="single-progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%">0%</div>
+          </div>
+          <p class="text-muted mt-2 mb-0" id="single-progress-text">Waiting for updates…</p>
+        </div>
         <div class="mt-4" id="single-result" hidden>
           <h2 class="h5">Result</h2>
           <div class="checkerboard rounded p-3">
             <img id="single-preview" alt="Processed preview" class="img-fluid rounded" />
+          </div>
+          <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+            <a class="btn btn-success d-none" id="single-download" href="#" download>Download PNG</a>
+            <span class="text-muted" id="single-result-stage"></span>
           </div>
           <pre class="mt-3 bg-light p-3 rounded" id="single-summary"></pre>
         </div>
@@ -151,6 +165,7 @@
 </div>
 {% endblock %}
 {% block extra_scripts %}
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js" integrity="sha384-wU+V1YxAECEV4VpWw2X2gYdEx+kt1/3uzMdGII4XESyqCCpt5TR1+t0NenE2noKG" crossorigin="anonymous"></script>
 <script>
   document.addEventListener('DOMContentLoaded', () => {
     const defaults = {{ defaults|tojson }};
@@ -170,11 +185,133 @@
       element.classList.toggle('d-none', !show);
     };
 
+    const formatStage = (stage) => {
+      if (!stage) {
+        return '';
+      }
+      return stage
+        .toString()
+        .split('_')
+        .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+        .join(' ');
+    };
+
     const singleForm = document.getElementById('single-form');
     const singleSpinner = document.getElementById('single-spinner');
     const singleResult = document.getElementById('single-result');
     const singlePreview = document.getElementById('single-preview');
     const singleSummary = document.getElementById('single-summary');
+    const singlePreviewSection = document.getElementById('single-preview-section');
+    const singleLivePreview = document.getElementById('single-live-preview');
+    const singleProgressBar = document.getElementById('single-progress-bar');
+    const singleProgressText = document.getElementById('single-progress-text');
+    const singleResultStage = document.getElementById('single-result-stage');
+    const singleDownload = document.getElementById('single-download');
+    const singleFileInput = document.getElementById('single-file');
+
+    let socketId = null;
+    let currentJobId = null;
+    let downloadObjectUrl = null;
+    let activeFilename = 'image';
+
+    const socket = io('/ws/background-preview');
+
+    const clearDownloadUrl = () => {
+      if (downloadObjectUrl) {
+        URL.revokeObjectURL(downloadObjectUrl);
+        downloadObjectUrl = null;
+      }
+      singleDownload.classList.add('d-none');
+      singleDownload.removeAttribute('href');
+    };
+
+    const updateProgress = (percent, stage) => {
+      const numeric = Number(percent) || 0;
+      singleProgressBar.style.width = `${numeric}%`;
+      singleProgressBar.setAttribute('aria-valuenow', numeric.toFixed(0));
+      singleProgressBar.textContent = `${numeric.toFixed(0)}%`;
+      singleProgressText.textContent = stage ? `Stage: ${formatStage(stage)}` : 'Processing…';
+    };
+
+    const setLivePreview = (base64Image) => {
+      singlePreviewSection.hidden = false;
+      singleLivePreview.src = `data:image/png;base64,${base64Image}`;
+    };
+
+    const setFinalPreview = (base64Image, mimeType) => {
+      const finalMime = mimeType || 'image/png';
+      singlePreview.src = `data:${finalMime};base64,${base64Image}`;
+      singleResult.hidden = false;
+
+      clearDownloadUrl();
+      const binary = atob(base64Image);
+      const buffer = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        buffer[index] = binary.charCodeAt(index);
+      }
+      const blob = new Blob([buffer], { type: finalMime });
+      downloadObjectUrl = URL.createObjectURL(blob);
+      const baseName = activeFilename.replace(/\.[^./]+$/, '');
+      singleDownload.href = downloadObjectUrl;
+      singleDownload.download = `${baseName || 'image'}_no_bg.png`;
+      singleDownload.classList.remove('d-none');
+    };
+
+    socket.on('connect', () => {
+      socketId = socket.id;
+    });
+
+    socket.on('disconnect', () => {
+      socketId = null;
+    });
+
+    socket.on('progress', (payload) => {
+      if (!currentJobId || payload.job_id !== currentJobId) {
+        return;
+      }
+      updateProgress(payload.percent, payload.stage);
+    });
+
+    socket.on('preview', (payload) => {
+      if (!currentJobId || payload.job_id !== currentJobId || !payload.image) {
+        return;
+      }
+      setLivePreview(payload.image);
+      if (payload.stage) {
+        singleResultStage.textContent = `Latest stage: ${formatStage(payload.stage)}`;
+      }
+    });
+
+    socket.on('completed', (payload) => {
+      if (!currentJobId || payload.job_id !== currentJobId) {
+        return;
+      }
+      showSpinner(singleSpinner, false);
+      updateProgress(100, 'complete');
+      singleProgressText.textContent = 'Processing complete.';
+      singleResultStage.textContent = 'Background removal completed successfully.';
+      if (payload.image) {
+        setLivePreview(payload.image);
+        setFinalPreview(payload.image, payload.mime_type);
+      }
+      if (payload.result) {
+        singleSummary.textContent = JSON.stringify(payload.result, null, 2);
+      } else {
+        singleSummary.textContent = 'Background removal completed successfully.';
+      }
+      currentJobId = null;
+    });
+
+    socket.on('error', (payload) => {
+      if (!currentJobId || payload.job_id !== currentJobId) {
+        return;
+      }
+      showSpinner(singleSpinner, false);
+      singleProgressText.textContent = `Error: ${payload.message}`;
+      singleResultStage.textContent = `Error: ${payload.message}`;
+      currentJobId = null;
+      alert(payload.message || 'Background removal failed.');
+    });
 
     singleForm.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -183,49 +320,60 @@
         return;
       }
 
+      if (!socketId) {
+        alert('Connecting to the live preview channel. Please try again in a moment.');
+        return;
+      }
+
+      const file = singleFileInput.files && singleFileInput.files[0];
+      if (!file) {
+        alert('Please choose an image to upload.');
+        return;
+      }
+
+      activeFilename = file.name || 'image';
+      currentJobId = null;
+      singleResult.hidden = true;
+      singlePreviewSection.hidden = false;
+      singleSummary.textContent = '';
+      singleResultStage.textContent = '';
+      clearDownloadUrl();
+      updateProgress(0, 'queued');
+      singleProgressText.textContent = 'Uploading image…';
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          singleLivePreview.src = reader.result;
+        }
+      };
+      reader.readAsDataURL(file);
+
       const formData = new FormData(singleForm);
+      formData.append('socket_id', socketId);
+
       showSpinner(singleSpinner, true);
+
       try {
-        const response = await fetch('/image/remove-bg', {
+        const response = await fetch('/image/remove-bg/live', {
           method: 'POST',
           body: formData,
         });
 
         if (!response.ok) {
           const errorPayload = await response.json().catch(() => null);
-          const message = errorPayload?.error || 'Background removal failed.';
+          const message = errorPayload?.error || 'Background removal failed to start.';
           throw new Error(message);
         }
 
-        const blob = await response.blob();
-        const resultHeader = response.headers.get('X-Removal-Result');
-        let resultData = null;
-        if (resultHeader) {
-          try {
-            resultData = JSON.parse(resultHeader);
-          } catch (parseError) {
-            console.error('Unable to parse removal summary:', parseError);
-          }
-        }
-
-        if (singlePreview.dataset.objectUrl) {
-          URL.revokeObjectURL(singlePreview.dataset.objectUrl);
-          delete singlePreview.dataset.objectUrl;
-        }
-
-        const objectUrl = URL.createObjectURL(blob);
-        singlePreview.src = objectUrl;
-        singlePreview.dataset.objectUrl = objectUrl;
-        singleResult.hidden = false;
-        if (resultData) {
-          singleSummary.textContent = JSON.stringify(resultData, null, 2);
-        } else {
-          singleSummary.textContent = 'Background removal completed successfully.';
-        }
+        const payload = await response.json();
+        currentJobId = payload.job_id;
+        singleProgressText.textContent = 'Processing…';
       } catch (error) {
-        alert(error.message);
-      } finally {
         showSpinner(singleSpinner, false);
+        singleProgressText.textContent = 'Unable to start processing.';
+        currentJobId = null;
+        alert(error.message || 'Background removal failed to start.');
       }
     });
 

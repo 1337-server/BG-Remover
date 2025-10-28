@@ -7,7 +7,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any, Callable, Iterable, List, Optional
 
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
@@ -28,6 +28,9 @@ else:
     _REMBG_IMPORT_ERROR = None
 
 Session = Any
+
+ProgressCallback = Callable[[str, float], None]
+PreviewCallback = Callable[[Image.Image, str], None]
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 MAX_WORK_DIMENSION = 8000
@@ -212,6 +215,8 @@ def remove_bg_file(
     use_colorkey_fallback: bool = True,
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
+    progress_callback: Optional[ProgressCallback] = None,
+    preview_callback: Optional[PreviewCallback] = None,
 ) -> RemovalResult:
     """Remove the background from a single file and write a PNG with alpha."""
 
@@ -227,25 +232,53 @@ def remove_bg_file(
     start = time.perf_counter()
     error: Optional[str] = None
 
+    def emit_progress(stage: str, percent: float) -> None:
+        """Forward progress updates to the optional callback."""
+
+        if progress_callback is None:
+            return
+        clamped = max(0.0, min(100.0, float(percent)))
+        progress_callback(stage, clamped)
+
     try:
+        emit_progress("load", 5.0)
         with Image.open(source) as raw_image:
             oriented = ImageOps.exif_transpose(raw_image)
             rgba_source = oriented.convert("RGBA")
             work_image = rgba_source.convert("RGB")
 
+            def emit_preview_from_alpha(alpha_data: np.ndarray, stage: str) -> None:
+                """Send a downscaled preview constructed from the alpha mask."""
+
+                if preview_callback is None:
+                    return
+
+                preview_image = rgba_source.copy()
+                alpha_image = Image.fromarray(alpha_data, mode="L")
+                preview_image.putalpha(alpha_image)
+                if max(preview_image.size) > 1024:
+                    preview_image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                preview_callback(preview_image, stage)
+
             if max(work_image.size) > MAX_WORK_DIMENSION:
                 resized = work_image.copy()
                 resized.thumbnail((MAX_WORK_DIMENSION, MAX_WORK_DIMENSION), Image.Resampling.LANCZOS)
+                emit_progress("resize", 15.0)
                 mask_image = _run_rembg(resized, session)
                 alpha_channel = mask_image.split()[-1]
                 alpha_channel = alpha_channel.resize(rgba_source.size, Image.Resampling.LANCZOS)
+                emit_progress("remove_background", 40.0)
             else:
                 mask_image = _run_rembg(work_image, session)
                 alpha_channel = mask_image.split()[-1]
+                emit_progress("remove_background", 40.0)
 
             alpha_np = np.asarray(alpha_channel, dtype=np.uint8)
+            emit_progress("mask", 55.0)
+            emit_preview_from_alpha(alpha_np, "initial")
 
             if alpha_matting:
+                emit_progress("alpha_matting", 65.0)
                 alpha_np = _apply_alpha_matting(
                     alpha_np,
                     foreground_threshold=am_foreground,
@@ -254,14 +287,18 @@ def remove_bg_file(
                 )
 
             if use_colorkey_fallback:
+                emit_progress("colorkey", 70.0)
                 fallback_mask = build_colorkey_mask(rgba_source, tolerance=colorkey_tolerance)
                 if fallback_mask is not None:
                     alpha_np = np.maximum(alpha_np, fallback_mask)
 
+            emit_progress("feather", 75.0)
             alpha_np = _feather_alpha(alpha_np, feather_radius)
+            emit_preview_from_alpha(alpha_np, "refined")
             final_alpha = Image.fromarray(alpha_np, mode="L")
             output_image = rgba_source.copy()
             output_image.putalpha(final_alpha)
+            emit_progress("save", 90.0)
             output_image.save(destination, format="PNG")
 
             # Explicitly release large arrays to limit memory pressure.
@@ -273,6 +310,8 @@ def remove_bg_file(
 
     elapsed_ms = (time.perf_counter() - start) * 1000
     success = error is None
+    if success:
+        emit_progress("complete", 100.0)
     return RemovalResult(source, destination if success else None, success, error, elapsed_ms)
 
 

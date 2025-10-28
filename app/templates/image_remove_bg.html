@@ -676,6 +676,19 @@
 
     enforceNumericBounds();
 
+    const gpuProviderNames = ['TensorrtExecutionProvider', 'CUDAExecutionProvider'];
+    let hasGpuProviders = false;
+    let hardwareSelect = null;
+    let hardwareWarning = null;
+
+    const updateHardwareWarning = () => {
+      if (!hardwareSelect || !hardwareWarning) {
+        return;
+      }
+      const shouldWarn = hardwareSelect.value === 'gpu' && !hasGpuProviders;
+      hardwareWarning.classList.toggle('d-none', !shouldWarn);
+    };
+
     const acceleratorInitialState = {{ accelerator_runtime|tojson }} || {};
     const acceleratorRuntimeBadge = document.getElementById('accelerator-runtime-badge');
     const acceleratorGpuBadge = document.getElementById('accelerator-gpu-badge');
@@ -698,6 +711,9 @@
       const providersAvailable = Array.isArray(state.providers_available)
         ? state.providers_available.map((provider) => provider.toString())
         : [];
+      hasGpuProviders = providersAvailable.some((provider) =>
+        gpuProviderNames.includes(provider),
+      );
       if (acceleratorRuntimeBadge) {
         acceleratorRuntimeBadge.textContent = `Runtime: ${runtimeValue.toUpperCase()}`;
       }
@@ -711,14 +727,9 @@
       }
       if (acceleratorAlert && acceleratorAlertText) {
         let warningText = state.warning ? state.warning.toString() : '';
-        if (!warningText && runtimeValue === 'cpu') {
-          const hasGpuProviders = providersAvailable.some((provider) =>
-            ['TensorrtExecutionProvider', 'CUDAExecutionProvider'].includes(provider)
-          );
-          if (hasGpuProviders) {
-            warningText =
-              'GPU acceleration was unavailable. Running on CPU; performance will be slower.';
-          }
+        if (!warningText && runtimeValue === 'cpu' && hasGpuProviders) {
+          warningText =
+            'GPU acceleration was unavailable. Running on CPU; performance will be slower.';
         }
         if (warningText) {
           if (acceleratorAlertText.textContent !== warningText) {
@@ -734,9 +745,11 @@
           acceleratorWarningDismissed = false;
         }
       }
+      updateHardwareWarning();
     };
 
     updateAcceleratorUi(acceleratorInitialState);
+    updateHardwareWarning();
 
     const singleFormatSelect = document.getElementById('single-format');
 
@@ -915,24 +928,13 @@
     setupHelpHints(singleForm, document.getElementById('single-help-toggle'));
     setupHelpHints(folderForm, document.getElementById('folder-help-toggle'));
 
-    const hardwareSelect = document.getElementById('single-hardware');
-    const hardwareWarning = document.getElementById('single-hardware-warning');
-    console.log(singleForm?.dataset)
-    const gpuAvailable = (singleForm?.dataset?.gpuAvailable || '').toLowerCase() === 'true';
-
-    const updateHardwareWarning = () => {
-      if (!hardwareSelect || !hardwareWarning) {
-        return;
-      }
-      console.log(gpuAvailable)
-      const shouldWarn = !gpuAvailable && hardwareSelect.value === 'gpu';
-      hardwareWarning.classList.toggle('d-none', !shouldWarn);
-    };
+    hardwareSelect = document.getElementById('single-hardware');
+    hardwareWarning = document.getElementById('single-hardware-warning');
 
     if (hardwareSelect) {
       hardwareSelect.addEventListener('change', updateHardwareWarning);
-      updateHardwareWarning();
     }
+    updateHardwareWarning();
 
     const previewSizeInput = document.getElementById('single-preview-size');
     const previewSizeLabel = document.getElementById('single-preview-size-label');

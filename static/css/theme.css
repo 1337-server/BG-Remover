@@ -1,0 +1,97 @@
+:root {
+  color-scheme: light;
+  --color-surface: #f8fafc;
+  --color-surface-elevated: #ffffff;
+  --color-surface-soft: rgba(148, 163, 184, 0.15);
+  --color-surface-strong: rgba(148, 163, 184, 0.3);
+  --color-text: #1e293b;
+  --color-text-muted: #475569;
+  --color-text-strong: #0f172a;
+  --color-border-muted: rgba(148, 163, 184, 0.35);
+  --color-accent-strong: #2563eb;
+  --color-accent-strong-hover: #1d4ed8;
+  --color-accent-soft: rgba(37, 99, 235, 0.18);
+  --color-overlay: 15, 23, 42;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+:root.dark,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-surface: #0f172a;
+  --color-surface-elevated: #111c33;
+  --color-surface-soft: rgba(59, 130, 246, 0.12);
+  --color-surface-strong: rgba(59, 130, 246, 0.24);
+  --color-text: #e2e8f0;
+  --color-text-muted: #cbd5f5;
+  --color-text-strong: #f8fafc;
+  --color-border-muted: rgba(148, 163, 184, 0.25);
+  --color-accent-strong: #60a5fa;
+  --color-accent-strong-hover: #3b82f6;
+  --color-accent-soft: rgba(96, 165, 250, 0.2);
+  --color-overlay: 15, 23, 42;
+}
+
+body {
+  transition: background-color 0.35s ease, color 0.35s ease;
+}
+
+.checkerboard {
+  background-image:
+    linear-gradient(45deg, rgba(148, 163, 184, 0.25) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(148, 163, 184, 0.25) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.25) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.25) 75%);
+  background-size: 22px 22px;
+  background-position: 0 0, 0 11px, 11px -11px, -11px 0;
+}
+
+.help-hints-hidden [data-help-element],
+.help-hints-hidden [data-tooltip-root] {
+  display: none !important;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 1rem;
+  padding: 0.75rem 1.25rem;
+  background-color: var(--color-accent-strong);
+  color: #ffffff;
+  border-radius: 9999px;
+  z-index: 999;
+  transition: transform 0.2s ease, left 0.2s ease;
+}
+
+.skip-link:focus {
+  left: 1rem;
+  transform: translateY(-0.5rem);
+  outline: none;
+}
+
+.tooltip-panel[data-visible='true'] {
+  display: block;
+  pointer-events: auto;
+  animation: fade-in-up 0.18s ease;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+[data-reduced-motion='true'] *,
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

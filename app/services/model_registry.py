@@ -41,6 +41,80 @@ _PRELOAD_SIGNATURE: tuple[str, tuple[str, ...], str, int] | None = None
 _AVAILABLE_PROVIDERS: list[str] = []
 _PRELOAD_LOCK = Lock()
 
+_CACHE_DIR = Path(
+    os.environ.get(
+        "BG_ONNXRUNTIME_CACHE_DIR",
+        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache") / "br-remover" / "onnxruntime",
+    )
+).expanduser()
+_TIMING_CACHE_PATH = _CACHE_DIR / "timing_cache"
+_CACHE_READY: bool | None = None
+
+
+def _ensure_cache_dirs() -> bool:
+    """Ensure that the ONNX runtime cache directories exist and are writable."""
+
+    global _CACHE_READY
+    if _CACHE_READY is not None:
+        return _CACHE_READY
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        LOGGER.warning(
+            "Unable to initialise ONNX runtime cache directory; GPU caching disabled",
+            extra={"cache_dir": str(_CACHE_DIR), "error": str(exc)},
+        )
+        _CACHE_READY = False
+    else:
+        _CACHE_READY = True
+    return _CACHE_READY
+
+
+def _tensorrt_provider_options(device_id: int) -> MutableMapping[str, Any]:
+    """Return tuned TensorRT execution provider options for fast warm starts."""
+
+    cache_available = _ensure_cache_dirs()
+    options: dict[str, Any] = {
+        "device_id": int(device_id),
+        "trt_fp16_enable": True,
+        "trt_force_sequential_engine_build": False,
+        "trt_int8_enable": False,
+        "trt_dla_enable": False,
+        "trt_cuda_graph_enable": True,
+        "trt_detailed_build_log": True,
+    }
+
+    if cache_available:
+        options.update(
+            {
+                "trt_engine_cache_enable": True,
+                "trt_engine_cache_path": str(_CACHE_DIR),
+                "trt_timing_cache_enable": True,
+                "trt_timing_cache_path": str(_TIMING_CACHE_PATH),
+            }
+        )
+    else:
+        options.update(
+            {
+                "trt_engine_cache_enable": False,
+                "trt_timing_cache_enable": False,
+            }
+        )
+    return options
+
+
+def _cuda_provider_options(device_id: int) -> MutableMapping[str, Any]:
+    """Return CUDA execution provider options tuned for aggressive caching."""
+
+    return {
+        "device_id": int(device_id),
+        "arena_extend_strategy": "kSameAsRequested",
+        "gpu_mem_limit": 0,
+        "cudnn_conv_algo_search": "EXHAUSTIVE",
+        "do_copy_in_default_stream": True,
+    }
+
 
 def _resolve_model_dir(model_dir: str | os.PathLike[str] | None) -> Path:
     """Return the directory containing cached ONNX model weights."""
@@ -76,12 +150,12 @@ def _extract_accelerator_config(config: Mapping[str, object] | None) -> tuple[st
     return mode, device_id
 
 
-def _provider_priority(mode: str, device_id: int) -> tuple[list[str], list[MutableMapping[str, int]]]:
+def _provider_priority(mode: str, device_id: int) -> tuple[list[str], list[MutableMapping[str, Any]]]:
     """Return provider names and configuration dictionaries for ONNXRuntime."""
 
     available = accelerator.onnx_providers_available()
     providers: list[str] = []
-    provider_options: list[MutableMapping[str, int]] = []
+    provider_options: list[MutableMapping[str, Any]] = []
 
     gpu_requested = mode != "cpu"
     prefer_tensorrt = False
@@ -103,7 +177,12 @@ def _provider_priority(mode: str, device_id: int) -> tuple[list[str], list[Mutab
     if gpu_requested:
         for provider in provider_candidates:
             if provider in available:
-                options: MutableMapping[str, int] = {"device_id": int(device_id)}
+                if provider == "TensorrtExecutionProvider":
+                    options = _tensorrt_provider_options(device_id)
+                elif provider == "CUDAExecutionProvider":
+                    options = _cuda_provider_options(device_id)
+                else:
+                    options = {"device_id": int(device_id)}
                 providers.append(provider)
                 provider_options.append(options)
 

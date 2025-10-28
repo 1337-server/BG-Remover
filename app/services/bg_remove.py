@@ -329,11 +329,10 @@ def create_session(
         cuda_provider: Any = "CUDAExecutionProvider"
         if cuda_options:
             cuda_provider = ("CUDAExecutionProvider", cuda_options)
-        providers_argument = [
-            cuda_provider,
-            "TensorrtExecutionProvider",
-            "CPUExecutionProvider",
-        ]
+        providers_argument = [cuda_provider]
+        if "TensorrtExecutionProvider" in providers_available:
+            providers_argument.append("TensorrtExecutionProvider")
+        providers_argument.append("CPUExecutionProvider")
         status_message = "Using GPU (CUDAExecutionProvider)"
         gpu_available_flag = True
     else:

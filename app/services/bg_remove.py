@@ -246,7 +246,7 @@ class SessionContext:
     rtx_50_series: bool
     warning: str | None
     device_id: int
-    gpu_available: bool
+    gpu_available: bool  # True when CUDA is available and ONNX Runtime exposes a GPU provider
     accelerator_message: str | None
 
     def runtime_payload(self) -> dict[str, Any]:
@@ -450,7 +450,7 @@ def _initialise_session_context(
     rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
     print(provider_name, gpu_name, rtx_50_series)
     runtime = "cuda" if provider_name in {"CUDAExecutionProvider", "TensorrtExecutionProvider"} else "cpu"
-    gpu_available = runtime == "cuda"
+    gpu_available = accelerator.gpu_support_available(providers_available)
 
     if log_diagnostics:
         LOGGER.info("Available ONNX Runtime providers: %s", ", ".join(providers_available) or "none")
@@ -473,11 +473,11 @@ def _initialise_session_context(
 
     accelerator_message: str | None
     warning_message: str | None
-    if requested_mode in {"cuda", "auto"} and gpu_available:
+    if runtime == "cuda":
         accelerator_message = f"Using GPU ({provider_name})"
         print(accelerator_message)
         warning_message = None
-    elif requested_mode in {"cuda", "auto"} and warn_on_cpu:
+    elif requested_mode in {"cuda", "auto"} and warn_on_cpu and not gpu_available:
         accelerator_message = "GPU requested but unavailable — falling back to CPU"
         print(accelerator_message)
         warning_message = accelerator_message
@@ -625,13 +625,14 @@ def get_runtime_payload() -> dict[str, Any]:
     context = _SESSION_CONTEXT
     if context is None:
         providers_available = accelerator.onnx_providers_available()
+        gpu_available = accelerator.gpu_support_available(providers_available)
         return {
             "runtime": "cpu",
             "provider": "CPUExecutionProvider",
             "gpu_name": None,
             "warning": None,
             "providers_available": providers_available,
-            "gpu_available": False,
+            "gpu_available": gpu_available,
             "accelerator_message": None,
         }
     return context.runtime_payload()

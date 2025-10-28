@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
 LOGGER = logging.getLogger(__name__)
 
@@ -65,6 +66,27 @@ def onnx_providers_available() -> list[str]:
         LOGGER.exception("Failed to query ONNX Runtime providers")
         return []
     return providers
+
+
+def gpu_support_available(providers: Iterable[str] | None = None) -> bool:
+    """Return ``True`` when both PyTorch and ONNX Runtime report GPU support."""
+
+    try:
+        import torch
+    except ModuleNotFoundError:
+        LOGGER.debug("PyTorch is not installed; assuming CUDA is unavailable")
+        cuda_available = False
+    else:
+        try:
+            cuda_available = bool(torch.cuda.is_available())
+        except Exception:  # pragma: no cover - defensive logging for unexpected errors
+            LOGGER.debug("Unable to query CUDA availability via torch", exc_info=True)
+            cuda_available = False
+
+    provider_list = list(providers) if providers is not None else onnx_providers_available()
+    gpu_providers = ("CUDAExecutionProvider", "TensorrtExecutionProvider")
+    has_gpu_provider = any(provider in provider_list for provider in gpu_providers)
+    return bool(cuda_available and has_gpu_provider)
 
 
 def pick_execution_provider(mode: str, device_id: int) -> tuple[str, dict[str, int]]:

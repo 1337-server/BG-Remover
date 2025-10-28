@@ -21,10 +21,15 @@ except ModuleNotFoundError as exc:  # pragma: no cover - raised when dependency 
         def emit(self, *_: object, **__: object) -> None:
             """Silently drop emitted events when running without Socket.IO."""
 
-        def start_background_task(self, target: Callable[..., None], *args: object, **kwargs: object) -> None:
-            """Execute background tasks synchronously in stub mode."""
+        def start_background_task(
+            self, target: Callable[..., None], *args: object, **kwargs: object
+        ) -> None:
+            """Raise a clear error when background tasks cannot be scheduled."""
 
-            target(*args, **kwargs)
+            raise RuntimeError(
+                "Flask-SocketIO is required to schedule background tasks."
+                " Install the 'flask-socketio' extra to enable live previews."
+            ) from _SOCKETIO_IMPORT_ERROR
 
         def on(self, *_: object, **__: object) -> Callable[[Callable[..., object]], Callable[..., object]]:
             """Return a decorator that passes through the provided function."""

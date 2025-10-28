@@ -1,4 +1,4 @@
-"""Socket.IO entrypoint for running the Flask application with WebSocket support."""
+"""Socket.IO entry point for running the Flask application with WebSocket support."""
 from __future__ import annotations
 
 import os
@@ -25,7 +25,7 @@ def create_socketio_app() -> tuple[Flask, "SocketIO"]:
 
 
 def main() -> None:
-    """Run the Flask application using Flask-SocketIO."""
+    """Run the Flask application using the shared Flask-SocketIO instance."""
 
     app, socketio_server = create_socketio_app()
     port = int(os.getenv("PORT", "5000"))

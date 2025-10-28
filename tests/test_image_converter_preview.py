@@ -43,6 +43,8 @@ def test_serialise_results_provides_preview_links(tmp_path: Path) -> None:
     entry = payload["results"][0]
     assert entry["download_url"].startswith("/image/remove-bg/file/")
     assert entry["preview_url"].startswith("/image/remove-bg/preview/")
+    assert entry["mime_type"] == "image/png"
+    assert entry["format"] == "png"
 
     client = app.test_client()
 
@@ -95,6 +97,7 @@ def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypat
     data = {
         "socket_id": "abc123",
         "image_file": (BytesIO(b"fake image"), "sample.jpg"),
+        "output_format": "webp",
     }
     response = client.post(
         "/image/remove-bg/live",
@@ -111,4 +114,41 @@ def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypat
     assert "progress" in emitted_events
     assert "preview" in emitted_events
     assert "completed" in emitted_events
+
+
+def test_remove_bg_live_returns_service_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live endpoint should surface informative errors when Socket.IO is missing."""
+
+    app = Flask(__name__)
+    app.register_blueprint(image_converter.image_converter_bp)
+    app.config.update(TESTING=True)
+
+    class FailingSocket:
+        def emit(self, *_: object, **__: object) -> None:
+            """The stub emit simply records the attempt for compatibility."""
+
+        def start_background_task(self, *_: object, **__: object) -> None:
+            """Simulate the behaviour of the stub that cannot spawn tasks."""
+
+            raise RuntimeError("Background tasks are unavailable in stub mode.")
+
+    monkeypatch.setattr(image_converter, "socketio", FailingSocket())
+
+    client = app.test_client()
+    data = {
+        "socket_id": "abc123",
+        "image_file": (BytesIO(b"fake image"), "sample.jpg"),
+    }
+
+    response = client.post(
+        "/image/remove-bg/live",
+        data=data,
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload == {
+        "error": "Background tasks are unavailable in stub mode."
+    }
 

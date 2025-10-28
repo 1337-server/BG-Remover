@@ -163,7 +163,7 @@
                 data-bs-placement="top"
                 data-bs-html="true"
                 data-bs-custom-class="help-tooltip"
-                data-bs-title="<p class='mb-2'>Controls how large the preview will be.</p><p class='mb-2'>Lower resolutions load faster but may look slightly blurred.</p><p class='mb-0'>This does not change the quality of your final saved image — it only affects what you see on screen.</p>"
+                data-bs-title="<p class='mb-2'>Controls how large the preview will be.</p><p class='mb-2'>Lower resolutions load faster but may look slightly blurred.</p><p class='mb-2'>This does not change the quality of your final saved image — it only affects what you see on screen.</p><p class='mb-0'><strong>Range:</strong> 320 – 1280 pixels (steps of 160).</p>"
                 aria-label="Help: Preview Size"
               >
                 <span aria-hidden="true">?</span>
@@ -185,7 +185,7 @@
                 data-bs-placement="top"
                 data-bs-html="true"
                 data-bs-custom-class="help-tooltip"
-                data-bs-title="<p class='mb-2'>Adjusts how soft or sharp the edges of the cut-out appear.</p><ul class='mb-0 ps-3'><li>Lower values = sharp edges (good for clean product photos).</li><li>Higher values = softer blending (good for portraits or hair).</li></ul><p class='mb-0 mt-2'>Use this if the outline of the subject looks too harsh or jagged.</p>"
+                data-bs-title="<p class='mb-2'>Adjusts how soft or sharp the edges of the cut-out appear.</p><ul class='mb-0 ps-3'><li>Lower values = sharp edges (good for clean product photos).</li><li>Higher values = softer blending (good for portraits or hair).</li></ul><p class='mb-2 mt-2'>Use this if the outline of the subject looks too harsh or jagged.</p><p class='mb-0'><strong>Range:</strong> 0 – 50 pixels.</p>"
                 aria-label="Help: Edge Smoothing"
               >
                 <span aria-hidden="true">?</span>
@@ -227,21 +227,81 @@
               </div>
               <div class="row g-3">
                 <div class="col-md-4">
-                  <label class="form-label" for="single-foreground">Alpha matting foreground</label>
+                  <div class="form-label d-flex align-items-center gap-2">
+                    <span>Alpha matting foreground</span>
+                    <button
+                      type="button"
+                      class="help-icon btn btn-link p-0"
+                      data-help-element
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      data-bs-html="true"
+                      data-bs-custom-class="help-tooltip"
+                      data-bs-title="<p class='mb-2'>Sets how strongly the foreground (subject) should be kept when alpha matting is enabled.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                      aria-label="Help: Alpha matting foreground"
+                    >
+                      <span aria-hidden="true">?</span>
+                    </button>
+                  </div>
                   <input class="form-control" type="number" id="single-foreground" name="am_foreground" min="0" max="255" value="{{ defaults.am_foreground }}">
                 </div>
                 <div class="col-md-4">
-                  <label class="form-label" for="single-background">Alpha matting background</label>
+                  <div class="form-label d-flex align-items-center gap-2">
+                    <span>Alpha matting background</span>
+                    <button
+                      type="button"
+                      class="help-icon btn btn-link p-0"
+                      data-help-element
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      data-bs-html="true"
+                      data-bs-custom-class="help-tooltip"
+                      data-bs-title="<p class='mb-2'>Controls how aggressively the background should be removed when alpha matting runs.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                      aria-label="Help: Alpha matting background"
+                    >
+                      <span aria-hidden="true">?</span>
+                    </button>
+                  </div>
                   <input class="form-control" type="number" id="single-background" name="am_background" min="0" max="255" value="{{ defaults.am_background }}">
                 </div>
                 <div class="col-md-4">
-                  <label class="form-label" for="single-erode">Alpha matting erode size</label>
+                  <div class="form-label d-flex align-items-center gap-2">
+                    <span>Alpha matting erode size</span>
+                    <button
+                      type="button"
+                      class="help-icon btn btn-link p-0"
+                      data-help-element
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      data-bs-html="true"
+                      data-bs-custom-class="help-tooltip"
+                      data-bs-title="<p class='mb-0'>Fine-tunes how much of the original edges get trimmed before the alpha matting refinement.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                      aria-label="Help: Alpha matting erode size"
+                    >
+                      <span aria-hidden="true">?</span>
+                    </button>
+                  </div>
                   <input class="form-control" type="number" id="single-erode" name="am_erode" min="0" max="255" value="{{ defaults.am_erode }}">
                 </div>
               </div>
               <div class="row g-3 mt-3">
                 <div class="col-md-6">
-                  <label class="form-label" for="single-tolerance">Color-key tolerance</label>
+                  <div class="form-label d-flex align-items-center gap-2">
+                    <span>Color-key tolerance</span>
+                    <button
+                      type="button"
+                      class="help-icon btn btn-link p-0"
+                      data-help-element
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      data-bs-html="true"
+                      data-bs-custom-class="help-tooltip"
+                      data-bs-title="<p class='mb-2'>Useful when removing a solid background (like a green screen). Higher values remove a wider range of colours.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                      aria-label="Help: Color-key tolerance"
+                    >
+                      <span aria-hidden="true">?</span>
+                    </button>
+                  </div>
                   <input class="form-control" type="number" id="single-tolerance" name="colorkey_tolerance" min="0" max="255" value="{{ defaults.colorkey_tolerance }}">
                 </div>
               </div>
@@ -409,7 +469,7 @@
                   data-bs-placement="top"
                   data-bs-html="true"
                   data-bs-custom-class="help-tooltip"
-                  data-bs-title="<p class='mb-2'>Sets how strongly the foreground (subject) should be kept when alpha matting is enabled.</p><p class='mb-0'>Higher numbers protect more of the subject but may keep bits of background.</p>"
+                data-bs-title="<p class='mb-2'>Sets how strongly the foreground (subject) should be kept when alpha matting is enabled.</p><p class='mb-2'>Higher numbers protect more of the subject but may keep bits of background.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
                   aria-label="Help: Alpha matting foreground"
                 >
                   <span aria-hidden="true">?</span>
@@ -428,7 +488,7 @@
                   data-bs-placement="top"
                   data-bs-html="true"
                   data-bs-custom-class="help-tooltip"
-                  data-bs-title="<p class='mb-2'>Controls how aggressively the background should be removed when alpha matting runs.</p><p class='mb-0'>Increase if you still see a halo; decrease if parts of the subject vanish.</p>"
+                data-bs-title="<p class='mb-2'>Controls how aggressively the background should be removed when alpha matting runs.</p><p class='mb-2'>Increase if you still see a halo; decrease if parts of the subject vanish.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
                   aria-label="Help: Alpha matting background"
                 >
                   <span aria-hidden="true">?</span>
@@ -447,7 +507,7 @@
                   data-bs-placement="top"
                   data-bs-html="true"
                   data-bs-custom-class="help-tooltip"
-                  data-bs-title="<p class='mb-0'>Fine-tunes how much of the original edges get trimmed before the alpha matting refinement. Larger values remove more stray pixels but can also shrink the subject.</p>"
+                data-bs-title="<p class='mb-2'>Fine-tunes how much of the original edges get trimmed before the alpha matting refinement.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
                   aria-label="Help: Alpha matting erode size"
                 >
                   <span aria-hidden="true">?</span>
@@ -468,7 +528,7 @@
                   data-bs-placement="top"
                   data-bs-html="true"
                   data-bs-custom-class="help-tooltip"
-                  data-bs-title="<p class='mb-0'>Useful when removing a solid background (like a green screen). Higher values remove a wider range of colours.</p>"
+                data-bs-title="<p class='mb-0'>Useful when removing a solid background (like a green screen). Higher values remove a wider range of colours.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
                   aria-label="Help: Color-key tolerance"
                 >
                   <span aria-hidden="true">?</span>
@@ -487,7 +547,7 @@
                   data-bs-placement="top"
                   data-bs-html="true"
                   data-bs-custom-class="help-tooltip"
-                  data-bs-title="<p class='mb-2'>Adjusts how soft the borders of each subject will appear.</p><ul class='mb-0 ps-3'><li>Lower values = crisp edges (great for product photos).</li><li>Higher values = softer blending (great for portraits and hair).</li></ul>"
+                data-bs-title="<p class='mb-2'>Adjusts how soft the borders of each subject will appear.</p><ul class='mb-0 ps-3'><li>Lower values = crisp edges (great for product photos).</li><li>Higher values = softer blending (great for portraits and hair).</li></ul><p class='mb-0 mt-2'><strong>Range:</strong> 0 – 50 pixels.</p>"
                   aria-label="Help: Edge Smoothing"
                 >
                   <span aria-hidden="true">?</span>

@@ -4,6 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+# Ensure cooperative sockets and threading primitives are in place before any
+# Flask or Socket.IO modules are imported.
+try:  # pragma: no cover - eventlet may be optional in some environments
+    import eventlet  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - tolerate missing dependency
+    eventlet = None  # type: ignore[assignment]
+else:  # pragma: no cover - import side effect only
+    eventlet.monkey_patch()
+
 from app.socketio_utils import ensure_eventlet_monkey_patched
 
 ensure_eventlet_monkey_patched()

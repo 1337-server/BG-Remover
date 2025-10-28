@@ -274,7 +274,14 @@
         </div>
       </div>
       <div class="tab-pane fade" id="folder" role="tabpanel" aria-labelledby="folder-tab">
-        <form id="folder-form" novalidate>
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+          <h2 class="h4 mb-0">Folder Batch</h2>
+          <div class="form-check form-switch" data-help-toggle>
+            <input class="form-check-input" type="checkbox" id="folder-help-toggle" checked>
+            <label class="form-check-label" for="folder-help-toggle">Show help hints</label>
+          </div>
+        </div>
+        <form id="folder-form" novalidate data-help-container>
           <input type="hidden" name="process_folder" value="on">
           <div
             class="alert alert-danger d-none"
@@ -285,16 +292,61 @@
             tabindex="-1"
           ></div>
           <div class="mb-3">
-            <label class="form-label" for="folder-path">Folder path on server</label>
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Folder path on server</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Tell the app where your images live on the server. Every supported image in this folder will be processed in one go.</p><p class='mb-0'>Use an absolute path (for example, <code>/home/user/photos</code>) that the server can access.</p>"
+                aria-label="Help: Folder path on server"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
             <input class="form-control" type="text" id="folder-path" name="folder_path" placeholder="/path/to/images" required>
             <div class="invalid-feedback">Enter the directory containing images.</div>
           </div>
           <div class="mb-3">
-            <label class="form-label" for="folder-output">Output directory (optional)</label>
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Output directory (optional)</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Choose where the processed results should be saved.</p><p class='mb-0'>Leave this blank to use the default <code>_no_bg</code> folder next to your originals.</p>"
+                aria-label="Help: Output directory"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
             <input class="form-control" type="text" id="folder-output" name="output_dir" placeholder="Leave blank for default">
           </div>
           <div class="mb-3">
-            <label class="form-label" for="folder-format">Output format</label>
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Final File Type</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Choose how each processed image will be saved:</p><ul class='mb-0 ps-3'><li><strong>PNG (transparent)</strong> – perfect if you plan to place the subject on new backgrounds.</li><li><strong>JPG (white background)</strong> – smaller files without transparency.</li><li><strong>WEBP</strong> – modern format with great compression and transparency support.</li></ul><p class='mb-0 mt-2'>Pick PNG for the most flexible editing later.</p>"
+                aria-label="Help: Final File Type"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
             <select class="form-select" id="folder-format" name="output_format">
               {% for option in format_options %}
               <option value="{{ option.key }}" data-extension="{{ option.extension }}" {% if option.key == defaults.output_format %}selected{% endif %}>{{ option.label }}</option>
@@ -305,46 +357,175 @@
             <div class="col-md-6">
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="folder-alpha" name="alpha_matting" value="1" {% if defaults.alpha_matting %}checked{% endif %}>
-                <label class="form-check-label" for="folder-alpha">Alpha matting</label>
+                <label class="form-check-label d-flex align-items-center gap-2" for="folder-alpha">
+                  <span>Alpha matting</span>
+                  <button
+                    type="button"
+                    class="help-icon btn btn-link p-0"
+                    data-help-element
+                    data-bs-toggle="tooltip"
+                    data-bs-placement="top"
+                    data-bs-html="true"
+                    data-bs-custom-class="help-tooltip"
+                    data-bs-title="<p class='mb-2'>Enables an extra refinement step that keeps tricky details like hair and fur intact.</p><p class='mb-0'>Turn this on if your subjects have fine edges, at the cost of slightly longer processing.</p>"
+                    aria-label="Help: Alpha matting"
+                  >
+                    <span aria-hidden="true">?</span>
+                  </button>
+                </label>
               </div>
             </div>
             <div class="col-md-6">
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="folder-recursive" name="recursive" value="1" {% if defaults.recursive %}checked{% endif %}>
-                <label class="form-check-label" for="folder-recursive">Process recursively</label>
+                <label class="form-check-label d-flex align-items-center gap-2" for="folder-recursive">
+                  <span>Process recursively</span>
+                  <button
+                    type="button"
+                    class="help-icon btn btn-link p-0"
+                    data-help-element
+                    data-bs-toggle="tooltip"
+                    data-bs-placement="top"
+                    data-bs-html="true"
+                    data-bs-custom-class="help-tooltip"
+                    data-bs-title="<p class='mb-0'>Also scan through every sub-folder and process their images. Handy for large photo libraries.</p>"
+                    aria-label="Help: Process recursively"
+                  >
+                    <span aria-hidden="true">?</span>
+                  </button>
+                </label>
               </div>
             </div>
           </div>
           <div class="row g-3 mt-1">
             <div class="col-md-4">
-              <label class="form-label" for="folder-foreground">Alpha matting foreground</label>
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Alpha matting foreground</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                  data-bs-title="<p class='mb-2'>Sets how strongly the foreground (subject) should be kept when alpha matting is enabled.</p><p class='mb-0'>Higher numbers protect more of the subject but may keep bits of background.</p>"
+                  aria-label="Help: Alpha matting foreground"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
               <input class="form-control" type="number" id="folder-foreground" name="am_foreground" min="0" max="255" value="{{ defaults.am_foreground }}">
             </div>
             <div class="col-md-4">
-              <label class="form-label" for="folder-background">Alpha matting background</label>
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Alpha matting background</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                  data-bs-title="<p class='mb-2'>Controls how aggressively the background should be removed when alpha matting runs.</p><p class='mb-0'>Increase if you still see a halo; decrease if parts of the subject vanish.</p>"
+                  aria-label="Help: Alpha matting background"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
               <input class="form-control" type="number" id="folder-background" name="am_background" min="0" max="255" value="{{ defaults.am_background }}">
             </div>
             <div class="col-md-4">
-              <label class="form-label" for="folder-erode">Alpha matting erode size</label>
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Alpha matting erode size</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                  data-bs-title="<p class='mb-0'>Fine-tunes how much of the original edges get trimmed before the alpha matting refinement. Larger values remove more stray pixels but can also shrink the subject.</p>"
+                  aria-label="Help: Alpha matting erode size"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
               <input class="form-control" type="number" id="folder-erode" name="am_erode" min="0" max="255" value="{{ defaults.am_erode }}">
             </div>
           </div>
           <div class="row g-3 mt-1">
             <div class="col-md-4">
-              <label class="form-label" for="folder-tolerance">Color-key tolerance</label>
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Color-key tolerance</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                  data-bs-title="<p class='mb-0'>Useful when removing a solid background (like a green screen). Higher values remove a wider range of colours.</p>"
+                  aria-label="Help: Color-key tolerance"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
               <input class="form-control" type="number" id="folder-tolerance" name="colorkey_tolerance" min="0" max="255" value="{{ defaults.colorkey_tolerance }}">
             </div>
             <div class="col-md-4">
-              <label class="form-label" for="folder-feather">Feather radius</label>
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Edge Smoothing</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                  data-bs-title="<p class='mb-2'>Adjusts how soft the borders of each subject will appear.</p><ul class='mb-0 ps-3'><li>Lower values = crisp edges (great for product photos).</li><li>Higher values = softer blending (great for portraits and hair).</li></ul>"
+                  aria-label="Help: Edge Smoothing"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
               <input class="form-control" type="number" id="folder-feather" name="feather_radius" min="0" max="50" value="{{ defaults.feather_radius }}">
             </div>
             <div class="col-md-4">
               <div class="form-check form-switch mt-4">
                 <input class="form-check-input" type="checkbox" id="folder-zip" name="zip" value="1" {% if defaults.zip %}checked{% endif %}>
-                <label class="form-check-label" for="folder-zip">Create ZIP archive</label>
+                <label class="form-check-label d-flex align-items-center gap-2" for="folder-zip">
+                  <span>Create ZIP archive</span>
+                  <button
+                    type="button"
+                    class="help-icon btn btn-link p-0"
+                    data-help-element
+                    data-bs-toggle="tooltip"
+                    data-bs-placement="top"
+                    data-bs-html="true"
+                    data-bs-custom-class="help-tooltip"
+                    data-bs-title="<p class='mb-0'>Bundle every processed result into a single ZIP download. Ideal when you plan to transfer the files elsewhere.</p>"
+                    aria-label="Help: Create ZIP archive"
+                  >
+                    <span aria-hidden="true">?</span>
+                  </button>
+                </label>
               </div>
             </div>
           </div>
+          <details class="learn-more-box mt-4" data-help-element>
+            <summary class="fw-semibold">🧠 How batch processing works</summary>
+            <div class="pt-3">
+              <p>Point the tool at a folder and it scans every supported image, removing backgrounds one after another using your chosen settings.</p>
+              <p>Each file keeps its original name with a <code>_no_bg</code> suffix (or goes into a ZIP if you enable that option), so nothing gets overwritten.</p>
+              <p>Processing happens on the server. If a GPU is available, large folders finish much faster; otherwise the CPU handles the work with the same quality.</p>
+              <p class="mb-0">You can re-run the same folder whenever you update the settings — previous outputs stay intact unless you replace them manually.</p>
+            </div>
+          </details>
           <div class="mt-4 d-flex gap-2">
             <button class="btn btn-primary" type="submit">Process folder</button>
             <div class="spinner-border text-primary d-none" id="folder-spinner" role="status" aria-hidden="true"></div>
@@ -575,40 +756,48 @@
     const singleAlert = document.getElementById('single-form-alert');
     const singleAlertManager = createAlertManager(singleAlert);
 
-    const helpToggle = document.getElementById('single-help-toggle');
-    let tooltipInstances = [];
-    if (typeof bootstrap !== 'undefined' && bootstrap?.Tooltip) {
-      tooltipInstances = Array.from(document.querySelectorAll('#single [data-bs-toggle="tooltip"]')).map(
+    const folderForm = document.getElementById('folder-form');
+
+    const createTooltipInstances = (scope) => {
+      if (!scope || typeof bootstrap === 'undefined' || !bootstrap?.Tooltip) {
+        return [];
+      }
+      return Array.from(scope.querySelectorAll('[data-bs-toggle="tooltip"]')).map(
         (element) => new bootstrap.Tooltip(element),
       );
-    }
-
-    const toggleHelpHints = (enabled) => {
-      if (!singleForm) {
-        return;
-      }
-      singleForm.classList.toggle('help-hints-hidden', !enabled);
-      tooltipInstances.forEach((tooltip) => {
-        if (!tooltip) {
-          return;
-        }
-        if (enabled) {
-          tooltip.enable();
-        } else {
-          tooltip.hide();
-          tooltip.disable();
-        }
-      });
     };
 
-    if (helpToggle) {
-      toggleHelpHints(helpToggle.checked);
-      helpToggle.addEventListener('change', (event) => {
-        toggleHelpHints(event.target.checked);
-      });
-    } else {
-      toggleHelpHints(true);
-    }
+    const setupHelpHints = (container, toggle) => {
+      if (!container) {
+        return;
+      }
+      const tooltipInstances = createTooltipInstances(container);
+      const applyState = (enabled) => {
+        container.classList.toggle('help-hints-hidden', !enabled);
+        tooltipInstances.forEach((tooltip) => {
+          if (!tooltip) {
+            return;
+          }
+          if (enabled) {
+            tooltip.enable();
+          } else {
+            tooltip.hide();
+            tooltip.disable();
+          }
+        });
+      };
+      if (toggle) {
+        applyState(Boolean(toggle.checked));
+        toggle.addEventListener('change', (event) => {
+          applyState(Boolean(event.target.checked));
+        });
+      } else {
+        applyState(true);
+      }
+    };
+
+    setupHelpHints(singleForm, document.getElementById('single-help-toggle'));
+    setupHelpHints(folderForm, document.getElementById('folder-help-toggle'));
 
     const hardwareSelect = document.getElementById('single-hardware');
     const hardwareWarning = document.getElementById('single-hardware-warning');
@@ -818,7 +1007,6 @@
       });
     }
 
-    const folderForm = document.getElementById('folder-form');
     const folderSpinner = document.getElementById('folder-spinner');
     const folderResult = document.getElementById('folder-result');
     const folderSummary = document.getElementById('folder-summary');

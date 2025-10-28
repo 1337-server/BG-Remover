@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.extensions import socketio
 from app.socketio_utils import ensure_eventlet_monkey_patched
+
+ensure_eventlet_monkey_patched()
+
+from app.extensions import socketio
 
 
 def run_socketio_server(host: str = "0.0.0.0", port: int = 5000, **kwargs: Any) -> None:
@@ -15,8 +18,6 @@ def run_socketio_server(host: str = "0.0.0.0", port: int = 5000, **kwargs: Any) 
     arguments are forwarded to :meth:`flask_socketio.SocketIO.run` so callers
     can enable debug mode or tweak SSL parameters when needed.
     """
-
-    ensure_eventlet_monkey_patched(socketio)
 
     from app import create_app
 

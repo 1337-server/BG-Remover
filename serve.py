@@ -2,24 +2,120 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
-from collections.abc import Sequence
+import threading
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 try:  # pragma: no cover - eventlet optional during tests
     import eventlet
 
-    eventlet.monkey_patch()
+    eventlet.monkey_patch(thread=False)
 except ModuleNotFoundError:  # pragma: no cover - fallback to standard library
     eventlet = None  # type: ignore[assignment]
 
-from app import create_app
+from app import create_app, run_startup_tasks
+
+
+def _configure_logging() -> None:
+    """Initialise logging so structured JSON events are emitted to stdout."""
+
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(level=logging.INFO)
+    root_logger.setLevel(logging.INFO)
+
+
+_configure_logging()
 
 _LOGGER = logging.getLogger(__name__)
 
 _ENV_PORT_KEYS = ("PORT", "FLASK_RUN_PORT")
 _ENV_HOST_KEYS = ("HOST", "FLASK_RUN_HOST")
+
+
+def _log_json(level: int, event: str, **fields: object) -> None:
+    """Emit structured JSON logs for development server events."""
+
+    payload = {"event": event, **fields}
+    message = json.dumps(payload, sort_keys=True)
+    _LOGGER.log(level, message)
+
+
+def _detect_gpu_state() -> dict[str, Any]:
+    """Return GPU availability diagnostics sourced from PyTorch and ONNXRuntime."""
+
+    providers: list[str] = []
+    ort_error: str | None = None
+    try:
+        import onnxruntime as ort
+
+        providers = list(ort.get_available_providers())
+    except ModuleNotFoundError:
+        ort_error = "onnxruntime_not_installed"
+    except Exception as exc:  # pragma: no cover - best-effort diagnostics
+        ort_error = f"onnxruntime_error:{exc!s}"
+
+    torch_available = False
+    torch_device_name: str | None = None
+    torch_error: str | None = None
+    try:
+        import torch
+
+        torch_available = torch.cuda.is_available()
+        if torch_available:
+            try:
+                device_index = torch.cuda.current_device()
+                torch_device_name = torch.cuda.get_device_name(device_index)
+            except Exception as exc:  # pragma: no cover - defensive logging only
+                torch_error = f"cuda_device_name_error:{exc!s}"
+    except ModuleNotFoundError:
+        torch_error = "torch_not_installed"
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        torch_error = f"torch_error:{exc!s}"
+
+    provider_gpu_available = any(
+        provider in {"CUDAExecutionProvider", "TensorrtExecutionProvider"} for provider in providers
+    )
+    gpu_active = bool(torch_available and provider_gpu_available)
+
+    return {
+        "torch_cuda_available": torch_available,
+        "torch_error": torch_error,
+        "torch_device_name": torch_device_name,
+        "onnx_providers": providers,
+        "onnx_error": ort_error,
+        "gpu_active": gpu_active,
+    }
+
+
+def _spawn_startup_thread(config: Mapping[str, Any]) -> threading.Event:
+    """Execute startup tasks asynchronously to keep the Flask boot path responsive."""
+
+    completion = threading.Event()
+
+    def _worker() -> None:
+        _log_json(
+            logging.INFO,
+            "startup_tasks_begin",
+            accelerator=config.get("BG_ACCELERATOR"),
+            cuda_device_id=config.get("BG_CUDA_DEVICE_ID"),
+        )
+        try:
+            run_startup_tasks(config)
+            gpu_state = _detect_gpu_state()
+            _log_json(logging.INFO, "startup_tasks_complete", **gpu_state)
+        except Exception as exc:  # pragma: no cover - surfaced via logs in production
+            _LOGGER.exception("Startup task execution failed")
+            _log_json(logging.ERROR, "startup_tasks_failed", error=str(exc))
+        finally:
+            completion.set()
+
+    thread = threading.Thread(target=_worker, name="startup-initialiser", daemon=True)
+    thread.start()
+    return completion
 
 
 def _env_int(*keys: str) -> int | None:
@@ -107,13 +203,24 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.no_warn_on_cpu:
         config_overrides["BG_WARN_ON_CPU"] = False
 
-    app = create_app(config_overrides=config_overrides or None)
-    if eventlet is None:
-        _LOGGER.info("Starting Flask development server on http://%s:%s (standard threading)", host, port)
-    else:
-        _LOGGER.info("Starting Flask development server on http://%s:%s with eventlet", host, port)
+    _log_json(logging.INFO, "initialising_models")
+    app = create_app(config_overrides=config_overrides or None, run_startup_tasks=False)
+    startup_event = _spawn_startup_thread(app.config)
+    _log_json(
+        logging.INFO,
+        "server_start",
+        host=host,
+        port=port,
+        eventlet=bool(eventlet),
+        debug=bool(debug),
+        config_overrides=config_overrides or {},
+        startup_async=True,
+        startup_event_set=startup_event.is_set(),
+    )
+    _log_json(logging.INFO, "starting_flask", host=host, port=port)
     app.run(host=host, port=port, debug=debug)
 
 
 if __name__ == "__main__":
     main()
+

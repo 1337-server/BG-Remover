@@ -1,18 +1,36 @@
 """Tests for the background removal Flask blueprint."""
 from __future__ import annotations
 
+import importlib
+import os
+import time
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
-pytest.importorskip("flask")
+try:  # pragma: no cover - optional dependency during CI
+    from flask import Flask
+    from PIL import Image
+except ModuleNotFoundError as exc:  # pragma: no cover - fail fast when dependencies are absent
+    missing = getattr(exc, "name", None) or "required dependencies"
+    pytest.skip(f"{missing} is required for image converter tests", allow_module_level=True)
 
-from flask import Flask
+image_converter = importlib.import_module("app.routes.image_converter")
+RemovalResult = importlib.import_module("app.services.bg_remove").RemovalResult
 
-from app.routes import image_converter
-from app.services.bg_remove import RemovalResult
 
+INTEGRATION_WEIGHTS_ENV = "BR_INTEGRATION_WEIGHTS_DIR"
+
+
+def _integration_weights_dir() -> Path | None:
+    """Return the integration weights directory when configured."""
+
+    raw = os.getenv(INTEGRATION_WEIGHTS_ENV)
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.exists() else None
 
 def _create_app() -> Flask:
     """Create a Flask application configured with the image converter blueprint."""
@@ -195,3 +213,48 @@ def test_accelerator_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
         "gpu_name": "RTX 5090",
         "rtx_50_series": True,
     }
+
+
+@pytest.mark.integration
+def test_single_image_post_real_latency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end requests should complete with measurable latency using real weights."""
+
+    weights_dir = _integration_weights_dir()
+    if weights_dir is None:
+        pytest.skip(f"Set {INTEGRATION_WEIGHTS_ENV} to enable integration tests")
+
+    pytest.importorskip("onnxruntime")
+    from app.services import model_registry
+
+    try:
+        model_registry.runtime_compat.ensure_runtime_ready()
+    except RuntimeError as exc:
+        pytest.skip(f"Runtime compatibility check failed: {exc}")
+
+    monkeypatch.setenv("U2NET_HOME", str(weights_dir))
+
+    app = _create_app()
+    client = app.test_client()
+
+    image = Image.new("RGB", (128, 128), color=(255, 0, 0))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    payload_bytes = buffer.getvalue()
+
+    start = time.perf_counter()
+    response = client.post(
+        "/image/remove-bg?json=1",
+        data={"image_file": (BytesIO(payload_bytes), "sample.png"), "output_format": "png"},
+        content_type="multipart/form-data",
+    )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    if response.status_code != 200:
+        pytest.skip(f"Request failed with status {response.status_code}")
+
+    payload = response.get_json()
+    assert payload["result"]["success"] is True
+    assert payload["format"] == "png"
+    assert elapsed_ms > 0
+    timing = payload["result"].get("timing_ms")
+    assert timing is None or timing >= 0

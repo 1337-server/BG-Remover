@@ -79,8 +79,32 @@ def _build_config(overrides: Mapping[str, Any] | None) -> MutableMapping[str, An
     return config
 
 
-def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
-    """Create and configure the Flask application."""
+def _run_startup_tasks(config: Mapping[str, Any]) -> None:
+    """Prepare runtime dependencies and warm up background removal sessions."""
+
+    runtime_compat.ensure_runtime_ready()
+    model_registry.preload_models(config=config)
+    ensure_global_session(config=config)
+
+
+def create_app(
+    config_overrides: Mapping[str, Any] | None = None,
+    *,
+    run_startup_tasks: bool = True,
+) -> Flask:
+    """Create and configure the Flask application.
+
+    Parameters
+    ----------
+    config_overrides:
+        Optional mapping of configuration overrides supplied by the caller.
+    run_startup_tasks:
+        When ``True`` (the default), preload ONNX models, verify runtime
+        compatibility, and warm up the global background removal session before
+        returning the application. When ``False`` these tasks are skipped and it
+        becomes the caller's responsibility to invoke :func:`run_startup_tasks`
+        asynchronously.
+    """
 
     try:  # pragma: no cover - executed only when Flask missing
         from flask import Flask
@@ -91,13 +115,11 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     app = Flask(__name__)
     app.config.from_mapping(_build_config(config_overrides))
 
-    # Initialise the runtime stack before creating the rembg session. This
-    # ensures NumPy/ONNXRuntime compatibility issues are surfaced early.
-    runtime_compat.ensure_runtime_ready()
-    # Warm up ONNX models to avoid cold-start latency before requests arrive.
-    model_registry.preload_models(config=app.config)
-    # Initialise the global background removal session once at startup.
-    ensure_global_session(config=app.config)
+    # Optionally initialise the runtime stack before creating the rembg session.
+    # When executed synchronously this surfaces NumPy/ONNXRuntime issues early,
+    # otherwise callers can invoke :func:`run_startup_tasks` asynchronously.
+    if run_startup_tasks:
+        _run_startup_tasks(app.config)
 
     from app.routes.image_converter import image_converter_bp
 
@@ -119,5 +141,11 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     )
 
     return app
+
+
+def run_startup_tasks(config: Mapping[str, Any]) -> None:
+    """Public wrapper that performs the heavy-weight startup preparation."""
+
+    _run_startup_tasks(config)
 
 

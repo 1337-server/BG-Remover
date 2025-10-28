@@ -729,8 +729,9 @@ def _run_inference(
     spec = _get_model_spec(model_name)
     resized = image.convert("RGB").resize(spec.input_size, Image.Resampling.LANCZOS)
     np_image = np.asarray(resized, dtype=np.float32)
-    max_value = float(np.max(np_image)) or 1.0
-    np_image /= max_value
+    # Maintain the 0-1 scaling expected by U²Net/ISNet models by dividing by the
+    # constant 255 rather than the brightest pixel value in the current image.
+    np_image /= 255.0
 
     normalised = np.empty_like(np_image, dtype=np.float32)
     for index in range(3):

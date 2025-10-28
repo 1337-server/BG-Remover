@@ -18,20 +18,12 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     cv2 = None  # type: ignore
 
-try:  # pragma: no cover - optional dependency during testing
-    from rembg import new_session as _rembg_new_session
-    from rembg import remove as _rembg_remove
-except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
-    _rembg_remove = None
-    _rembg_new_session = None
-    _REMBG_IMPORT_ERROR = exc
-else:
-    _REMBG_IMPORT_ERROR = None
+_REMBG_IMPORT_ERROR: Exception | None = None
+_REMBG_NEW_SESSION: Callable[..., Any] | None = None
+_REMBG_REMOVE: Callable[..., Any] | None = None
 
-try:  # pragma: no cover - optional dependency during testing
-    import torch
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    torch = None  # type: ignore[assignment]
+_TORCH_IMPORT_ERROR: ModuleNotFoundError | None = None
+_TORCH_MODULE: Any | None = None
 
 
 LOGGER = logging.getLogger(__name__)
@@ -43,6 +35,49 @@ PreviewCallback = Callable[[Image.Image, str], None]
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 MAX_WORK_DIMENSION = 8000
+
+
+def _load_rembg(error_message: str) -> tuple[Callable[..., Any], Callable[..., Any]]:
+    """Return ``rembg`` helpers, raising ``RuntimeError`` when unavailable."""
+
+    global _REMBG_NEW_SESSION, _REMBG_REMOVE, _REMBG_IMPORT_ERROR
+
+    if _REMBG_NEW_SESSION is not None and _REMBG_REMOVE is not None:
+        return _REMBG_NEW_SESSION, _REMBG_REMOVE
+
+    if _REMBG_IMPORT_ERROR is not None:
+        raise RuntimeError(error_message) from _REMBG_IMPORT_ERROR
+
+    try:  # pragma: no cover - optional dependency during testing
+        from rembg import new_session as rembg_new_session
+        from rembg import remove as rembg_remove
+    except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
+        _REMBG_IMPORT_ERROR = exc
+        raise RuntimeError(error_message) from exc
+
+    _REMBG_NEW_SESSION = rembg_new_session
+    _REMBG_REMOVE = rembg_remove
+    return rembg_new_session, rembg_remove
+
+
+def _load_torch() -> Any | None:
+    """Return the lazily imported ``torch`` module when available."""
+
+    global _TORCH_MODULE, _TORCH_IMPORT_ERROR
+
+    if _TORCH_MODULE is not None:
+        return _TORCH_MODULE
+    if _TORCH_IMPORT_ERROR is not None:
+        return None
+
+    try:  # pragma: no cover - optional dependency during testing
+        import torch as torch_module
+    except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
+        _TORCH_IMPORT_ERROR = exc
+        return None
+
+    _TORCH_MODULE = torch_module
+    return torch_module
 
 
 @dataclass(frozen=True)
@@ -219,11 +254,12 @@ class RemovalResult:
 def _build_gpu_providers() -> Optional[List[str]]:
     """Return CUDA providers for ``rembg`` when a compatible GPU is available."""
 
-    if torch is None:
+    torch_module = _load_torch()
+    if torch_module is None:
         return None
 
     try:
-        if torch.cuda.is_available():
+        if torch_module.cuda.is_available():
             LOGGER.info("Using GPU for background removal")
             return ["CUDAExecutionProvider", "CPUExecutionProvider"]
     except Exception as exc:  # pragma: no cover - defensive
@@ -234,13 +270,14 @@ def _build_gpu_providers() -> Optional[List[str]]:
 def create_session(model_name: str = "u2net") -> Session:
     """Create a new ``rembg`` session with optional GPU acceleration."""
 
-    if _rembg_new_session is None:
-        raise RuntimeError("rembg is required to create a background removal session.") from _REMBG_IMPORT_ERROR
+    rembg_new_session, _ = _load_rembg(
+        "rembg is required to create a background removal session."
+    )
 
     providers = _build_gpu_providers()
     if providers:
         try:
-            return _rembg_new_session(model_name, providers=providers)
+            return rembg_new_session(model_name, providers=providers)
         except Exception as exc:
             LOGGER.warning(
                 "Falling back to CPU background removal after GPU initialisation failure: %s",
@@ -248,7 +285,7 @@ def create_session(model_name: str = "u2net") -> Session:
             )
 
     LOGGER.info("Using CPU for background removal")
-    return _rembg_new_session(model_name)
+    return rembg_new_session(model_name)
 
 
 def ensure_global_session(model_name: str = "u2net") -> Session:
@@ -317,13 +354,12 @@ def _feather_alpha(alpha: np.ndarray, radius: int) -> np.ndarray:
 def _run_rembg(image: Image.Image, session: Session) -> Image.Image:
     """Execute ``rembg.remove`` and return an RGBA mask image."""
 
-    if _rembg_remove is None:
-        raise RuntimeError("rembg is required to process images.") from _REMBG_IMPORT_ERROR
+    _, rembg_remove = _load_rembg("rembg is required to process images.")
 
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
-    result_bytes = _rembg_remove(buffer.read(), session=session)
+    result_bytes = rembg_remove(buffer.read(), session=session)
     result_stream = io.BytesIO(result_bytes)
     result_image = Image.open(result_stream).convert("RGBA")
     result_image.load()

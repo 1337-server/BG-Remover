@@ -4,62 +4,88 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:  # pragma: no cover - hints only
+if TYPE_CHECKING:  # pragma: no cover - type hints only
     from collections.abc import Callable
 
 _LOGGER = logging.getLogger(__name__)
-_PATCH_RESULT: bool | None = None
+_PATCH_STATE: bool | None = None
+
+
+def _set_patch_state(value: bool) -> bool:
+    """Persist ``value`` as the cached monkey patch status and return it."""
+
+    global _PATCH_STATE
+    _PATCH_STATE = value
+    return value
+
+
+def _import_eventlet() -> tuple["Callable", "Callable"]:
+    """Return the Eventlet module and its patcher helper."""
+
+    import eventlet  # type: ignore
+    from eventlet import patcher  # type: ignore
+
+    return eventlet, patcher
 
 
 def _is_eventlet_monkey_patched(patcher: "Callable[[str], bool]") -> bool:
     """Return ``True`` when Eventlet's monkey patching has already run."""
 
     try:
-        # Checking the socket module is a reliable proxy for Eventlet's patch.
         return bool(patcher("socket"))
     except Exception:  # pragma: no cover - defensive guard
         _LOGGER.debug("Unable to determine Eventlet monkey patch status.", exc_info=True)
         return False
 
 
-def ensure_eventlet_monkey_patched() -> bool:
-    """Apply Eventlet's monkey patching when available.
+def is_eventlet_monkey_patched() -> bool:
+    """Return ``True`` when cooperative Eventlet sockets are active."""
 
-    Eventlet must patch the standard library before importing Flask, Socket.IO
-    or other networking heavy modules. The helper is idempotent so that multiple
-    entry points can safely request monkey patching without reapplying it.
-
-    Returns
-    -------
-    bool
-        ``True`` when the standard library was already patched or patching
-        succeeds, ``False`` otherwise.
-    """
-
-    global _PATCH_RESULT
-    if _PATCH_RESULT is not None:
-        return _PATCH_RESULT
+    if _PATCH_STATE is True:
+        return True
 
     try:
-        import eventlet  # type: ignore
-        from eventlet import patcher  # type: ignore
+        _, patcher = _import_eventlet()
+    except ModuleNotFoundError:
+        return _set_patch_state(False)
+    except Exception:  # pragma: no cover - defensive guard
+        _LOGGER.debug("Unable to import Eventlet while checking patch state.", exc_info=True)
+        return bool(_PATCH_STATE)
+
+    patched = _is_eventlet_monkey_patched(patcher.is_monkey_patched)
+    if patched:
+        _set_patch_state(True)
+    return patched
+
+
+def mark_eventlet_monkey_patched() -> None:
+    """Record that Eventlet's monkey patching has been applied externally."""
+
+    _set_patch_state(True)
+
+
+def ensure_eventlet_monkey_patched() -> bool:
+    """Apply Eventlet's monkey patching when available and return the status."""
+
+    if is_eventlet_monkey_patched():
+        return True
+
+    try:
+        eventlet, patcher = _import_eventlet()
     except ModuleNotFoundError:
         _LOGGER.warning(
             "Eventlet is not installed. Running without cooperative sockets.",
         )
-        _PATCH_RESULT = False
-        return False
+        return _set_patch_state(False)
     except Exception:  # pragma: no cover - defensive guard
         _LOGGER.exception(
             "Unexpected error importing Eventlet; continuing without monkey patching.",
         )
-        _PATCH_RESULT = False
-        return False
+        return _set_patch_state(False)
 
     if _is_eventlet_monkey_patched(patcher.is_monkey_patched):
         _LOGGER.debug("Eventlet monkey patching already active.")
-        _PATCH_RESULT = True
-        return True
+        return _set_patch_state(True)
 
     try:
         eventlet.monkey_patch()
@@ -67,9 +93,7 @@ def ensure_eventlet_monkey_patched() -> bool:
         _LOGGER.exception(
             "Eventlet monkey patching failed; continuing without cooperative sockets.",
         )
-        _PATCH_RESULT = False
-        return False
+        return _set_patch_state(False)
 
     _LOGGER.debug("Eventlet monkey patching applied successfully.")
-    _PATCH_RESULT = True
-    return True
+    return _set_patch_state(True)

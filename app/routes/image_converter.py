@@ -14,6 +14,8 @@ from flask import (
     Response,
     abort,
     after_this_request,
+    current_app,
+    Flask,
     jsonify,
     render_template,
     request,
@@ -326,6 +328,7 @@ def _serve_registry_item(
 
 
 def _process_live_job(
+    flask_app: "Flask",
     job_id: str,
     socket_id: str,
     temp_dir: Path,
@@ -335,81 +338,82 @@ def _process_live_job(
 ) -> None:
     """Background task that performs removal and streams websocket updates."""
 
-    def progress_callback(stage: str, percent: float) -> None:
-        _emit_progress(socket_id, job_id, stage, percent)
+    with flask_app.app_context():
+        def progress_callback(stage: str, percent: float) -> None:
+            _emit_progress(socket_id, job_id, stage, percent)
 
-    def preview_callback(image: Image.Image, stage: str) -> None:
-        _emit_preview(socket_id, job_id, stage, image)
+        def preview_callback(image: Image.Image, stage: str) -> None:
+            _emit_preview(socket_id, job_id, stage, image)
 
-    try:
         try:
-            format_spec = get_output_format_spec(options.get("output_format"))
-        except ValueError:
-            format_spec = get_output_format_spec(None)
-        _emit_progress(socket_id, job_id, "queued", 0.0)
-        result = remove_bg_file(
-            input_path,
-            output_path,
-            alpha_matting=options["alpha_matting"],
-            am_foreground=options["am_foreground"],
-            am_background=options["am_background"],
-            am_erode=options["am_erode"],
-            colorkey_tolerance=options["colorkey_tolerance"],
-            feather_radius=options["feather_radius"],
-            progress_callback=progress_callback,
-            preview_callback=preview_callback,
-            output_format=format_spec.key,
-        )
-        if not result.success or result.path_out is None:
-            raise RuntimeError(result.error or "Background removal failed.")
+            try:
+                format_spec = get_output_format_spec(options.get("output_format"))
+            except ValueError:
+                format_spec = get_output_format_spec(None)
+            _emit_progress(socket_id, job_id, "queued", 0.0)
+            result = remove_bg_file(
+                input_path,
+                output_path,
+                alpha_matting=options["alpha_matting"],
+                am_foreground=options["am_foreground"],
+                am_background=options["am_background"],
+                am_erode=options["am_erode"],
+                colorkey_tolerance=options["colorkey_tolerance"],
+                feather_radius=options["feather_radius"],
+                progress_callback=progress_callback,
+                preview_callback=preview_callback,
+                output_format=format_spec.key,
+            )
+            if not result.success or result.path_out is None:
+                raise RuntimeError(result.error or "Background removal failed.")
 
-        download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=format_spec.extension) as download_file:
-            download_path = Path(download_file.name)
+            download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=format_spec.extension) as download_file:
+                download_path = Path(download_file.name)
 
-        shutil.copyfile(result.path_out, download_path)
+            shutil.copyfile(result.path_out, download_path)
 
-        download_token, _ = _register_registry_item(
-            _FILE_REGISTRY,
-            path=download_path,
-            mimetype=format_spec.mime_type,
-            delete_after_read=True,
-            download_name=download_name,
-        )
+            download_token, _ = _register_registry_item(
+                _FILE_REGISTRY,
+                path=download_path,
+                mimetype=format_spec.mime_type,
+                delete_after_read=True,
+                download_name=download_name,
+            )
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=format_spec.extension) as final_preview_file:
-            preview_path = Path(final_preview_file.name)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=format_spec.extension) as final_preview_file:
+                preview_path = Path(final_preview_file.name)
 
-        shutil.copyfile(result.path_out, preview_path)
+            shutil.copyfile(result.path_out, preview_path)
 
-        preview_token, _ = _register_registry_item(
-            _PREVIEW_REGISTRY,
-            path=preview_path,
-            mimetype=format_spec.mime_type,
-            delete_after_read=True,
-        )
+            preview_token, _ = _register_registry_item(
+                _PREVIEW_REGISTRY,
+                path=preview_path,
+                mimetype=format_spec.mime_type,
+                delete_after_read=True,
+            )
 
-        _emit_progress(socket_id, job_id, "complete", 100.0)
-        socketio.emit(
-            "completed",
-            {
-                "job_id": job_id,
-                "result": result.to_dict(),
-                "result_token": preview_token,
-                "result_url": f"/image/remove-bg/live/result/{preview_token}",
-                "download_token": download_token,
-                "download_url": f"/image/remove-bg/file/{download_token}",
-                "mime_type": format_spec.mime_type,
-                "download_name": download_name,
-                "format": format_spec.key,
-            },
-            namespace=BACKGROUND_PREVIEW_NAMESPACE,
-            to=socket_id,
-        )
-    except Exception as exc:  # pragma: no cover - depends on runtime environment
-        _emit_error(socket_id, job_id, str(exc))
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+            _emit_progress(socket_id, job_id, "complete", 100.0)
+            socketio.emit(
+                "completed",
+                {
+                    "job_id": job_id,
+                    "result": result.to_dict(),
+                    "result_token": preview_token,
+                    "result_url": f"/image/remove-bg/live/result/{preview_token}",
+                    "download_token": download_token,
+                    "download_url": f"/image/remove-bg/file/{download_token}",
+                    "mime_type": format_spec.mime_type,
+                    "download_name": download_name,
+                    "format": format_spec.key,
+                },
+                namespace=BACKGROUND_PREVIEW_NAMESPACE,
+                to=socket_id,
+            )
+        except Exception as exc:  # pragma: no cover - depends on runtime environment
+            _emit_error(socket_id, job_id, str(exc))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @image_converter_bp.route("/image/remove-bg/live", methods=["POST"])
@@ -442,9 +446,12 @@ def remove_bg_live() -> Response:
 
     job_id = uuid.uuid4().hex
 
+    flask_app = current_app._get_current_object()
+
     try:
         socketio.start_background_task(
             _process_live_job,
+            flask_app,
             job_id,
             socket_id,
             temp_dir,

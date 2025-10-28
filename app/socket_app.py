@@ -4,9 +4,22 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from app.socketio_utils import ensure_eventlet_monkey_patched
+try:  # pragma: no cover - import side effect
+    import eventlet as _eventlet  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - runtime optional dependency
+    _eventlet = None  # type: ignore[assignment]
+else:
+    try:
+        _eventlet.monkey_patch()
+    except Exception:  # pragma: no cover - defensive guard
+        _eventlet = None  # type: ignore[assignment]
 
-ensure_eventlet_monkey_patched()
+from app.socketio_utils import ensure_eventlet_monkey_patched, mark_eventlet_monkey_patched
+
+if _eventlet is not None:
+    mark_eventlet_monkey_patched()
+else:
+    ensure_eventlet_monkey_patched()
 
 from flask import Flask
 

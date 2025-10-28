@@ -208,12 +208,12 @@ def remove_bg_view() -> Response:
     if current_app and current_app.config.get("TESTING"):
         session = None
         runtime_info = get_runtime_payload()
-        gpu_available = bool(runtime_compat.has_cuda_support() or runtime_info.get("gpu_name"))
+        gpu_available = bool(runtime_info.get("gpu_available"))
     else:
         session_context = _get_session_context(model_name, session_config)
         session = session_context.session
         runtime_info = session_context.runtime_payload()
-        gpu_available = bool(session_context.gpu_name or runtime_compat.has_cuda_support())
+        gpu_available = bool(runtime_info.get("gpu_available"))
 
     json_requested = request.args.get("json") == "1"
 

@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import threading
 import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Tuple
+
+from app.services import runtime_compat
 
 if TYPE_CHECKING:  # pragma: no cover - hints only
     from flask import Flask
@@ -17,6 +20,7 @@ from flask import (
     Response,
     abort,
     after_this_request,
+    current_app,
     jsonify,
     render_template,
     request,
@@ -25,12 +29,16 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
-from app.services import runtime_compat
 from app.services.bg_remove import (
+    OUTPUT_FORMATS,
     RemovalResult,
+    create_session,
     encode_result_image,
+    ensure_global_session,
+    get_accelerator_status,
     get_mime_type_for_path,
     get_output_format_spec,
+    get_runtime_payload,
     remove_bg_file,
     remove_bg_folder,
     OUTPUT_FORMATS,
@@ -53,6 +61,8 @@ class RegistryItem:
 
 _FILE_REGISTRY: Dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: Dict[str, RegistryItem] = {}
+_SESSION_CACHE: Dict[Tuple[str, str, int], "SessionContext"] = {}
+_SESSION_CACHE_LOCK = threading.Lock()
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
     for spec in OUTPUT_FORMATS
@@ -125,6 +135,21 @@ def _collect_single_options(form: Mapping[str, str], defaults: Dict[str, int]) -
     }
 
 
+def _get_session_context(model_name: str, config: Mapping[str, Any]) -> "SessionContext":
+    """Return a cached background removal session for ``model_name``."""
+
+    accelerator_mode = str(config.get("BG_ACCELERATOR", "auto")).strip().lower()
+    device_id = int(config.get("BG_CUDA_DEVICE_ID", 0) or 0)
+    cache_key = (model_name, accelerator_mode, device_id)
+
+    with _SESSION_CACHE_LOCK:
+        context = _SESSION_CACHE.get(cache_key)
+        if context is None:
+            context = create_session(model_name=model_name, config=config)
+            _SESSION_CACHE[cache_key] = context
+        return context
+
+
 @image_converter_bp.route("/", methods=["GET", "POST"])
 @image_converter_bp.route("/image/remove-bg", methods=["GET", "POST"])
 def remove_bg_view() -> Response:
@@ -134,14 +159,17 @@ def remove_bg_view() -> Response:
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
     defaults.update(DEFAULT_CHECKBOX_OPTIONS)
 
+    ensure_global_session(config=current_app.config if current_app else None)
+    runtime_info = get_runtime_payload()
+
     if request.method == "GET":
         return render_template(
             "image_remove_bg.html",
             defaults=defaults,
             format_options=FORMAT_OPTIONS,
+            accelerator_runtime=runtime_info,
             removal_model_options=REMOVAL_MODEL_OPTIONS,
             hardware_accelerator_options=HARDWARE_ACCELERATOR_OPTIONS,
-            gpu_available=runtime_compat.has_cuda_support(),
         )
 
     form = request.form
@@ -167,7 +195,25 @@ def remove_bg_view() -> Response:
         except (TypeError, ValueError):
             preview_size = None
 
-    gpu_available = runtime_compat.has_cuda_support()
+    session_config: Dict[str, Any] = {}
+    if current_app:
+        session_config.update(current_app.config)
+
+    accelerator_mode = hardware_accelerator
+    if accelerator_mode == "gpu":
+        accelerator_mode = "cuda"
+    session_config["BG_ACCELERATOR"] = accelerator_mode
+
+    session_context = None
+    if current_app and current_app.config.get("TESTING"):
+        session = None
+        runtime_info = get_runtime_payload()
+        gpu_available = bool(runtime_compat.has_cuda_support() or runtime_info.get("gpu_name"))
+    else:
+        session_context = _get_session_context(model_name, session_config)
+        session = session_context.session
+        runtime_info = session_context.runtime_payload()
+        gpu_available = bool(session_context.gpu_name or runtime_compat.has_cuda_support())
 
     json_requested = request.args.get("json") == "1"
 
@@ -183,8 +229,7 @@ def remove_bg_view() -> Response:
                 folder_path,
                 output_dir,
                 output_format=format_spec.key,
-                model_name=model_name,
-                hardware_accelerator=hardware_accelerator,
+                session=session,
                 recursive=recursive,
                 alpha_matting=options["alpha_matting"],
                 am_foreground=options["am_foreground"],
@@ -198,6 +243,7 @@ def remove_bg_view() -> Response:
 
         payload = _serialise_results(results)
         payload["selected_format"] = format_spec.key
+        payload.update(runtime_info)
         payload["selection"] = {
             "removal_model": removal_model_key,
             "model_name": model_name,
@@ -240,8 +286,7 @@ def remove_bg_view() -> Response:
     result = remove_bg_file(
         input_path,
         output_path,
-        model_name=model_name,
-        hardware_accelerator=hardware_accelerator,
+        session=session,
         alpha_matting=options["alpha_matting"],
         am_foreground=options["am_foreground"],
         am_background=options["am_background"],
@@ -273,6 +318,7 @@ def remove_bg_view() -> Response:
                 "output_directory": str(persistent_output_dir) if persistent_output_dir else None,
             },
         }
+        response_data.update(runtime_info)
         shutil.rmtree(temp_dir, ignore_errors=True)
         return jsonify(response_data)
 
@@ -373,6 +419,14 @@ def preview_file(token: str) -> Response:
     return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
 
 
+@image_converter_bp.route("/health/accelerator", methods=["GET"])
+def accelerator_health() -> Response:
+    """Return diagnostic accelerator information for health checks."""
+
+    ensure_global_session(config=current_app.config if current_app else None)
+    return jsonify(get_accelerator_status())
+
+
 def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
     """Convert ``RemovalResult`` objects to JSON-compatible data."""
 
@@ -444,4 +498,5 @@ def _bad_request(message: str) -> Response:
     """Return a consistent JSON error payload."""
 
     payload = {"error": message}
+    payload.update(get_runtime_payload())
     return jsonify(payload), 400

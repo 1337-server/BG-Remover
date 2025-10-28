@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 from app.services import runtime_compat
 from app.services.bg_remove import (
@@ -85,6 +86,23 @@ def parse_args() -> argparse.Namespace:
             f"{format_choices}. Defaults to {default_format.upper()}."
         ),
     )
+    parser.add_argument(
+        "--accelerator",
+        choices=["auto", "cuda", "cpu"],
+        default=None,
+        help="Select the execution accelerator (overrides BG_ACCELERATOR).",
+    )
+    parser.add_argument(
+        "--cuda-device-id",
+        type=int,
+        default=None,
+        help="Select the CUDA device id when using GPU acceleration.",
+    )
+    parser.add_argument(
+        "--no-warn-on-cpu",
+        action="store_true",
+        help="Disable CPU fallback warnings.",
+    )
     return parser.parse_args()
 
 
@@ -105,7 +123,16 @@ def main() -> None:
     args = parse_args()
     input_path = Path(args.input).expanduser() if args.input else Path.cwd()
     runtime_compat.ensure_runtime_ready()
-    ensure_global_session()
+
+    config_overrides: Dict[str, Any] = {}
+    if args.accelerator:
+        config_overrides["BG_ACCELERATOR"] = args.accelerator
+    if args.cuda_device_id is not None:
+        config_overrides["BG_CUDA_DEVICE_ID"] = args.cuda_device_id
+    if args.no_warn_on_cpu:
+        config_overrides["BG_WARN_ON_CPU"] = False
+
+    ensure_global_session(config=config_overrides or None)
 
     if input_path.is_dir():
         results = remove_bg_folder(

@@ -76,6 +76,12 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
         destination.write_bytes(b"png")
         return RemovalResult(Path(input_path), destination, True, None, 8.4)
 
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(
+        image_converter,
+        "get_runtime_payload",
+        lambda: {"runtime": "cuda", "gpu_name": "Test GPU", "warning": None},
+    )
     monkeypatch.setattr(image_converter, "remove_bg_file", fake_remove_bg_file)
 
     client = app.test_client()
@@ -102,6 +108,9 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
     assert selection["hardware_accelerator"] == image_converter.DEFAULT_HARDWARE_ACCELERATOR_KEY
     assert selection["output_directory"] is None
     assert selection["preview_size"] is None
+    assert payload["runtime"] == "cuda"
+    assert payload["gpu_name"] == "Test GPU"
+    assert payload.get("warning") is None
 
 
 def test_single_image_post_requires_file() -> None:
@@ -118,4 +127,68 @@ def test_single_image_post_requires_file() -> None:
 
     assert response.status_code == 400
     payload = response.get_json()
-    assert payload == {"error": "Please upload an image or provide a folder path."}
+    assert payload["error"] == "Please upload an image or provide a folder path."
+    assert payload["runtime"] in {"cpu", "cuda"}
+    assert "warning" in payload
+
+
+def test_single_image_post_includes_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime metadata should be included when warnings are active."""
+
+    app = _create_app()
+
+    def fake_remove_bg_file(input_path, output_path, **_: object) -> RemovalResult:  # type: ignore[override]
+        destination = Path(output_path)
+        destination.write_bytes(b"png")
+        return RemovalResult(Path(input_path), destination, True, None, 5.0)
+
+    monkeypatch.setattr(image_converter, "remove_bg_file", fake_remove_bg_file)
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(
+        image_converter,
+        "get_runtime_payload",
+        lambda: {"runtime": "cpu", "gpu_name": "Fallback GPU", "warning": "Running on CPU"},
+    )
+
+    client = app.test_client()
+    response = client.post(
+        "/image/remove-bg?json=1",
+        data={"image_file": (BytesIO(b"fake"), "photo.jpg"), "output_format": "png"},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["runtime"] == "cpu"
+    assert payload["gpu_name"] == "Fallback GPU"
+    assert payload["warning"] == "Running on CPU"
+
+
+def test_accelerator_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The accelerator health endpoint should surface diagnostic data."""
+
+    app = _create_app()
+
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(
+        image_converter,
+        "get_accelerator_status",
+        lambda: {
+            "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            "selected": "cuda",
+            "gpu_name": "RTX 5090",
+            "rtx_50_series": True,
+        },
+    )
+
+    client = app.test_client()
+    response = client.get("/health/accelerator")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload == {
+        "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        "selected": "cuda",
+        "gpu_name": "RTX 5090",
+        "rtx_50_series": True,
+    }

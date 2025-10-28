@@ -30,6 +30,13 @@ PNG output with transparency preserved.
 3. Install runtime dependencies (force-reinstall if upgrading from an older environment):
 
    ```bash
+   # CPU-only installation (default)
+   pip install --upgrade --force-reinstall -r requirements-cpu.txt
+
+   # CUDA 12.x GPU installation
+   pip install --upgrade --force-reinstall -r requirements-gpu.txt
+
+   # Compatibility wrapper that defers to the CPU set
    pip install --upgrade --force-reinstall -r requirements.txt
    ```
 
@@ -48,7 +55,9 @@ Follow these steps to try the background remover in a few minutes:
    python -m venv .venv
    source .venv/bin/activate   # macOS/Linux
    .venv\Scripts\activate      # Windows
-   pip install -r requirements.txt
+   # Choose one of the dependency sets
+   pip install -r requirements-cpu.txt          # CPU only
+   # pip install -r requirements-gpu.txt        # CUDA-enabled GPU
    ```
 
 2. **Run the CLI for a single image**
@@ -80,10 +89,34 @@ Follow these steps to try the background remover in a few minutes:
 5. **Optional: run everything in Docker**
 
    ```bash
-   docker compose up --build
+   docker compose up --build                 # CPU-only image
+   # docker compose --profile gpu up --build  # CUDA-enabled image (requires --gpus all)
    ```
 
-   The service exposes port `5000` and watches the `./data` volume for input/output folders.
+   The service exposes port `5000`. The GPU profile assumes `nvidia-container-toolkit` is installed and
+   the container is launched with GPU access enabled.
+
+---
+
+### ⚡ Accelerator configuration
+
+Background removal automatically prefers CUDA when the `onnxruntime-gpu` build is installed and
+the ONNX Runtime `CUDAExecutionProvider` is available. You can override or inspect the behaviour
+with the following knobs:
+
+* **Environment variables**
+  * `BG_ACCELERATOR` – `auto` (default), `cuda`, or `cpu` to pin the runtime.
+  * `BG_CUDA_DEVICE_ID` – CUDA device index to bind when using the GPU (default `0`).
+  * `BG_WARN_ON_CPU` – `true` (default) to surface warnings when the app falls back to CPU.
+* **CLI flags**
+  * `python main.py --accelerator cuda --cuda-device-id 1`
+  * `python serve.py --accelerator cpu --no-warn-on-cpu`
+* **Health checks**
+  * `GET /health/accelerator` returns the detected ONNX providers, selected runtime, GPU name, and RTX 50-series flag.
+
+When the app detects that it is running on the CPU despite a compatible GPU, a dismissible banner
+appears in the UI and a single log warning explains how to install `onnxruntime-gpu`, enable
+`nvidia-container-toolkit`, or launch Docker with `--gpus all`.
 
 ---
 
@@ -103,6 +136,8 @@ Key behaviour:
 * Passing a **folder** produces PNGs under `./output` (or the directory from `--output`).
 * Use `--alpha-matting` + thresholds for tricky edges, `--no-colorkey-fallback` to disable the
   solid-colour helper, and `--recursive` to process nested folders.
+* Override accelerator selection with `--accelerator [auto|cuda|cpu]`, `--cuda-device-id`, and
+  `--no-warn-on-cpu` to suppress CLI warnings.
 
 ---
 
@@ -127,7 +162,9 @@ Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
   alpha-matting settings, and request a ZIP bundle of the processed results.
 
 The Flask app initialises a single rembg session on startup so repeated requests remain fast. Set
-`BR_FORCE_CPU=1` to disable CUDA when troubleshooting GPU driver mismatches.
+`BR_FORCE_CPU=1` to disable CUDA when troubleshooting GPU driver mismatches. The UI header always
+shows the selected accelerator and GPU name, and displays a dismissible warning if the app is running
+on the CPU because CUDA providers are missing.
 
 ---
 

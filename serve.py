@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from typing import Sequence
+from typing import Any, Dict, Sequence
 
 from app import create_app
 
@@ -58,6 +58,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable Flask debug mode regardless of FLASK_DEBUG.",
     )
+    parser.add_argument(
+        "--accelerator",
+        choices=["auto", "cuda", "cpu"],
+        default=None,
+        help="Select the execution accelerator (overrides BG_ACCELERATOR).",
+    )
+    parser.add_argument(
+        "--cuda-device-id",
+        type=int,
+        default=None,
+        help="Select the CUDA device id when using GPU acceleration.",
+    )
+    parser.add_argument(
+        "--no-warn-on-cpu",
+        action="store_true",
+        help="Disable CPU fallback warnings for this process.",
+    )
     return parser
 
 
@@ -74,7 +91,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     port = args.port if args.port is not None else env_port or 5000
     debug = args.debug or os.getenv("FLASK_DEBUG") == "1"
 
-    app = create_app()
+    config_overrides: Dict[str, Any] = {}
+    if args.accelerator:
+        config_overrides["BG_ACCELERATOR"] = args.accelerator
+    if args.cuda_device_id is not None:
+        config_overrides["BG_CUDA_DEVICE_ID"] = args.cuda_device_id
+    if args.no_warn_on_cpu:
+        config_overrides["BG_WARN_ON_CPU"] = False
+
+    app = create_app(config_overrides=config_overrides or None)
     _LOGGER.info("Starting Flask development server on http://%s:%s", host, port)
     app.run(host=host, port=port, debug=debug)
 

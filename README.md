@@ -38,6 +38,55 @@ weights automatically.
 
 ---
 
+### 🚦 Quick start
+
+Follow these steps to try the background remover in a few minutes:
+
+1. **Prepare the environment**
+
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate   # macOS/Linux
+   .venv\Scripts\activate      # Windows
+   pip install -r requirements.txt
+   ```
+
+2. **Run the CLI for a single image**
+
+   ```bash
+   python main.py --input ./samples/cat.jpg
+   ```
+
+   The processed image is saved to `./output/cat.png`. Add `--output` to customise the destination
+   directory.
+
+3. **Batch-convert an entire folder**
+
+   ```bash
+   python main.py --input ./photos --recursive --output ./photos_cutout
+   ```
+
+   Nested folders are preserved when `--recursive` is provided.
+
+4. **Launch the Flask web interface**
+
+   ```bash
+   python serve.py
+   ```
+
+   Open http://127.0.0.1:5000/image/remove-bg to upload a file or process a server-side folder from
+   your browser.
+
+5. **Optional: run everything in Docker**
+
+   ```bash
+   docker compose up --build
+   ```
+
+   The service exposes port `5000` and watches the `./data` volume for input/output folders.
+
+---
+
 ### 🧠 Command-line usage
 
 Run the CLI with:

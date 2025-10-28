@@ -32,6 +32,27 @@ Session = Any
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 MAX_WORK_DIMENSION = 8000
 
+
+def _resolve_output_directory(output_dir: Optional[str | Path]) -> Path:
+    """Return an absolute output directory, defaulting to ``cwd / 'output'``."""
+
+    if output_dir is None:
+        base = Path.cwd() / "output"
+    else:
+        base = Path(output_dir).expanduser()
+        if not base.is_absolute():
+            base = Path.cwd() / base
+    return base
+
+
+def _resolve_output_path(path: str | Path) -> Path:
+    """Return an absolute path for output files."""
+
+    destination = Path(path).expanduser()
+    if not destination.is_absolute():
+        destination = Path.cwd() / destination
+    return destination
+
 _SESSION_SINGLETON: Optional[Session] = None
 _SESSION_LOCK = threading.Lock()
 
@@ -197,9 +218,10 @@ def remove_bg_file(
     session = _get_session(session)
     source = Path(input_path)
     if output_path is None:
-        destination = source.with_suffix(".png")
+        output_dir = _resolve_output_directory(None)
+        destination = (output_dir / source.name).with_suffix(".png")
     else:
-        destination = Path(output_path)
+        destination = _resolve_output_path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     start = time.perf_counter()
@@ -287,10 +309,7 @@ def remove_bg_folder(
     if not input_path.is_dir():
         raise NotADirectoryError(f"Input directory does not exist: {input_path}")
 
-    if output_dir is None:
-        output_path = input_path.parent / f"{input_path.name}_no_bg"
-    else:
-        output_path = Path(output_dir)
+    output_path = _resolve_output_directory(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     results: List[RemovalResult] = []

@@ -50,8 +50,8 @@ python main.py --input path/to/image_or_folder --output optional/output/dir \
 
 Key behaviour:
 
-* Passing a **file** writes a neighbouring PNG (or to `--output` if given).
-* Passing a **folder** produces PNGs in `<input>_no_bg` or the directory from `--output`.
+* Passing a **file** writes to `./output/<name>.png` (or to `--output` if given).
+* Passing a **folder** produces PNGs under `./output` (or the directory from `--output`).
 * Use `--alpha-matting` + thresholds for tricky edges, `--no-colorkey-fallback` to disable the
   solid-colour helper, and `--recursive` to process nested folders.
 

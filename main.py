@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         "-o",
-        help="Output directory. Defaults to <input>_no_bg for folders or alongside the file.",
+        help="Output directory. Defaults to ./output within the current working directory.",
     )
     parser.add_argument(
         "--alpha-matting",

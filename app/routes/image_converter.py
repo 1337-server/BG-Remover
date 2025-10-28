@@ -8,12 +8,9 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 from app.services import runtime_compat
-
-if TYPE_CHECKING:  # pragma: no cover - hints only
-    from flask import Flask
 
 from flask import (
     Blueprint,
@@ -32,6 +29,7 @@ from werkzeug.utils import secure_filename
 from app.services.bg_remove import (
     OUTPUT_FORMATS,
     RemovalResult,
+    SessionContext,
     create_session,
     encode_result_image,
     ensure_global_session,
@@ -41,7 +39,6 @@ from app.services.bg_remove import (
     get_runtime_payload,
     remove_bg_file,
     remove_bg_folder,
-    OUTPUT_FORMATS,
 )
 
 image_converter_bp = Blueprint("image_converter", __name__)
@@ -61,7 +58,7 @@ class RegistryItem:
 
 _FILE_REGISTRY: Dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: Dict[str, RegistryItem] = {}
-_SESSION_CACHE: Dict[Tuple[str, str, int], "SessionContext"] = {}
+_SESSION_CACHE: Dict[Tuple[str, str, int], SessionContext] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}

@@ -4,6 +4,10 @@ from __future__ import annotations
 import warnings
 from typing import Callable, Optional
 
+from app.socketio_utils import ensure_eventlet_monkey_patched
+
+_EVENTLET_PATCHED = ensure_eventlet_monkey_patched()
+
 try:  # pragma: no cover - optional dependency during import time
     from flask_socketio import SocketIO
 except ModuleNotFoundError as exc:  # pragma: no cover - raised when dependency missing
@@ -50,11 +54,6 @@ except ModuleNotFoundError as exc:  # pragma: no cover - raised when dependency 
 else:
     _SOCKETIO_IMPORT_ERROR: Optional[Exception] = None
 
-try:  # pragma: no cover - optional dependency during import time
-    import eventlet  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - raised when dependency missing
-    eventlet = None  # type: ignore[assignment]
-
 
 def create_socketio() -> "SocketIO":
     """Return a configured :class:`~flask_socketio.SocketIO` instance.
@@ -69,7 +68,7 @@ def create_socketio() -> "SocketIO":
             "Flask-SocketIO is required for real-time preview support."
         ) from _SOCKETIO_IMPORT_ERROR
 
-    async_mode = "eventlet" if eventlet is not None else "threading"
+    async_mode = "eventlet" if _EVENTLET_PATCHED else "threading"
     if async_mode != "eventlet":  # pragma: no cover - executed only when dependency missing
         warnings.warn(
             "Eventlet is not available. Falling back to threading mode; WebSocket support will be limited.",

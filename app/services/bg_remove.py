@@ -331,14 +331,18 @@ def create_session(
     provider_options_map["CPUExecutionProvider"] = {}
 
     provider_chain: List[tuple[str, Any]] = []
-    for candidate in gpu_providers:
-        if candidate in providers_available:
-            options = dict(provider_options_map.get(candidate, {}))
-            provider_chain.append((candidate, (candidate, options)))
+    gpu_requested = requested_mode != "cpu"
+    if gpu_requested:
+        for candidate in gpu_providers:
+            if candidate in providers_available:
+                options = dict(provider_options_map.get(candidate, {}))
+                provider_chain.append((candidate, (candidate, options)))
 
     # Always append CPU fallback to ensure we can continue when GPU init fails.
     provider_chain.append(("CPUExecutionProvider", "CPUExecutionProvider"))
-    attempted_gpu = any(name in gpu_providers for name, _ in provider_chain[:-1])
+    attempted_gpu = gpu_requested and any(
+        name in gpu_providers for name, _ in provider_chain[:-1]
+    )
 
     chain_description = " -> ".join(name for name, _ in provider_chain)
     LOGGER.info("Execution provider priority: %s", chain_description)

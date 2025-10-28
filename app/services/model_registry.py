@@ -82,7 +82,9 @@ def _tensorrt_provider_options(device_id: int) -> MutableMapping[str, Any]:
         "trt_int8_enable": False,
         "trt_dla_enable": False,
         "trt_cuda_graph_enable": True,
-        "trt_detailed_build_log": True,
+        # Keep TensorRT quiet during engine builds while still surfacing errors.
+        "trt_detailed_build_log": False,
+        "trt_logger_severity": "kERROR",
     }
 
     if cache_available:

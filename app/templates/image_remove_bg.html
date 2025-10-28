@@ -6,6 +6,35 @@
     <h1 class="h4 mb-0">Remove Background</h1>
   </div>
   <div class="card-body">
+    <div
+      class="alert alert-warning{% if not accelerator_status.warning %} d-none{% endif %}"
+      id="accelerator-warning"
+      role="alert"
+    >
+      {% if accelerator_status.warning %}
+        {{ accelerator_status.warning }}
+      {% endif %}
+    </div>
+    <div
+      class="alert alert-info d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between gap-2{% if accelerator_status.warning %} border border-warning-subtle{% endif %}"
+      id="accelerator-info"
+      role="note"
+    >
+      <div>
+        <span class="fw-semibold">Runtime:</span>
+        <span id="accelerator-runtime-label">{{ accelerator_status.runtime | upper }}</span>
+        <span class="ms-2 text-muted" id="accelerator-gpu-label">
+          {% if accelerator_status.gpu_name %}
+            GPU: {{ accelerator_status.gpu_name }}
+          {% else %}
+            GPU: not detected
+          {% endif %}
+        </span>
+      </div>
+      <div class="small text-muted" id="accelerator-provider-label">
+        {{ accelerator_status.provider_description }}
+      </div>
+    </div>
     <ul class="nav nav-tabs" id="modeTabs" role="tablist">
       <li class="nav-item" role="presentation">
         <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single" type="button" role="tab" aria-controls="single" aria-selected="true">Single Image</button>
@@ -188,7 +217,16 @@
 {% endblock %}
 {% block extra_scripts %}
 <script>
+  window.initialAcceleratorStatus = {{ accelerator_status | tojson }};
+</script>
+<script>
   document.addEventListener('DOMContentLoaded', () => {
+    const acceleratorWarning = document.getElementById('accelerator-warning');
+    const acceleratorInfo = document.getElementById('accelerator-info');
+    const acceleratorRuntimeLabel = document.getElementById('accelerator-runtime-label');
+    const acceleratorGpuLabel = document.getElementById('accelerator-gpu-label');
+    const acceleratorProviderLabel = document.getElementById('accelerator-provider-label');
+
     const singleFormatSelect = document.getElementById('single-format');
 
     const showSpinner = (element, show) => {
@@ -345,6 +383,40 @@
       singleDownload.textContent = formatDownloadLabel(null, defaultFormat, null);
     };
 
+    const applyAcceleratorStatus = (status) => {
+      if (!status) {
+        return;
+      }
+
+      if (acceleratorRuntimeLabel) {
+        const runtimeLabel = (status.runtime || status.selected || 'cpu').toString().toUpperCase();
+        acceleratorRuntimeLabel.textContent = runtimeLabel;
+      }
+
+      if (acceleratorGpuLabel) {
+        const labelText = status.gpu_name ? `GPU: ${status.gpu_name}` : 'GPU: not detected';
+        acceleratorGpuLabel.textContent = labelText;
+      }
+
+      if (acceleratorProviderLabel) {
+        acceleratorProviderLabel.textContent = status.provider_description || '';
+      }
+
+      if (acceleratorWarning) {
+        const hasWarning = Boolean(status.warning);
+        acceleratorWarning.classList.toggle('d-none', !hasWarning);
+        acceleratorWarning.textContent = hasWarning ? status.warning : '';
+      }
+
+      if (acceleratorInfo) {
+        const showWarning = Boolean(status.warning);
+        acceleratorInfo.classList.toggle('border', showWarning);
+        acceleratorInfo.classList.toggle('border-warning-subtle', showWarning);
+      }
+    };
+
+    applyAcceleratorStatus(window.initialAcceleratorStatus || null);
+
     clearDownloadLink();
 
     if (singleFormatSelect && singleDownload) {
@@ -406,6 +478,9 @@
           });
 
           const payload = await response.json().catch(() => null);
+          if (payload?.accelerator) {
+            applyAcceleratorStatus(payload.accelerator);
+          }
           if (!response.ok || !payload) {
             const message = payload?.error || 'Background removal failed.';
             throw new Error(message);
@@ -500,6 +575,9 @@
             body: formData,
           });
           const data = await response.json();
+          if (data?.accelerator) {
+            applyAcceleratorStatus(data.accelerator);
+          }
           if (!response.ok) {
             throw new Error(data.error || 'Folder processing failed.');
           }

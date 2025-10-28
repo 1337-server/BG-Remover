@@ -28,6 +28,7 @@ from werkzeug.utils import secure_filename
 from app.services.bg_remove import (
     RemovalResult,
     encode_result_image,
+    get_accelerator_status,
     get_mime_type_for_path,
     get_output_format_spec,
     remove_bg_file,
@@ -70,6 +71,21 @@ DEFAULT_CHECKBOX_OPTIONS: Dict[str, bool] = {
     "recursive": False,
     "zip": False,
 }
+
+
+def _build_accelerator_payload() -> Dict[str, Any]:
+    """Return accelerator status suitable for JSON and template contexts."""
+
+    status = get_accelerator_status()
+    runtime = "cuda" if status.provider == "cuda" else "cpu"
+    payload = status.to_dict()
+    payload.update(
+        runtime=runtime,
+        gpu_name=status.gpu_name,
+        warning=status.warning,
+        provider_description=status.provider_description,
+    )
+    return payload
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -120,6 +136,7 @@ def remove_bg_view() -> Response:
             "image_remove_bg.html",
             defaults=defaults,
             format_options=FORMAT_OPTIONS,
+            accelerator_status=_build_accelerator_payload(),
         )
 
     form = request.form
@@ -158,6 +175,7 @@ def remove_bg_view() -> Response:
 
         payload = _serialise_results(results)
         payload["selected_format"] = format_spec.key
+        payload["accelerator"] = _build_accelerator_payload()
 
         if request.args.get("zip") == "1":
             try:
@@ -204,6 +222,7 @@ def remove_bg_view() -> Response:
             "mime_type": format_spec.mime_type,
             "download_name": download_name,
             "format": format_spec.key,
+            "accelerator": _build_accelerator_payload(),
         }
         shutil.rmtree(temp_dir, ignore_errors=True)
         return jsonify(response_data)
@@ -220,6 +239,23 @@ def remove_bg_view() -> Response:
     )
     response.headers["X-Removal-Result"] = json.dumps(result.to_dict())
     return response
+
+
+@image_converter_bp.route("/health/accelerator", methods=["GET"])
+def accelerator_health() -> Response:
+    """Return diagnostics about the currently selected accelerator."""
+
+    status = get_accelerator_status()
+    runtime = "cuda" if status.provider == "cuda" else "cpu"
+    payload = {
+        "providers": list(status.available_providers),
+        "selected": runtime,
+        "gpu_name": status.gpu_name,
+        "rtx_50_series": status.rtx_50_series,
+        "warning": status.warning,
+        "provider_description": status.provider_description,
+    }
+    return jsonify(payload)
 
 def _register_registry_item(
     registry: Dict[str, RegistryItem],
@@ -375,5 +411,5 @@ def _create_zip(results: List[RemovalResult]) -> tuple[str, str]:
 def _bad_request(message: str) -> Response:
     """Return a consistent JSON error payload."""
 
-    payload = {"error": message}
+    payload = {"error": message, "accelerator": _build_accelerator_payload()}
     return jsonify(payload), 400

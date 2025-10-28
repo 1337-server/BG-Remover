@@ -1,12 +1,13 @@
-"""Development server entry point for the Flask web interface."""
+"""Helper script for running the Flask development server with accelerator overrides."""
 from __future__ import annotations
 
 import argparse
 import logging
 import os
-from typing import Sequence
+from typing import Any, Dict, Sequence
 
 from app import create_app
+from app.services.bg_remove import get_accelerator_status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +59,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable Flask debug mode regardless of FLASK_DEBUG.",
     )
+    parser.add_argument(
+        "--accelerator",
+        choices=["auto", "cuda", "cpu"],
+        default=None,
+        help="Override BG_ACCELERATOR for this process.",
+    )
+    parser.add_argument(
+        "--cuda-device-id",
+        type=int,
+        default=None,
+        help="Override BG_CUDA_DEVICE_ID for this process.",
+    )
+    parser.add_argument(
+        "--no-warn-on-cpu",
+        action="store_true",
+        help="Suppress CPU fallback warnings regardless of BG_WARN_ON_CPU.",
+    )
     return parser
 
 
@@ -74,7 +92,26 @@ def main(argv: Sequence[str] | None = None) -> None:
     port = args.port if args.port is not None else env_port or 5000
     debug = args.debug or os.getenv("FLASK_DEBUG") == "1"
 
-    app = create_app()
+    config_overrides: Dict[str, Any] = {}
+    if args.accelerator:
+        config_overrides["BG_ACCELERATOR"] = args.accelerator
+    if args.cuda_device_id is not None:
+        config_overrides["BG_CUDA_DEVICE_ID"] = args.cuda_device_id
+    if args.no_warn_on_cpu:
+        config_overrides["BG_WARN_ON_CPU"] = False
+
+    app = create_app(config_overrides if config_overrides else None)
+    status = get_accelerator_status()
+    runtime_label = "cuda" if status.provider == "cuda" else "cpu"
+    _LOGGER.info(
+        "Selected execution provider: %s (runtime=%s, gpu=%s)",
+        status.provider_description,
+        runtime_label,
+        status.gpu_name or "n/a",
+    )
+    if status.warning and app.config.get("BG_WARN_ON_CPU", True):
+        _LOGGER.warning("%s", status.warning)
+
     _LOGGER.info("Starting Flask development server on http://%s:%s", host, port)
     app.run(host=host, port=port, debug=debug)
 

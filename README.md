@@ -1,104 +1,107 @@
-## 🖼️ Background Remover (U²-Net)
+## 🖼️ Background Remover (rembg + U²-Net)
 
-A simple, command-line Python tool to **remove image backgrounds** using the [U²-Net](https://github.com/xuebinqin/U-2-Net) deep-learning model.
-It supports single images or entire folders and outputs PNGs with transparent backgrounds.
+This project combines a rich command-line tool and a small Flask UI to remove image backgrounds with
+[rembg](https://github.com/danielgatis/rembg) (U²-Net based) while keeping memory usage and processing
+times predictable. It can clean up single images, entire folders, or uploaded files, and always writes
+PNG output with transparency preserved.
 
 ---
 
 ### 🚀 Features
 
-* 🔹 Works on **any common image format** (JPG, PNG, BMP, TIFF, etc.).
-* 🔹 Handles **single files or folders**.
-* 🔹 Automatically **downloads the U²-Net model** if missing.
-* 🔹 Saves clean cut-outs as PNGs with transparency.
-* 🔹 Gracefully skips unsupported or corrupted files.
-* 🔹 Runs on **GPU (CUDA)** if available, else falls back to CPU.
+* ✅ **rembg-powered masks** with optional alpha matting for detailed hair and fur handling.
+* ✅ **Solid background fallback** (colour-key) plus configurable feathering when OpenCV is available.
+* ✅ **Single-image CLI** and **folder batch mode** that respect EXIF orientation and reuse one model session.
+* ✅ **Web interface** built with Flask featuring upload + server-folder workflows and ZIP downloads.
+* ✅ Works on CPU or GPU, auto-orients input files, and limits oversized images to keep RAM usage stable.
 
 ---
 
-### 📦 Requirements
+### 📦 Installation
 
-Install dependencies using:
-
-```bash
-pip install -r requirements.txt
-```
-
-**requirements.txt**
-
-```txt
-torch>=2.0.0
-torchvision>=0.15.0
-Pillow>=10.0.0
-numpy>=1.24.0
-requests>=2.31.0
-tqdm>=4.66.0
-```
-
----
-
-### ⚙️ Setup
-
-1. Clone or download this project.
+1. Clone this repository.
 2. (Optional) Create and activate a virtual environment:
 
    ```bash
-   python -m venv venv
-   source venv/bin/activate   # on macOS/Linux
-   venv\Scripts\activate      # on Windows
+   python -m venv .venv
+   source .venv/bin/activate   # macOS/Linux
+   .venv\Scripts\activate      # Windows
    ```
-3. Install the dependencies:
+3. Install runtime dependencies:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-When first run, the script will **automatically download** the pre-trained `u2net.pth` model (~176 MB) from the official source.
+The first run of either the CLI or web service initialises a single rembg session and caches the U²-Net
+weights automatically.
 
 ---
 
-### 🧠 Usage
+### 🧠 Command-line usage
 
-#### 🖼️ Single image
-
-```bash
-python remove_bg.py --input path/to/image.jpg --output path/to/output_folder
-```
-
-#### 📁 Whole folder
+Run the CLI with:
 
 ```bash
-python remove_bg.py --input path/to/input_folder --output path/to/output_folder
+python main.py --input path/to/image_or_folder --output optional/output/dir \
+  --alpha-matting --am-foreground 240 --am-background 10 --am-erode 10 \
+  --colorkey-tolerance 14 --feather-radius 3 --recursive
 ```
 
-All processed images will be saved as **.png** files (to preserve transparency) in the specified output directory.
+Key behaviour:
+
+* Passing a **file** writes a neighbouring PNG (or to `--output` if given).
+* Passing a **folder** produces PNGs in `<input>_no_bg` or the directory from `--output`.
+* Use `--alpha-matting` + thresholds for tricky edges, `--no-colorkey-fallback` to disable the
+  solid-colour helper, and `--recursive` to process nested folders.
 
 ---
 
-### 🧩 Example
+### 🌐 Flask web interface
+
+Start the web UI once the dependencies are installed:
 
 ```bash
-python remove_bg.py --input ./photos --output ./results
+python -m flask --app app:create_app run
 ```
 
-**Input:**
-`photos/dog.jpg`
+Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 
-**Output:**
-`results/dog.png` (dog cut out with transparent background)
+* **Single Image** tab – upload an image, get an instant PNG with transparency (with preview or JSON).
+* **Folder Processing** tab – supply a server-side folder, optional output directory, recursive mode,
+  alpha-matting settings, and request a ZIP bundle of the processed results.
+
+The Flask app initialises a single rembg session on startup so repeated requests remain fast.
 
 ---
 
-### ⚡ Notes
+### 🧪 Tests
 
-* The script uses **U²-Net (salient object detection)**, which performs well on most subjects (people, animals, objects).
-* For faster but smaller models, you can swap in **U²-Netp (lightweight)** if you download `u2netp.pth`.
-* Works best on images with clear foreground/background separation.
-* You can extend it to use **U²-Net-human-seg** for portraits.
+The suite includes service-level regression tests. Run them with:
+
+```bash
+pytest
+```
+
+You can also sanity-check the project compiles with:
+
+```bash
+python -m compileall main.py app tests
+```
+
+---
+
+### 📂 Project layout
+
+* `main.py` – CLI entrypoint.
+* `app/services/bg_remove.py` – rembg session management and folder/file helpers.
+* `app/routes/image_converter.py` – Flask blueprint exposing the UI + JSON endpoints.
+* `templates/` – Base template + background removal form.
+* `tests/` – Pytest-based regression tests for the service utilities.
 
 ---
 
 ### 🧰 Credits
 
 * **Model:** [U²-Net – Qin et al., Pattern Recognition 2020](https://github.com/xuebinqin/U-2-Net)
-* **Implementation:** based on PyTorch, with image handling via Pillow.
+* **Background removal engine:** [rembg](https://github.com/danielgatis/rembg)

@@ -22,6 +22,14 @@
             <input class="form-control" type="file" id="single-file" name="image_file" accept="image/*" required>
             <div class="invalid-feedback">Please choose an image to upload.</div>
           </div>
+          <div class="mb-3">
+            <label class="form-label" for="single-format">Output format</label>
+            <select class="form-select" id="single-format" name="output_format">
+              {% for option in format_options %}
+              <option value="{{ option.key }}" data-extension="{{ option.extension }}" {% if option.key == defaults.output_format %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
           <div class="form-check form-switch mb-3">
             <input class="form-check-input" type="checkbox" id="single-alpha" name="alpha_matting">
             <label class="form-check-label" for="single-alpha">Alpha matting (better hair/edges)</label>
@@ -71,7 +79,7 @@
             <img id="single-preview" alt="Processed preview" class="img-fluid rounded" />
           </div>
           <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
-            <a class="btn btn-success d-none" id="single-download" href="#" download>Download PNG</a>
+            <a class="btn btn-success d-none" id="single-download" href="#" download>Download result</a>
             <span class="text-muted" id="single-result-stage"></span>
           </div>
           <pre class="mt-3 bg-light p-3 rounded" id="single-summary"></pre>
@@ -88,6 +96,14 @@
           <div class="mb-3">
             <label class="form-label" for="folder-output">Output directory (optional)</label>
             <input class="form-control" type="text" id="folder-output" name="output_dir" placeholder="Leave blank for default">
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="folder-format">Output format</label>
+            <select class="form-select" id="folder-format" name="output_format">
+              {% for option in format_options %}
+              <option value="{{ option.key }}" data-extension="{{ option.extension }}" {% if option.key == defaults.output_format %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
           </div>
           <div class="row g-3">
             <div class="col-md-6">
@@ -181,6 +197,15 @@
     assignDefaults('single');
     assignDefaults('folder');
 
+    const singleFormatSelect = document.getElementById('single-format');
+    const folderFormatSelect = document.getElementById('folder-format');
+    if (singleFormatSelect && defaults.output_format) {
+      singleFormatSelect.value = defaults.output_format;
+    }
+    if (folderFormatSelect && defaults.output_format) {
+      folderFormatSelect.value = defaults.output_format;
+    }
+
     const showSpinner = (element, show) => {
       element.classList.toggle('d-none', !show);
     };
@@ -209,6 +234,17 @@
     const singleDownload = document.getElementById('single-download');
     const singleFileInput = document.getElementById('single-file');
 
+    if (singleFormatSelect) {
+      singleFormatSelect.addEventListener('change', () => {
+        if (singleDownload.classList.contains('d-none')) {
+          const nextLabel = singleFormatSelect.value
+            ? `Download ${singleFormatSelect.value.toUpperCase()}`
+            : 'Download result';
+          singleDownload.textContent = nextLabel;
+        }
+      });
+    }
+
     let socketId = null;
     let currentJobId = null;
     let downloadObjectUrl = null;
@@ -223,7 +259,13 @@
       }
       singleDownload.classList.add('d-none');
       singleDownload.removeAttribute('href');
+      const defaultLabel = singleFormatSelect && singleFormatSelect.value
+        ? `Download ${singleFormatSelect.value.toUpperCase()}`
+        : 'Download result';
+      singleDownload.textContent = defaultLabel;
     };
+
+    clearDownloadUrl();
 
     const updateProgress = (percent, stage) => {
       const numeric = Number(percent) || 0;
@@ -238,7 +280,7 @@
       singleLivePreview.src = `data:image/png;base64,${base64Image}`;
     };
 
-    const setFinalPreview = (base64Image, mimeType) => {
+    const setFinalPreview = (base64Image, mimeType, downloadName) => {
       const finalMime = mimeType || 'image/png';
       singlePreview.src = `data:${finalMime};base64,${base64Image}`;
       singleResult.hidden = false;
@@ -252,8 +294,17 @@
       const blob = new Blob([buffer], { type: finalMime });
       downloadObjectUrl = URL.createObjectURL(blob);
       const baseName = activeFilename.replace(/\.[^./]+$/, '');
+      const fallbackExtension = (finalMime.split('/')[1] || 'png').toLowerCase();
+      const suggestedName = downloadName
+        || `${baseName || 'image'}_no_bg.${fallbackExtension}`;
       singleDownload.href = downloadObjectUrl;
-      singleDownload.download = `${baseName || 'image'}_no_bg.png`;
+      singleDownload.download = suggestedName;
+      const extension = (suggestedName.split('.').pop() || fallbackExtension).toUpperCase();
+      if (extension) {
+        singleDownload.textContent = `Download ${extension}`;
+      } else {
+        singleDownload.textContent = 'Download result';
+      }
       singleDownload.classList.remove('d-none');
     };
 
@@ -292,7 +343,7 @@
       singleResultStage.textContent = 'Background removal completed successfully.';
       if (payload.image) {
         setLivePreview(payload.image);
-        setFinalPreview(payload.image, payload.mime_type);
+        setFinalPreview(payload.image, payload.mime_type, payload.download_name);
       }
       if (payload.result) {
         singleSummary.textContent = JSON.stringify(payload.result, null, 2);
@@ -455,7 +506,8 @@
           if (item.download_url) {
             const link = document.createElement('a');
             link.href = item.download_url;
-            link.textContent = 'Download';
+            const formatLabel = (item.format || '').toString().toUpperCase();
+            link.textContent = formatLabel ? `Download ${formatLabel}` : 'Download';
             link.classList.add('btn', 'btn-sm', 'btn-outline-primary');
             downloadCell.appendChild(link);
           } else {

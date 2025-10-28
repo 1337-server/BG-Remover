@@ -29,8 +29,11 @@ from app.extensions import socketio
 from app.services.bg_remove import (
     RemovalResult,
     encode_result_image,
+    get_mime_type_for_path,
+    get_output_format_spec,
     remove_bg_file,
     remove_bg_folder,
+    OUTPUT_FORMATS,
 )
 
 image_converter_bp = Blueprint("image_converter", __name__)
@@ -40,7 +43,12 @@ _FILE_REGISTRY: Dict[str, Path] = {}
 _PREVIEW_REGISTRY: Dict[str, Path] = {}
 
 BACKGROUND_PREVIEW_NAMESPACE = "/ws/background-preview"
-DEFAULT_SINGLE_OPTIONS: Dict[str, int] = {
+FORMAT_OPTIONS = [
+    {"key": spec.key, "label": spec.label, "extension": spec.extension}
+    for spec in OUTPUT_FORMATS
+]
+DEFAULT_OUTPUT_FORMAT_KEY = get_output_format_spec(None).key
+DEFAULT_SINGLE_OPTIONS: Dict[str, Any] = {
     "am_foreground": 240,
     "am_background": 10,
     "am_erode": 10,
@@ -88,14 +96,23 @@ def remove_bg_view() -> Response:
     """Render the UI or process incoming form submissions."""
 
     defaults = DEFAULT_SINGLE_OPTIONS.copy()
+    defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
 
     if request.method == "GET":
-        return render_template("image_remove_bg.html", defaults=defaults)
+        return render_template(
+            "image_remove_bg.html",
+            defaults=defaults,
+            format_options=FORMAT_OPTIONS,
+        )
 
     form = request.form
     process_folder = _is_truthy(form.get("process_folder"))
     recursive = _is_truthy(form.get("recursive")) or request.args.get("recursive") == "1"
     options = _collect_single_options(form, defaults)
+    try:
+        format_spec = get_output_format_spec(form.get("output_format"))
+    except ValueError as exc:
+        return _bad_request(str(exc))
 
     json_requested = request.args.get("json") == "1"
 
@@ -110,6 +127,7 @@ def remove_bg_view() -> Response:
             results = remove_bg_folder(
                 folder_path,
                 output_dir,
+                output_format=format_spec.key,
                 recursive=recursive,
                 alpha_matting=options["alpha_matting"],
                 am_foreground=options["am_foreground"],
@@ -122,6 +140,7 @@ def remove_bg_view() -> Response:
             return _bad_request(str(exc))
 
         payload = _serialise_results(results)
+        payload["selected_format"] = format_spec.key
 
         if request.args.get("zip") == "1":
             try:
@@ -140,7 +159,8 @@ def remove_bg_view() -> Response:
     temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_"))
     input_path = temp_dir / filename
     file_storage.save(input_path)
-    output_path = temp_dir / f"{input_path.stem}.png"
+    output_path = format_spec.normalise_filename(temp_dir / input_path.stem)
+    download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
 
     result = remove_bg_file(
         input_path,
@@ -151,6 +171,7 @@ def remove_bg_view() -> Response:
         am_erode=options["am_erode"],
         colorkey_tolerance=options["colorkey_tolerance"],
         feather_radius=options["feather_radius"],
+        output_format=format_spec.key,
     )
 
     if not result.success:
@@ -158,11 +179,14 @@ def remove_bg_view() -> Response:
         return _bad_request(result.error or "Background removal failed.")
 
     if json_requested:
-        encoded = encode_result_image(result.path_out or output_path)
+        final_path = result.path_out or output_path
+        encoded = encode_result_image(final_path)
         response_data = {
             "result": result.to_dict(),
             "image_base64": encoded,
-            "mime_type": "image/png",
+            "mime_type": format_spec.mime_type,
+            "download_name": download_name,
+            "format": format_spec.key,
         }
         shutil.rmtree(temp_dir, ignore_errors=True)
         return jsonify(response_data)
@@ -174,8 +198,8 @@ def remove_bg_view() -> Response:
 
     response = send_file(
         result.path_out or output_path,
-        mimetype="image/png",
-        download_name=f"{input_path.stem}_no_bg.png",
+        mimetype=format_spec.mime_type,
+        download_name=download_name,
     )
     response.headers["X-Removal-Result"] = json.dumps(result.to_dict())
     return response
@@ -247,6 +271,10 @@ def _process_live_job(
         _emit_preview(socket_id, job_id, stage, image)
 
     try:
+        try:
+            format_spec = get_output_format_spec(options.get("output_format"))
+        except ValueError:
+            format_spec = get_output_format_spec(None)
         _emit_progress(socket_id, job_id, "queued", 0.0)
         result = remove_bg_file(
             input_path,
@@ -259,6 +287,7 @@ def _process_live_job(
             feather_radius=options["feather_radius"],
             progress_callback=progress_callback,
             preview_callback=preview_callback,
+            output_format=format_spec.key,
         )
         if not result.success or result.path_out is None:
             raise RuntimeError(result.error or "Background removal failed.")
@@ -266,6 +295,7 @@ def _process_live_job(
         with result.path_out.open("rb") as file_obj:
             encoded = base64.b64encode(file_obj.read()).decode("ascii")
 
+        download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
         _emit_progress(socket_id, job_id, "complete", 100.0)
         socketio.emit(
             "completed",
@@ -273,7 +303,9 @@ def _process_live_job(
                 "job_id": job_id,
                 "result": result.to_dict(),
                 "image": encoded,
-                "mime_type": "image/png",
+                "mime_type": format_spec.mime_type,
+                "download_name": download_name,
+                "format": format_spec.key,
             },
             namespace=BACKGROUND_PREVIEW_NAMESPACE,
             to=socket_id,
@@ -300,12 +332,17 @@ def remove_bg_live() -> Response:
         return _bad_request("Please upload an image to process.")
 
     options = _collect_single_options(form, defaults)
+    try:
+        format_spec = get_output_format_spec(form.get("output_format"))
+    except ValueError as exc:
+        return _bad_request(str(exc))
+    options["output_format"] = format_spec.key
 
     temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_live_"))
     filename = secure_filename(file_storage.filename or "image.png")
     input_path = temp_dir / filename
     file_storage.save(input_path)
-    output_path = temp_dir / f"{input_path.stem}_no_bg.png"
+    output_path = format_spec.normalise_filename(temp_dir / f"{input_path.stem}_no_bg")
 
     job_id = uuid.uuid4().hex
 
@@ -345,22 +382,27 @@ def download_zip(token: str) -> Response:
 
 @image_converter_bp.route("/image/remove-bg/file/<token>")
 def download_file(token: str) -> Response:
-    """Serve an exported PNG referenced by a temporary token."""
+    """Serve an exported image referenced by a temporary token."""
 
     path = _FILE_REGISTRY.pop(token, None)
     if path is None or not path.exists():
         abort(404)
-    return send_file(path, mimetype="image/png", as_attachment=True, download_name=path.name)
+    return send_file(
+        path,
+        mimetype=get_mime_type_for_path(path),
+        as_attachment=True,
+        download_name=path.name,
+    )
 
 
 @image_converter_bp.route("/image/remove-bg/preview/<token>")
 def preview_file(token: str) -> Response:
-    """Serve an inline preview PNG for a processed image."""
+    """Serve an inline preview for a processed image."""
 
     path = _PREVIEW_REGISTRY.pop(token, None)
     if path is None or not path.exists():
         abort(404)
-    return send_file(path, mimetype="image/png", as_attachment=False)
+    return send_file(path, mimetype=get_mime_type_for_path(path), as_attachment=False)
 
 
 def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
@@ -377,8 +419,11 @@ def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
             preview_token = uuid.uuid4().hex
             _FILE_REGISTRY[download_token] = result.path_out
             _PREVIEW_REGISTRY[preview_token] = result.path_out
+            format_spec = get_output_format_spec(result.path_out.suffix)
             data["download_url"] = url_for("image_converter.download_file", token=download_token)
             data["preview_url"] = url_for("image_converter.preview_file", token=preview_token)
+            data["mime_type"] = format_spec.mime_type
+            data["format"] = format_spec.key
             successes.append(result)
         else:
             failures.append(result)

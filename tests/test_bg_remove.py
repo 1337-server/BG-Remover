@@ -23,6 +23,14 @@ def test_build_colorkey_mask_detects_foreground() -> None:
     assert mask[50, 50] == 255
 
 
+def test_get_output_format_spec_handles_aliases() -> None:
+    """Output format lookups should accept dotted and mixed-case aliases."""
+
+    spec = bg_remove.get_output_format_spec(".JPEG")
+    assert spec.key == "jpg"
+    assert spec.mime_type == "image/jpeg"
+
+
 @pytest.mark.parametrize("recursive", [False, True])
 def test_remove_bg_folder_invokes_processing(tmp_path: Path, recursive: bool, monkeypatch: pytest.MonkeyPatch) -> None:
     """Folder helper should return results for supported images only."""
@@ -110,6 +118,33 @@ def test_remove_bg_file_default_output_path(tmp_path: Path, monkeypatch: pytest.
     assert result.success
     assert result.path_out == expected_output
     assert expected_output.exists()
+
+
+def test_remove_bg_file_respects_requested_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit output formats should control the exported file type."""
+
+    monkeypatch.chdir(tmp_path)
+    input_file = tmp_path / "transparent.png"
+    image = Image.new("RGBA", (4, 4), color=(0, 128, 255, 200))
+    image.save(input_file)
+
+    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None: object())
+
+    def fake_run_rembg(image: Image.Image, session: object) -> Image.Image:
+        """Return a semi-transparent mask for deterministic output."""
+
+        return Image.new("RGBA", image.size, color=(255, 255, 255, 200))
+
+    monkeypatch.setattr(bg_remove, "_run_rembg", fake_run_rembg)
+
+    result = bg_remove.remove_bg_file(input_file, output_format="jpg")
+
+    assert result.success
+    assert result.path_out is not None
+    assert result.path_out.suffix == ".jpg"
+
+    with Image.open(result.path_out) as exported:
+        assert exported.mode == "RGB"
 
 
 def test_remove_bg_file_emits_callbacks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

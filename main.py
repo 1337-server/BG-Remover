@@ -8,6 +8,8 @@ from pathlib import Path
 from app.services.bg_remove import (
     RemovalResult,
     ensure_global_session,
+    get_output_format_spec,
+    list_output_format_choices,
     remove_bg_file,
     remove_bg_folder,
 )
@@ -20,6 +22,18 @@ def parse_args() -> argparse.Namespace:
         description="Remove image backgrounds using rembg with optional alpha matting.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+
+    default_format = get_output_format_spec(None).key
+    format_choices = ", ".join(choice.upper() for choice in list_output_format_choices())
+
+    def parse_format_argument(value: str) -> str:
+        """Normalise CLI format arguments and validate support."""
+
+        try:
+            return get_output_format_spec(value).key
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+
     parser.add_argument(
         "input",
         nargs="?",
@@ -60,6 +74,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable the solid-colour background fallback.",
     )
+    parser.add_argument(
+        "--format",
+        "-f",
+        dest="output_format",
+        type=parse_format_argument,
+        help=(
+            "Specify the output format. Supported values: "
+            f"{format_choices}. Defaults to {default_format.upper()}."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -85,6 +109,7 @@ def main() -> None:
         results = remove_bg_folder(
             input_path,
             args.output,
+            output_format=args.output_format,
             recursive=args.recursive,
             alpha_matting=args.alpha_matting,
             am_foreground=args.am_foreground,
@@ -110,6 +135,7 @@ def main() -> None:
             use_colorkey_fallback=not args.no_colorkey_fallback,
             colorkey_tolerance=args.colorkey_tolerance,
             feather_radius=args.feather_radius,
+            output_format=args.output_format,
         )
         _print_result(result)
         if not result.success:

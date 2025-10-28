@@ -1,13 +1,6 @@
 """Application factory for the background remover web service."""
 from __future__ import annotations
 
-from app.socketio_utils import ensure_eventlet_monkey_patched
-
-# Ensure Eventlet's cooperative monkey patch runs before importing Flask or heavy
-# runtime dependencies. This path is triggered when ``flask run`` imports the
-# package, so the call must happen at module import time.
-ensure_eventlet_monkey_patched()
-
 from app.services import runtime_compat
 from app.services.bg_remove import ensure_global_session
 
@@ -34,10 +27,8 @@ def create_app() -> "Flask":
     # Initialise the global background removal session once at startup.
     ensure_global_session()
 
-    from app.extensions import socketio
     from app.routes.image_converter import image_converter_bp
 
-    socketio.init_app(app)
     app.register_blueprint(image_converter_bp)
 
     @app.after_request

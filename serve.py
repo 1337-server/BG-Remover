@@ -1,4 +1,4 @@
-"""Development server entry point for the Flask-SocketIO web UI."""
+"""Development server entry point for the Flask web interface."""
 from __future__ import annotations
 
 import argparse
@@ -6,19 +6,12 @@ import logging
 import os
 from typing import Sequence
 
-from app.socketio_utils import ensure_eventlet_monkey_patched, validate_eventlet_patch
-
-# Eventlet must monkey patch the standard library before importing Flask, SocketIO,
-# or other networking-heavy modules. Trigger the cooperative patch immediately to
-# ensure consistent behaviour across entry points.
-ensure_eventlet_monkey_patched()
-
-from app.runner import run_socketio_server
+from app import create_app
 
 _LOGGER = logging.getLogger(__name__)
 
-_ENV_PORT_KEYS = ("SOCKETIO_PORT", "PORT")
-_ENV_HOST_KEYS = ("SOCKETIO_HOST", "HOST")
+_ENV_PORT_KEYS = ("PORT", "FLASK_RUN_PORT")
+_ENV_HOST_KEYS = ("HOST", "FLASK_RUN_HOST")
 
 
 def _env_int(*keys: str) -> int | None:
@@ -46,36 +39,30 @@ def _env_str(*keys: str) -> str | None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Return an argument parser for the development server entry point."""
+    """Create an argument parser for the development server."""
 
-    parser = argparse.ArgumentParser(description="Run the Flask-SocketIO development server")
+    parser = argparse.ArgumentParser(description="Run the Flask development server")
     parser.add_argument(
         "--host",
         default=None,
-        help="Host interface to bind (overrides SOCKETIO_HOST/HOST)",
+        help="Host interface to bind (overrides HOST/FLASK_RUN_HOST)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=None,
-        help="Port to bind (overrides SOCKETIO_PORT/PORT)",
+        help="Port to bind (overrides PORT/FLASK_RUN_PORT)",
     )
     parser.add_argument(
-        "--strict-port",
+        "--debug",
         action="store_true",
-        help="Fail instead of automatically picking the next available port.",
-    )
-    parser.add_argument(
-        "--port-scan-limit",
-        type=int,
-        default=None,
-        help="Maximum number of additional ports to try when the desired port is busy.",
+        help="Enable Flask debug mode regardless of FLASK_DEBUG.",
     )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Start the Socket.IO-enabled development server."""
+    """Start the Flask development server."""
 
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -85,14 +72,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     host = args.host or env_host or "0.0.0.0"
     port = args.port if args.port is not None else env_port or 5000
+    debug = args.debug or os.getenv("FLASK_DEBUG") == "1"
 
-    validate_eventlet_patch()
-    run_socketio_server(
-        host=host,
-        port=port,
-        allow_port_fallback=not args.strict_port,
-        port_scan_limit=args.port_scan_limit,
-    )
+    app = create_app()
+    _LOGGER.info("Starting Flask development server on http://%s:%s", host, port)
+    app.run(host=host, port=port, debug=debug)
 
 
 if __name__ == "__main__":

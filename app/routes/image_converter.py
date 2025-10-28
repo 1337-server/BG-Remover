@@ -17,7 +17,6 @@ from flask import (
     Response,
     abort,
     after_this_request,
-    current_app,
     jsonify,
     render_template,
     request,
@@ -26,9 +25,6 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
-from PIL import Image
-
-from app.extensions import socketio
 from app.services.bg_remove import (
     RemovalResult,
     encode_result_image,
@@ -56,8 +52,6 @@ class RegistryItem:
 
 _FILE_REGISTRY: Dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: Dict[str, RegistryItem] = {}
-
-BACKGROUND_PREVIEW_NAMESPACE = "/ws/background-preview"
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
     for spec in OUTPUT_FORMATS
@@ -113,6 +107,7 @@ def _collect_single_options(form: Mapping[str, str], defaults: Dict[str, int]) -
 
 
 @image_converter_bp.route("/", methods=["GET", "POST"])
+@image_converter_bp.route("/image/remove-bg", methods=["GET", "POST"])
 def remove_bg_view() -> Response:
     """Render the UI or process incoming form submissions."""
 
@@ -226,21 +221,6 @@ def remove_bg_view() -> Response:
     response.headers["X-Removal-Result"] = json.dumps(result.to_dict())
     return response
 
-def _emit_progress(socket_id: str, job_id: str, stage: str, percent: float) -> None:
-    """Send a progress update to the connected websocket client."""
-
-    socketio.emit(
-        "progress",
-        {
-            "job_id": job_id,
-            "stage": stage,
-            "percent": max(0.0, min(100.0, round(percent, 1))),
-        },
-        namespace=BACKGROUND_PREVIEW_NAMESPACE,
-        to=socket_id,
-    )
-
-
 def _register_registry_item(
     registry: Dict[str, RegistryItem],
     *,
@@ -260,45 +240,6 @@ def _register_registry_item(
     )
     registry[token] = entry
     return token, entry
-
-
-def _emit_preview(socket_id: str, job_id: str, stage: str, image: Image.Image) -> None:
-    """Send a preview frame reference to the websocket client."""
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as preview_file:
-        image.save(preview_file, format="PNG")
-        temp_path = Path(preview_file.name)
-
-    token, _ = _register_registry_item(
-        _PREVIEW_REGISTRY,
-        path=temp_path,
-        mimetype="image/png",
-        delete_after_read=True,
-    )
-
-    socketio.emit(
-        "preview",
-        {
-            "job_id": job_id,
-            "stage": stage,
-            "preview_token": token,
-            "preview_url": f"/image/remove-bg/live/preview/{token}",
-            "mime_type": "image/png",
-        },
-        namespace=BACKGROUND_PREVIEW_NAMESPACE,
-        to=socket_id,
-    )
-
-
-def _emit_error(socket_id: str, job_id: str, message: str) -> None:
-    """Send an error payload to the websocket client."""
-
-    socketio.emit(
-        "error",
-        {"job_id": job_id, "message": message},
-        namespace=BACKGROUND_PREVIEW_NAMESPACE,
-        to=socket_id,
-    )
 
 
 def _serve_registry_item(
@@ -327,145 +268,6 @@ def _serve_registry_item(
         as_attachment=as_attachment,
         download_name=download_name,
     )
-
-
-def _process_live_job(
-    flask_app: "Flask",
-    job_id: str,
-    socket_id: str,
-    temp_dir: Path,
-    input_path: Path,
-    output_path: Path,
-    options: Dict[str, Any],
-) -> None:
-    """Background task that performs removal and streams websocket updates."""
-
-    with flask_app.app_context():
-        def progress_callback(stage: str, percent: float) -> None:
-            _emit_progress(socket_id, job_id, stage, percent)
-
-        def preview_callback(image: Image.Image, stage: str) -> None:
-            _emit_preview(socket_id, job_id, stage, image)
-
-        try:
-            try:
-                format_spec = get_output_format_spec(options.get("output_format"))
-            except ValueError:
-                format_spec = get_output_format_spec(None)
-            _emit_progress(socket_id, job_id, "queued", 0.0)
-            result = remove_bg_file(
-                input_path,
-                output_path,
-                alpha_matting=options["alpha_matting"],
-                am_foreground=options["am_foreground"],
-                am_background=options["am_background"],
-                am_erode=options["am_erode"],
-                colorkey_tolerance=options["colorkey_tolerance"],
-                feather_radius=options["feather_radius"],
-                progress_callback=progress_callback,
-                preview_callback=preview_callback,
-                output_format=format_spec.key,
-            )
-            if not result.success or result.path_out is None:
-                raise RuntimeError(result.error or "Background removal failed.")
-
-            download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=format_spec.extension) as download_file:
-                download_path = Path(download_file.name)
-
-            shutil.copyfile(result.path_out, download_path)
-
-            download_token, _ = _register_registry_item(
-                _FILE_REGISTRY,
-                path=download_path,
-                mimetype=format_spec.mime_type,
-                delete_after_read=True,
-                download_name=download_name,
-            )
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=format_spec.extension) as final_preview_file:
-                preview_path = Path(final_preview_file.name)
-
-            shutil.copyfile(result.path_out, preview_path)
-
-            preview_token, _ = _register_registry_item(
-                _PREVIEW_REGISTRY,
-                path=preview_path,
-                mimetype=format_spec.mime_type,
-                delete_after_read=True,
-            )
-
-            _emit_progress(socket_id, job_id, "complete", 100.0)
-            socketio.emit(
-                "completed",
-                {
-                    "job_id": job_id,
-                    "result": result.to_dict(),
-                    "result_token": preview_token,
-                    "result_url": f"/image/remove-bg/live/result/{preview_token}",
-                    "download_token": download_token,
-                    "download_url": f"/image/remove-bg/file/{download_token}",
-                    "mime_type": format_spec.mime_type,
-                    "download_name": download_name,
-                    "format": format_spec.key,
-                },
-                namespace=BACKGROUND_PREVIEW_NAMESPACE,
-                to=socket_id,
-            )
-        except Exception as exc:  # pragma: no cover - depends on runtime environment
-            _emit_error(socket_id, job_id, str(exc))
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-@image_converter_bp.route("/image/remove-bg/live", methods=["POST"])
-def remove_bg_live() -> Response:
-    """Handle uploads for the live preview background removal pipeline."""
-
-    defaults = DEFAULT_SINGLE_OPTIONS.copy()
-
-    form = request.form
-    socket_id = (form.get("socket_id") or "").strip()
-    if not socket_id:
-        return _bad_request("Missing Socket.IO connection identifier.")
-
-    file_storage = request.files.get("image_file")
-    if not file_storage or file_storage.filename == "":
-        return _bad_request("Please upload an image to process.")
-
-    options = _collect_single_options(form, defaults)
-    try:
-        format_spec = get_output_format_spec(form.get("output_format"))
-    except ValueError as exc:
-        return _bad_request(str(exc))
-    options["output_format"] = format_spec.key
-
-    temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_live_"))
-    filename = secure_filename(file_storage.filename or "image.png")
-    input_path = temp_dir / filename
-    file_storage.save(input_path)
-    output_path = format_spec.normalise_filename(temp_dir / f"{input_path.stem}_no_bg")
-
-    job_id = uuid.uuid4().hex
-
-    flask_app = current_app._get_current_object()
-
-    try:
-        socketio.start_background_task(
-            _process_live_job,
-            flask_app,
-            job_id,
-            socket_id,
-            temp_dir,
-            input_path,
-            output_path,
-            options,
-        )
-    except RuntimeError as exc:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        return _service_unavailable(str(exc))
-
-    return jsonify({"status": "processing", "job_id": job_id})
 
 
 @image_converter_bp.route("/image/remove-bg/download/<token>")
@@ -499,20 +301,6 @@ def download_file(token: str) -> Response:
 @image_converter_bp.route("/image/remove-bg/preview/<token>")
 def preview_file(token: str) -> Response:
     """Serve an inline preview for a processed image."""
-
-    return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
-
-
-@image_converter_bp.route("/image/remove-bg/live/preview/<token>")
-def stream_live_preview(token: str) -> Response:
-    """Stream a single live preview frame referenced by ``token``."""
-
-    return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
-
-
-@image_converter_bp.route("/image/remove-bg/live/result/<token>")
-def stream_live_result(token: str) -> Response:
-    """Stream the final live result image referenced by ``token``."""
 
     return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
 
@@ -589,10 +377,3 @@ def _bad_request(message: str) -> Response:
 
     payload = {"error": message}
     return jsonify(payload), 400
-
-
-def _service_unavailable(message: str) -> Response:
-    """Return a 503 response for temporarily unavailable features."""
-
-    payload = {"error": message}
-    return jsonify(payload), 503

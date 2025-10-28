@@ -62,8 +62,13 @@ Key behaviour:
 Start the web UI once the dependencies are installed:
 
 ```bash
-python -m flask --app app:create_app run
+python serve.py
 ```
+
+The Socket.IO development server binds to `0.0.0.0:5000`, enabling native WebSocket
+support with automatic long-polling fallback for browsers that require it. Installing the
+dependencies from `requirements.txt` provides the required `eventlet` worker so WebSocket
+connections succeed during local development.
 
 Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 

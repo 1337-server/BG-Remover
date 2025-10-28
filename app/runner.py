@@ -1,4 +1,5 @@
-"""Utilities for starting the Flask-SocketIO web server."""
+"""Helpers for launching the Flask-SocketIO web server."""
+
 from __future__ import annotations
 
 from typing import Any

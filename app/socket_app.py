@@ -4,19 +4,14 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from app.socketio_utils import ensure_eventlet_monkey_patched
-
-ensure_eventlet_monkey_patched()
-
-from flask import Flask
-
 from app.extensions import socketio
 
 if TYPE_CHECKING:  # pragma: no cover - hints only
+    from flask import Flask
     from flask_socketio import SocketIO
 
 
-def create_socketio_app() -> tuple[Flask, "SocketIO"]:
+def create_socketio_app() -> tuple["Flask", "SocketIO"]:
     """Initialise and return the Flask application and Socket.IO server."""
 
     from app import create_app

@@ -747,7 +747,39 @@ def _run_inference(
     if log_timing:
         LOGGER.info("%s inference completed in %.2f ms", _describe_session(session), elapsed_ms)
 
-    pred = sanitize_mask(outputs[0][:, 0, :, :])
+    def _select_primary_output(output_obj: Any) -> np.ndarray | None:
+        """Return the first NumPy array from ``output_obj`` or ``None`` if unavailable."""
+
+        if isinstance(output_obj, np.ndarray):
+            return output_obj
+        if isinstance(output_obj, Mapping):
+            for value in output_obj.values():
+                if isinstance(value, np.ndarray):
+                    return value
+            return None
+        if isinstance(output_obj, Iterable):
+            for value in output_obj:
+                if isinstance(value, np.ndarray):
+                    return value
+            return None
+        return None
+
+    primary_output = _select_primary_output(outputs)
+    if primary_output is None:
+        output_names = [meta.name for meta in getattr(session, "get_outputs", lambda: [])()]
+        if output_names:
+            primary_output = _select_primary_output(session.run(output_names, feed))
+    if primary_output is None:
+        raise RuntimeError("ONNX Runtime session returned no outputs during inference")
+
+    if primary_output.ndim == 4 and primary_output.shape[1] == 1:
+        logits = primary_output[:, 0, :, :]
+    else:
+        logits = np.squeeze(primary_output)
+    if logits.ndim == 3 and logits.shape[0] == 1:
+        logits = logits[0]
+
+    pred = sanitize_mask(logits)
     pred = np.squeeze(pred)
     mask = Image.fromarray((pred * 255).astype(np.uint8), mode="L")
     mask = mask.resize(image.size, Image.Resampling.LANCZOS)

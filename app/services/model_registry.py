@@ -84,7 +84,6 @@ def _tensorrt_provider_options(device_id: int) -> MutableMapping[str, Any]:
         "trt_cuda_graph_enable": True,
         # Keep TensorRT quiet during engine builds while still surfacing errors.
         "trt_detailed_build_log": False,
-        "trt_logger_severity": "kERROR",
     }
 
     if cache_available:
@@ -330,10 +329,28 @@ def preload_models(
 
             start_time = time.perf_counter()
             try:
+                session_options = None
+                if hasattr(ort, "SessionOptions"):
+                    try:
+                        session_options = ort.SessionOptions()
+                        # Limit TensorRT logging noise without hiding critical failures.
+                        session_options.log_severity_level = 3
+                    except Exception:  # pragma: no cover - depends on onnxruntime build
+                        LOGGER.debug(
+                            "Unable to configure ONNX Runtime session options for %s",
+                            model_name,
+                            exc_info=True,
+                        )
+                init_kwargs: dict[str, Any] = {
+                    "providers": list(providers),
+                    "provider_options": list(provider_options),
+                }
+                if session_options is not None:
+                    init_kwargs["sess_options"] = session_options
+
                 session = ort.InferenceSession(  # type: ignore[attr-defined]
                     str(model_path),
-                    providers=list(providers),
-                    provider_options=list(provider_options),
+                    **init_kwargs,
                 )
             except Exception:
                 LOGGER.exception("Failed to initialise ONNX Runtime session for %s", model_name)
@@ -344,11 +361,18 @@ def preload_models(
 
             loaded[model_name] = session
             elapsed = time.perf_counter() - start_time
+            session_providers = list(session.get_providers())
+            primary_provider = session_providers[0] if session_providers else "CPUExecutionProvider"
             LOGGER.info(
                 "Loaded %s in %.2f s (providers=%s)",
                 model_name,
                 elapsed,
-                ", ".join(session.get_providers()),
+                ", ".join(session_providers),
+            )
+            LOGGER.info(
+                "Primary execution provider for %s: %s",
+                model_name,
+                primary_provider,
             )
 
         _PRELOADED_SESSIONS.clear()

@@ -58,6 +58,35 @@ _FILE_REGISTRY: Dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: Dict[str, RegistryItem] = {}
 
 BACKGROUND_PREVIEW_NAMESPACE = "/ws/background-preview"
+READY_EVENT = "ready"
+PROGRESS_EVENT = "live_preview_progress"
+PREVIEW_EVENT = "live_preview_update"
+COMPLETED_EVENT = "live_preview_completed"
+ERROR_EVENT = "live_preview_error"
+
+
+@socketio.on("connect", namespace=BACKGROUND_PREVIEW_NAMESPACE)
+def handle_background_preview_connect() -> None:
+    """Log connections and confirm the live preview channel is active."""
+
+    socket_id = request.sid
+    current_app.logger.debug(
+        "Socket '%s' connected to namespace '%s'.",
+        socket_id,
+        BACKGROUND_PREVIEW_NAMESPACE,
+    )
+    _emit_ready(socket_id)
+
+
+@socketio.on("disconnect", namespace=BACKGROUND_PREVIEW_NAMESPACE)
+def handle_background_preview_disconnect() -> None:
+    """Record disconnections for easier troubleshooting."""
+
+    current_app.logger.debug(
+        "Socket '%s' disconnected from namespace '%s'.",
+        request.sid,
+        BACKGROUND_PREVIEW_NAMESPACE,
+    )
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
     for spec in OUTPUT_FORMATS
@@ -226,19 +255,50 @@ def remove_bg_view() -> Response:
     response.headers["X-Removal-Result"] = json.dumps(result.to_dict())
     return response
 
+def _format_payload_for_log(payload: Mapping[str, Any]) -> str:
+    """Return a JSON representation of ``payload`` for debug logging."""
+
+    try:
+        return json.dumps(payload, sort_keys=True)
+    except TypeError:
+        return repr(payload)
+
+
+def _emit_socket_event(event: str, payload: Mapping[str, Any], *, socket_id: str) -> None:
+    """Emit ``payload`` to ``socket_id`` while recording debug information.
+
+    The helper guarantees each event executes inside an application context and
+    produces verbose logging so live preview issues can be diagnosed quickly.
+    """
+
+    app = current_app._get_current_object()
+    payload_dict = dict(payload)
+    app.logger.debug(
+        "Emitting '%s' to socket '%s' on namespace '%s': %s",
+        event,
+        socket_id,
+        BACKGROUND_PREVIEW_NAMESPACE,
+        _format_payload_for_log(payload_dict),
+    )
+    with app.app_context():
+        socketio.emit(
+            event,
+            payload_dict,
+            namespace=BACKGROUND_PREVIEW_NAMESPACE,
+            to=socket_id,
+            broadcast=True,
+        )
+
+
 def _emit_progress(socket_id: str, job_id: str, stage: str, percent: float) -> None:
     """Send a progress update to the connected websocket client."""
 
-    socketio.emit(
-        "progress",
-        {
-            "job_id": job_id,
-            "stage": stage,
-            "percent": max(0.0, min(100.0, round(percent, 1))),
-        },
-        namespace=BACKGROUND_PREVIEW_NAMESPACE,
-        to=socket_id,
-    )
+    payload = {
+        "job_id": job_id,
+        "stage": stage,
+        "percent": max(0.0, min(100.0, round(percent, 1))),
+    }
+    _emit_socket_event(PROGRESS_EVENT, payload, socket_id=socket_id)
 
 
 def _register_registry_item(
@@ -276,29 +336,30 @@ def _emit_preview(socket_id: str, job_id: str, stage: str, image: Image.Image) -
         delete_after_read=True,
     )
 
-    socketio.emit(
-        "preview",
-        {
-            "job_id": job_id,
-            "stage": stage,
-            "preview_token": token,
-            "preview_url": f"/image/remove-bg/live/preview/{token}",
-            "mime_type": "image/png",
-        },
-        namespace=BACKGROUND_PREVIEW_NAMESPACE,
-        to=socket_id,
-    )
+    payload = {
+        "job_id": job_id,
+        "stage": stage,
+        "preview_token": token,
+        "preview_url": f"/image/remove-bg/live/preview/{token}",
+        "mime_type": "image/png",
+    }
+    _emit_socket_event(PREVIEW_EVENT, payload, socket_id=socket_id)
 
 
 def _emit_error(socket_id: str, job_id: str, message: str) -> None:
     """Send an error payload to the websocket client."""
 
-    socketio.emit(
-        "error",
+    _emit_socket_event(
+        ERROR_EVENT,
         {"job_id": job_id, "message": message},
-        namespace=BACKGROUND_PREVIEW_NAMESPACE,
-        to=socket_id,
+        socket_id=socket_id,
     )
+
+
+def _emit_ready(socket_id: str) -> None:
+    """Notify the client that the live preview channel is fully initialised."""
+
+    _emit_socket_event(READY_EVENT, {"status": "ready"}, socket_id=socket_id)
 
 
 def _serve_registry_item(
@@ -396,8 +457,8 @@ def _process_live_job(
             )
 
             _emit_progress(socket_id, job_id, "complete", 100.0)
-            socketio.emit(
-                "completed",
+            _emit_socket_event(
+                COMPLETED_EVENT,
                 {
                     "job_id": job_id,
                     "result": result.to_dict(),
@@ -409,8 +470,7 @@ def _process_live_job(
                     "download_name": download_name,
                     "format": format_spec.key,
                 },
-                namespace=BACKGROUND_PREVIEW_NAMESPACE,
-                to=socket_id,
+                socket_id=socket_id,
             )
         except Exception as exc:  # pragma: no cover - depends on runtime environment
             _emit_error(socket_id, job_id, str(exc))

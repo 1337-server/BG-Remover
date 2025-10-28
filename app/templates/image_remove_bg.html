@@ -308,6 +308,7 @@
     let currentJobId = null;
     let activeFilename = 'image';
     let finalPreviewObjectUrl = null;
+    let channelReady = false;
 
     const socket = io('/ws/background-preview');
 
@@ -396,20 +397,28 @@
 
     socket.on('connect', () => {
       socketId = socket.id;
+      channelReady = false;
+    });
+
+    socket.on('ready', (payload) => {
+      channelReady = true;
+      console.debug('Live preview channel ready.', payload);
+      singleAlertManager.clear();
     });
 
     socket.on('disconnect', () => {
       socketId = null;
+      channelReady = false;
     });
 
-    socket.on('progress', (payload) => {
+    socket.on('live_preview_progress', (payload) => {
       if (!currentJobId || payload.job_id !== currentJobId) {
         return;
       }
       updateProgress(payload.percent, payload.stage);
     });
 
-    socket.on('preview', (payload) => {
+    socket.on('live_preview_update', (payload) => {
       if (!currentJobId || payload.job_id !== currentJobId) {
         return;
       }
@@ -424,7 +433,7 @@
       }
     });
 
-    socket.on('completed', async (payload) => {
+    socket.on('live_preview_completed', async (payload) => {
       if (!currentJobId || payload.job_id !== currentJobId) {
         return;
       }
@@ -445,7 +454,7 @@
       currentJobId = null;
     });
 
-    socket.on('error', (payload) => {
+    socket.on('live_preview_error', (payload) => {
       if (!currentJobId || payload.job_id !== currentJobId) {
         return;
       }
@@ -466,7 +475,7 @@
 
       singleAlertManager.clear();
 
-      if (!socketId) {
+      if (!socketId || !channelReady) {
         singleAlertManager.show('Connecting to the live preview channel. Please try again in a moment.');
         return;
       }

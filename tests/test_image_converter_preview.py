@@ -71,10 +71,19 @@ def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypat
 
     class DummySocket:
         def __init__(self) -> None:
-            self.events: list[tuple[str, dict]] = []
+            self.events: list[
+                tuple[str, dict, str | None, str | None, bool | None]
+            ] = []
 
-        def emit(self, event: str, payload: dict, namespace: str | None = None, to: str | None = None) -> None:
-            self.events.append((event, payload))
+        def emit(
+            self,
+            event: str,
+            payload: dict,
+            namespace: str | None = None,
+            to: str | None = None,
+            broadcast: bool | None = None,
+        ) -> None:
+            self.events.append((event, payload, namespace, to, broadcast))
 
         def start_background_task(self, target, *args, **kwargs):  # type: ignore[no-untyped-def]
             target(*args, **kwargs)
@@ -113,19 +122,25 @@ def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypat
     assert payload["status"] == "processing"
     assert isinstance(payload.get("job_id"), str)
 
-    emitted_events = [event for event, _ in dummy_socket.events]
-    assert "progress" in emitted_events
-    assert "preview" in emitted_events
-    assert "completed" in emitted_events
+    emitted_events = [event for event, *_ in dummy_socket.events]
+    assert "live_preview_progress" in emitted_events
+    assert "live_preview_update" in emitted_events
+    assert "live_preview_completed" in emitted_events
 
-    preview_event = next(payload for event, payload in dummy_socket.events if event == "preview")
+    assert all(
+        namespace == image_converter.BACKGROUND_PREVIEW_NAMESPACE
+        for _, _, namespace, _, _ in dummy_socket.events
+    )
+    assert all(broadcast for _, _, _, _, broadcast in dummy_socket.events)
+
+    preview_event = next(payload for event, payload, *_ in dummy_socket.events if event == "live_preview_update")
     assert preview_event["preview_url"].startswith("/image/remove-bg/live/preview/")
     client_preview_response = client.get(preview_event["preview_url"])
     assert client_preview_response.status_code == 200
     assert client_preview_response.mimetype == "image/png"
     assert client.get(preview_event["preview_url"]).status_code == 404
 
-    completed_event = next(payload for event, payload in dummy_socket.events if event == "completed")
+    completed_event = next(payload for event, payload, *_ in dummy_socket.events if event == "live_preview_completed")
     assert completed_event["result_url"].startswith("/image/remove-bg/live/result/")
     assert completed_event["download_url"].startswith("/image/remove-bg/file/")
 

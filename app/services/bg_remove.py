@@ -45,6 +45,16 @@ PreviewCallback = Callable[[Image.Image, str], None]
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 MAX_WORK_DIMENSION = 8000
 
+# The background-removal service supports a curated list of rembg models. These
+# names mirror the defaults exposed by the command-line interface and cover the
+# most common use-cases (general photography, portraits, and anime artwork).
+_PRELOAD_MODEL_NAMES: tuple[str, ...] = (
+    "u2net",
+    "u2netp",
+    "isnet-general-use",
+    "isnet-anime",
+)
+
 
 @dataclass(frozen=True)
 class OutputFormat:
@@ -195,6 +205,7 @@ def _looks_like_directory(original: str | Path, resolved: Path) -> bool:
 class SessionContext:
     """Container describing the active rembg session and accelerator state."""
 
+    model_name: str
     session: Session
     runtime: str
     provider: str
@@ -224,6 +235,22 @@ class SessionContext:
 _SESSION_CONTEXT: Optional[SessionContext] = None
 _SESSION_CONFIG_SIGNATURE: Optional[tuple[str, int, bool]] = None
 _SESSION_LOCK = cooperative_threading.Lock()
+# Guard access to the preloaded session pools to ensure thread-safety when the
+# Flask application serves concurrent requests.
+_POOL_LOCK = cooperative_threading.Lock()
+# Cache of ``SessionContext`` objects grouped by accelerator configuration
+# signature. Each entry stores model-name keys mapped to active rembg sessions.
+_SESSION_POOLS: Dict[tuple[str, int, bool], Dict[str, SessionContext]] = {}
+# Track which accelerator signatures have already been preloaded to avoid
+# re-running the expensive warm-up pipeline.
+_PRELOADED_SIGNATURES: set[tuple[str, int, bool]] = set()
+# Remember whether diagnostic provider logs have been emitted for each
+# accelerator signature to prevent noisy, repeated log messages when multiple
+# models are initialised.
+_STARTUP_LOGGED_SIGNATURES: set[tuple[str, int, bool]] = set()
+# Map ``id(session)`` to lightweight metadata so runtime logs can reference the
+# active model and provider when reporting inference durations.
+_SESSION_METADATA: Dict[int, Dict[str, str]] = {}
 _CPU_WARNING_LOGGED = False
 _CUDA_HINT_LOGGED = False
 
@@ -288,13 +315,6 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     except (TypeError, ValueError):
         return default
 
-    if "CUDAExecutionProvider" not in providers:
-        LOGGER.warning(
-            "CUDA detected but the CUDAExecutionProvider is unavailable. Install "
-            "onnxruntime-gpu>=1.18.0 to enable GPU acceleration."
-        )
-        return None
-
 def _extract_session_config(config: Mapping[str, Any] | None) -> tuple[str, int, bool]:
     """Return normalised accelerator configuration values."""
 
@@ -314,16 +334,73 @@ def _signature_for_config(config: Mapping[str, Any] | None) -> tuple[str, int, b
     return mode, device_id, warn_on_cpu
 
 
-def create_session(
-    model_name: str = "u2net", config: Mapping[str, Any] | None = None
+def _register_session_context(context: SessionContext) -> None:
+    """Store metadata describing ``context`` for diagnostic logging."""
+
+    _SESSION_METADATA[id(context.session)] = {
+        "model": context.model_name,
+        "provider": context.provider,
+        "runtime": context.runtime,
+    }
+
+
+def _describe_session(session: Session) -> str:
+    """Return a short description of the ONNX session for logging."""
+
+    metadata = _SESSION_METADATA.get(id(session))
+    if not metadata:
+        return "background removal session"
+    model = metadata.get("model", "unknown model")
+    provider = metadata.get("provider", "unknown provider")
+    runtime = metadata.get("runtime")
+    if runtime:
+        return f"{model} via {provider} ({runtime})"
+    return f"{model} via {provider}"
+
+
+def _warm_up_session(context: SessionContext) -> None:
+    """Execute a one-time warm-up inference for ``context`` to prime CUDA kernels."""
+
+    if _rembg_remove is None:
+        LOGGER.debug(
+            "Skipping warm-up for %s because rembg.remove is unavailable",
+            context.model_name,
+        )
+        return
+
+    dummy_image = Image.new("RGB", (16, 16), color=(0, 0, 0))
+    buffer = io.BytesIO()
+    dummy_image.save(buffer, format="PNG")
+    payload = buffer.getvalue()
+    buffer.close()
+
+    try:
+        start = time.perf_counter()
+        _rembg_remove(payload, session=context.session)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        LOGGER.info(
+            "Warm-up inference for %s completed in %.2f ms (%s)",
+            context.model_name,
+            elapsed_ms,
+            context.provider,
+        )
+    except Exception:  # pragma: no cover - depends on runtime availability
+        LOGGER.warning(
+            "Warm-up inference for %s failed; continuing without GPU priming",
+            context.model_name,
+            exc_info=True,
+        )
+
+
+def _initialise_session_context(
+    model_name: str,
+    *,
+    requested_mode: str,
+    device_id: int,
+    warn_on_cpu: bool,
+    log_diagnostics: bool,
 ) -> SessionContext:
-    """Create a new ``rembg`` session with optional GPU acceleration."""
-
-    if _rembg_new_session is None:
-        raise RuntimeError("rembg is required to create a background removal session.") from _REMBG_IMPORT_ERROR
-
-    requested_mode, device_id, warn_on_cpu = _extract_session_config(config)
-    runtime_compat.ensure_runtime_ready()
+    """Return a ready-to-use :class:`SessionContext` for ``model_name``."""
 
     providers_available = accelerator.onnx_providers_available()
     provider_name, _ = accelerator.pick_execution_provider(requested_mode, device_id)
@@ -342,25 +419,29 @@ def create_session(
                 options = dict(provider_options_map.get(candidate, {}))
                 provider_chain.append((candidate, (candidate, options)))
 
-    # Always append CPU fallback to ensure we can continue when GPU init fails.
     provider_chain.append(("CPUExecutionProvider", "CPUExecutionProvider"))
     attempted_gpu = gpu_requested and any(
         name in gpu_providers for name, _ in provider_chain[:-1]
     )
 
-    chain_description = " -> ".join(name for name, _ in provider_chain)
-    LOGGER.info("Execution provider priority: %s", chain_description)
+    if log_diagnostics:
+        chain_description = " -> ".join(name for name, _ in provider_chain)
+        LOGGER.info("Execution provider priority: %s", chain_description)
 
     gpu_name = accelerator.detect_gpu_name()
     rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
 
-    LOGGER.info("Available ONNX Runtime providers: %s", ", ".join(providers_available) or "none")
-    if gpu_name:
-        suffix = " (RTX 50-series detected)" if rtx_50_series else ""
-        LOGGER.info("Detected GPU: %s%s", gpu_name, suffix)
-    else:
-        LOGGER.info("No NVIDIA GPU detected")
-    LOGGER.info("Accelerator preference: %s", requested_mode)
+    if log_diagnostics:
+        LOGGER.info(
+            "Available ONNX Runtime providers: %s",
+            ", ".join(providers_available) or "none",
+        )
+        if gpu_name:
+            suffix = " (RTX 50-series detected)" if rtx_50_series else ""
+            LOGGER.info("Detected GPU: %s%s", gpu_name, suffix)
+        else:
+            LOGGER.info("No NVIDIA GPU detected")
+        LOGGER.info("Accelerator preference: %s", requested_mode)
 
     warning_message: Optional[str] = None
     accelerator_message: Optional[str] = None
@@ -373,10 +454,11 @@ def create_session(
         current_provider = active_chain[0][0]
         try:
             session_obj = _rembg_new_session(model_name, providers=current_argument)
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover - depends on runtime state
             last_error = exc
             LOGGER.exception(
-                "Failed to initialise %s provider; attempting next fallback", current_provider
+                "Failed to initialise %s provider; attempting next fallback",
+                current_provider,
             )
             active_chain.pop(0)
             continue
@@ -388,17 +470,18 @@ def create_session(
         assert last_error is not None
         raise last_error
 
-    resolved_providers = []
+    resolved_providers: List[str] = []
     try:
         resolved_providers = list(getattr(session_obj, "providers", []))
-    except Exception:  # pragma: no cover - provider inspection best effort
+    except Exception:  # pragma: no cover - provider introspection best effort
         LOGGER.debug("Unable to introspect session providers", exc_info=True)
 
     if resolved_providers:
         provider_name = resolved_providers[0]
 
     runtime = "cuda" if provider_name in gpu_providers else "cpu"
-    LOGGER.info("Selected execution provider: %s", provider_name)
+    if log_diagnostics:
+        LOGGER.info("Selected execution provider: %s", provider_name)
 
     if gpu_name and "CUDAExecutionProvider" not in providers_available:
         global _CUDA_HINT_LOGGED
@@ -434,7 +517,8 @@ def create_session(
             LOGGER.warning(warning_message)
             _CPU_WARNING_LOGGED = True
 
-    return SessionContext(
+    context = SessionContext(
+        model_name=model_name,
         session=session_obj,
         runtime=runtime,
         provider=provider_name,
@@ -447,6 +531,81 @@ def create_session(
         gpu_available=gpu_active,
         accelerator_message=accelerator_message,
     )
+    _register_session_context(context)
+    _warm_up_session(context)
+    LOGGER.info(
+        "Model '%s' initialised using provider %s (runtime=%s)",
+        model_name,
+        provider_name,
+        runtime,
+    )
+    return context
+
+
+def _preload_default_models(
+    signature: tuple[str, int, bool],
+    *,
+    requested_mode: str,
+    device_id: int,
+    warn_on_cpu: bool,
+) -> None:
+    """Preload the curated list of models for the provided accelerator signature."""
+
+    pool = _SESSION_POOLS.setdefault(signature, {})
+    logged = signature in _STARTUP_LOGGED_SIGNATURES
+    for model_name in _PRELOAD_MODEL_NAMES:
+        if model_name in pool:
+            continue
+        context = _initialise_session_context(
+            model_name,
+            requested_mode=requested_mode,
+            device_id=device_id,
+            warn_on_cpu=warn_on_cpu,
+            log_diagnostics=not logged,
+        )
+        pool[model_name] = context
+        if not logged:
+            _STARTUP_LOGGED_SIGNATURES.add(signature)
+            logged = True
+
+def create_session(
+    model_name: str = "u2net", config: Mapping[str, Any] | None = None
+) -> SessionContext:
+    """Create a new ``rembg`` session with optional GPU acceleration."""
+
+    if _rembg_new_session is None:
+        raise RuntimeError("rembg is required to create a background removal session.") from _REMBG_IMPORT_ERROR
+
+    requested_mode, device_id, warn_on_cpu = _extract_session_config(config)
+    runtime_compat.ensure_runtime_ready()
+
+    signature = (requested_mode, device_id, warn_on_cpu)
+    with _POOL_LOCK:
+        pool = _SESSION_POOLS.setdefault(signature, {})
+        if signature not in _PRELOADED_SIGNATURES:
+            _preload_default_models(
+                signature,
+                requested_mode=requested_mode,
+                device_id=device_id,
+                warn_on_cpu=warn_on_cpu,
+            )
+            _PRELOADED_SIGNATURES.add(signature)
+
+        context = pool.get(model_name)
+        log_required = signature not in _STARTUP_LOGGED_SIGNATURES
+        if context is None:
+            context = _initialise_session_context(
+                model_name,
+                requested_mode=requested_mode,
+                device_id=device_id,
+                warn_on_cpu=warn_on_cpu,
+                log_diagnostics=log_required,
+            )
+            pool[model_name] = context
+        if log_required:
+            _STARTUP_LOGGED_SIGNATURES.add(signature)
+
+    return context
 
 
 def ensure_global_session(
@@ -577,7 +736,10 @@ def _run_rembg(image: Image.Image, session: Session) -> Image.Image:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
+    start = time.perf_counter()
     result_bytes = _rembg_remove(buffer.read(), session=session)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    LOGGER.info("%s inference completed in %.2f ms", _describe_session(session), elapsed_ms)
     result_stream = io.BytesIO(result_bytes)
     result_image = Image.open(result_stream).convert("RGBA")
     result_image.load()

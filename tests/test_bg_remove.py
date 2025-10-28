@@ -1,6 +1,7 @@
 """Tests for the background removal helpers."""
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -19,18 +20,39 @@ def _stub_session(providers: list[str]) -> object:
     return _StubSession(providers)
 
 
+def _reset_session_state() -> None:
+    """Reset module-level caches to ensure deterministic test outcomes."""
+
+    bg_remove._SESSION_CONTEXT = None
+    bg_remove._SESSION_CONFIG_SIGNATURE = None
+    bg_remove._SESSION_POOLS.clear()
+    bg_remove._PRELOADED_SIGNATURES.clear()
+    bg_remove._STARTUP_LOGGED_SIGNATURES.clear()
+    bg_remove._SESSION_METADATA.clear()
+    bg_remove._CPU_WARNING_LOGGED = False
+    bg_remove._CUDA_HINT_LOGGED = False
+
+
 def test_create_session_uses_gpu_priority(monkeypatch: pytest.MonkeyPatch) -> None:
     """GPU providers should be ordered CUDA → TensorRT → CPU."""
 
-    recorded_providers: list = []
+    _reset_session_state()
+
+    call_history: dict[str, list[list]] = {}
 
     def fake_new_session(model_name: str, providers: list) -> object:
-        recorded_providers[:] = providers
+        call_history.setdefault(model_name, []).append(providers)
         first_provider = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
         return _stub_session([first_provider])
 
+    def fake_remove(_: bytes, session: object) -> bytes:
+        buffer = io.BytesIO()
+        Image.new("RGBA", (2, 2), color=(0, 0, 0, 0)).save(buffer, format="PNG")
+        return buffer.getvalue()
+
     monkeypatch.setattr(bg_remove, "_rembg_new_session", fake_new_session)
     monkeypatch.setattr(bg_remove, "_REMBG_IMPORT_ERROR", None)
+    monkeypatch.setattr(bg_remove, "_rembg_remove", fake_remove)
     monkeypatch.setattr(bg_remove.runtime_compat, "ensure_runtime_ready", lambda: None)
     monkeypatch.setattr(
         bg_remove.accelerator,
@@ -42,8 +64,11 @@ def test_create_session_uses_gpu_priority(monkeypatch: pytest.MonkeyPatch) -> No
 
     context = bg_remove.create_session(config={})
 
-    assert recorded_providers[0][0] == "CUDAExecutionProvider"
-    assert recorded_providers[1][0] == "TensorrtExecutionProvider"
+    requested_calls = call_history.get("u2net", [])
+    assert requested_calls, "u2net should be initialised during preloading"
+    recorded_providers = requested_calls[-1]
+    assert recorded_providers[0][0] == "TensorrtExecutionProvider"
+    assert recorded_providers[1][0] == "CUDAExecutionProvider"
     assert recorded_providers[-1] == "CPUExecutionProvider"
     assert context.runtime == "cuda"
     assert context.provider == "CUDAExecutionProvider"
@@ -56,17 +81,25 @@ def test_create_session_uses_gpu_priority(monkeypatch: pytest.MonkeyPatch) -> No
 def test_create_session_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
     """Failures initialising GPU providers should fall back to CPU with a warning."""
 
-    call_sequence: list[list] = []
+    _reset_session_state()
+
+    call_history: dict[str, list[list]] = {}
 
     def fake_new_session(model_name: str, providers: list) -> object:
-        call_sequence.append(providers)
+        call_history.setdefault(model_name, []).append(providers)
         first_provider = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
         if first_provider in {"TensorrtExecutionProvider", "CUDAExecutionProvider"}:
             raise RuntimeError("GPU provider failed")
         return _stub_session([first_provider])
 
+    def fake_remove(_: bytes, session: object) -> bytes:
+        buffer = io.BytesIO()
+        Image.new("RGBA", (2, 2), color=(0, 0, 0, 0)).save(buffer, format="PNG")
+        return buffer.getvalue()
+
     monkeypatch.setattr(bg_remove, "_rembg_new_session", fake_new_session)
     monkeypatch.setattr(bg_remove, "_REMBG_IMPORT_ERROR", None)
+    monkeypatch.setattr(bg_remove, "_rembg_remove", fake_remove)
     monkeypatch.setattr(bg_remove.runtime_compat, "ensure_runtime_ready", lambda: None)
     monkeypatch.setattr(
         bg_remove.accelerator,
@@ -79,7 +112,14 @@ def test_create_session_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> No
 
     context = bg_remove.create_session(config={})
 
-    assert len(call_sequence) == 3
+    requested_calls = call_history.get("u2net", [])
+    assert requested_calls, "u2net should be initialised during preloading"
+    # The initial attempt should enumerate GPU providers before falling back to CPU.
+    assert requested_calls[0][0][0] == "TensorrtExecutionProvider"
+    assert requested_calls[0][1][0] == "CUDAExecutionProvider"
+    assert requested_calls[0][-1] == "CPUExecutionProvider"
+    # The final attempt should request CPU only after GPU failures.
+    assert requested_calls[-1][0] == "CPUExecutionProvider"
     assert context.runtime == "cpu"
     assert context.provider == "CPUExecutionProvider"
     assert context.warning is not None

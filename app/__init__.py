@@ -1,6 +1,13 @@
 """Application factory for the background remover web service."""
 from __future__ import annotations
 
+from app.socketio_utils import ensure_eventlet_monkey_patched
+
+# Ensure Eventlet's cooperative monkey patch runs before importing Flask or heavy
+# runtime dependencies. This path is triggered when ``flask run`` imports the
+# package, so the call must happen at module import time.
+ensure_eventlet_monkey_patched()
+
 from app.services import runtime_compat
 from app.services.bg_remove import ensure_global_session
 

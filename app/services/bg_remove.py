@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +26,11 @@ except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
     _REMBG_IMPORT_ERROR = exc
 else:
     _REMBG_IMPORT_ERROR = None
+
+try:  # pragma: no cover - optional dependency when Eventlet is unavailable
+    from eventlet.green import threading as cooperative_threading  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - Eventlet not installed in some environments
+    import threading as cooperative_threading  # type: ignore
 
 from app.services import runtime_compat
 
@@ -188,7 +192,7 @@ def _looks_like_directory(original: str | Path, resolved: Path) -> bool:
     return text.endswith(("/", "\\"))
 
 _SESSION_SINGLETON: Optional[Session] = None
-_SESSION_LOCK = threading.Lock()
+_SESSION_LOCK = cooperative_threading.Lock()
 
 
 @dataclass

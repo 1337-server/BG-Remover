@@ -116,16 +116,13 @@ python serve.py
 python -m app
 ```
 
-Both entry points launch the Socket.IO server using eventlet so WebSocket connections
-work out of the box, including from IDEs such as PyCharm and Docker containers. The
-server binds to `0.0.0.0:5000`, enabling native WebSocket support with automatic
-long-polling fallback for browsers that require it. Installing the dependencies from
-`requirements.txt` provides the required `eventlet` worker so WebSocket connections
-succeed during local development.
+Both entry points run the standard Flask development server on `0.0.0.0:5000`. The
+interface processes each upload end-to-end and returns the final result once the
+background removal is complete—no streaming or WebSocket connection is required.
 
 Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 
-* **Single Image** tab – upload an image, get an instant PNG with transparency (with preview or JSON).
+* **Single Image** tab – upload an image, receive the processed file once complete, or fetch JSON payloads.
 * **Folder Processing** tab – supply a server-side folder, optional output directory, recursive mode,
   alpha-matting settings, and request a ZIP bundle of the processed results.
 

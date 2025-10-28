@@ -25,4 +25,4 @@ COPY . /app
 
 EXPOSE 5000
 
-ENTRYPOINT ["python", "-m", "app.socket_app"]
+ENTRYPOINT ["python", "-m", "app"]

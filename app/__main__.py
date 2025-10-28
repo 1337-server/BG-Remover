@@ -1,19 +1,18 @@
 """Module entry point for ``python -m app``."""
 from __future__ import annotations
 
-from app.socketio_utils import ensure_eventlet_monkey_patched
+import os
 
-# Ensure Eventlet's cooperative standard-library patches execute before importing
-# any modules that depend on Flask, Torch, or standard networking primitives.
-ensure_eventlet_monkey_patched()
-
-from app.runner import run_socketio_server
+from app import create_app
 
 
 def main() -> None:
-    """Execute the Socket.IO web server when the package is run as a module."""
+    """Start the Flask development server when the package is executed."""
 
-    run_socketio_server()
+    app = create_app()
+    host = os.environ.get("FLASK_RUN_HOST", "0.0.0.0")
+    port = int(os.environ.get("FLASK_RUN_PORT", "5000"))
+    app.run(host=host, port=port)
 
 
 if __name__ == "__main__":

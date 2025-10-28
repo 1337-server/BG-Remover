@@ -71,27 +71,17 @@
             <div class="spinner-border text-primary d-none" id="single-spinner" role="status" aria-hidden="true"></div>
           </div>
         </form>
-        <div class="mt-4" id="single-preview-section" hidden>
-          <h2 class="h5">Live Preview</h2>
-          <div class="checkerboard rounded p-3 mb-3">
-            <img id="single-live-preview" alt="Live preview" class="img-fluid rounded" />
-          </div>
-          <div class="progress">
-            <div class="progress-bar" id="single-progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%">0%</div>
-          </div>
-          <p class="text-muted mt-2 mb-0" id="single-progress-text">Waiting for updates…</p>
-        </div>
-        <div class="mt-4" id="single-result" hidden>
-          <h2 class="h5">Result</h2>
-          <div class="checkerboard rounded p-3">
-            <img id="single-preview" alt="Processed preview" class="img-fluid rounded" />
-          </div>
-          <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
-            <a class="btn btn-success d-none" id="single-download" href="#" download>Download result</a>
-            <span class="text-muted" id="single-result-stage"></span>
-          </div>
-          <pre class="mt-3 bg-light p-3 rounded" id="single-summary"></pre>
-        </div>
+<div class="mt-4" id="single-result" hidden>
+  <h2 class="h5">Result</h2>
+  <div class="checkerboard rounded p-3">
+    <img id="single-preview" alt="Processed preview" class="img-fluid rounded" />
+  </div>
+  <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+    <a class="btn btn-success d-none" id="single-download" href="#" download>Download result</a>
+    <span class="text-muted" id="single-status-text"></span>
+  </div>
+  <pre class="mt-3 bg-light p-3 rounded" id="single-summary"></pre>
+</div>
       </div>
       <div class="tab-pane fade" id="folder" role="tabpanel" aria-labelledby="folder-tab">
         <form id="folder-form" novalidate>
@@ -197,12 +187,14 @@
 </div>
 {% endblock %}
 {% block extra_scripts %}
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
   document.addEventListener('DOMContentLoaded', () => {
     const singleFormatSelect = document.getElementById('single-format');
 
     const showSpinner = (element, show) => {
+      if (!element) {
+        return;
+      }
       element.classList.toggle('d-none', !show);
     };
 
@@ -267,15 +259,57 @@
       };
     };
 
-    const formatStage = (stage) => {
-      if (!stage) {
-        return '';
+    const formatDownloadLabel = (downloadName, formatKey, mimeType) => {
+      if (downloadName) {
+        const extension = (downloadName.split('.').pop() || '').toUpperCase();
+        if (extension) {
+          return `Download ${extension}`;
+        }
       }
-      return stage
-        .toString()
-        .split('_')
-        .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-        .join(' ');
+      if (formatKey) {
+        return `Download ${formatKey.toString().toUpperCase()}`;
+      }
+      if (mimeType) {
+        const subtype = mimeType.split('/')[1] || '';
+        if (subtype) {
+          return `Download ${subtype.toUpperCase()}`;
+        }
+      }
+      return 'Download result';
+    };
+
+    const resolveDownloadName = (downloadName, formatKey, mimeType) => {
+      if (downloadName) {
+        return downloadName;
+      }
+      const baseName = (activeFilename || 'image').replace(/\.[^./]+$/, '') || 'image';
+      let extension = '';
+      if (formatKey) {
+        extension = formatKey.toString().toLowerCase();
+      }
+      if (!extension && mimeType) {
+        const subtype = mimeType.split('/')[1] || '';
+        if (subtype) {
+          extension = subtype.toLowerCase();
+        }
+      }
+      if (!extension && singleFormatSelect && singleFormatSelect.value) {
+        extension = singleFormatSelect.value.toLowerCase();
+      }
+      if (!extension) {
+        extension = 'png';
+      }
+      return `${baseName}_no_bg.${extension}`;
+    };
+
+    const base64ToBlob = (base64, mimeType) => {
+      const binaryString = atob(base64);
+      const length = binaryString.length;
+      const bytes = new Uint8Array(length);
+      for (let index = 0; index < length; index += 1) {
+        bytes[index] = binaryString.charCodeAt(index);
+      }
+      return new Blob([bytes], { type: mimeType });
     };
 
     const singleForm = document.getElementById('single-form');
@@ -283,247 +317,153 @@
     const singleResult = document.getElementById('single-result');
     const singlePreview = document.getElementById('single-preview');
     const singleSummary = document.getElementById('single-summary');
-    const singlePreviewSection = document.getElementById('single-preview-section');
-    const singleLivePreview = document.getElementById('single-live-preview');
-    const singleProgressBar = document.getElementById('single-progress-bar');
-    const singleProgressText = document.getElementById('single-progress-text');
-    const singleResultStage = document.getElementById('single-result-stage');
     const singleDownload = document.getElementById('single-download');
+    const singleStatusText = document.getElementById('single-status-text');
     const singleFileInput = document.getElementById('single-file');
     const singleAlert = document.getElementById('single-form-alert');
     const singleAlertManager = createAlertManager(singleAlert);
 
-    if (singleFormatSelect) {
+    let downloadObjectUrl = null;
+    let activeFilename = 'image';
+
+    const revokeDownloadUrl = () => {
+      if (downloadObjectUrl) {
+        URL.revokeObjectURL(downloadObjectUrl);
+        downloadObjectUrl = null;
+      }
+    };
+
+    const clearDownloadLink = () => {
+      if (!singleDownload) {
+        return;
+      }
+      revokeDownloadUrl();
+      singleDownload.classList.add('d-none');
+      singleDownload.removeAttribute('href');
+      singleDownload.removeAttribute('download');
+      const defaultFormat = singleFormatSelect && singleFormatSelect.value;
+      singleDownload.textContent = formatDownloadLabel(null, defaultFormat, null);
+    };
+
+    clearDownloadLink();
+
+    if (singleFormatSelect && singleDownload) {
       singleFormatSelect.addEventListener('change', () => {
         if (singleDownload.classList.contains('d-none')) {
-          const nextLabel = singleFormatSelect.value
-            ? `Download ${singleFormatSelect.value.toUpperCase()}`
-            : 'Download result';
-          singleDownload.textContent = nextLabel;
+          singleDownload.textContent = formatDownloadLabel(null, singleFormatSelect.value, null);
         }
       });
     }
 
-    let socketId = null;
-    let currentJobId = null;
-    let activeFilename = 'image';
-    let finalPreviewObjectUrl = null;
-
-    const socket = io('/ws/background-preview');
-
-    const clearDownloadUrl = () => {
-      singleDownload.classList.add('d-none');
-      singleDownload.removeAttribute('href');
-      singleDownload.removeAttribute('download');
-      const defaultLabel = singleFormatSelect && singleFormatSelect.value
-        ? `Download ${singleFormatSelect.value.toUpperCase()}`
-        : 'Download result';
-      singleDownload.textContent = defaultLabel;
-    };
-
-    const clearFinalPreviewObjectUrl = () => {
-      if (finalPreviewObjectUrl) {
-        URL.revokeObjectURL(finalPreviewObjectUrl);
-        finalPreviewObjectUrl = null;
+    const describeStatus = (result) => {
+      if (!result) {
+        return 'Background removal completed successfully.';
       }
-    };
-
-    clearDownloadUrl();
-
-    const updateProgress = (percent, stage) => {
-      const numeric = Number(percent) || 0;
-      singleProgressBar.style.width = `${numeric}%`;
-      singleProgressBar.setAttribute('aria-valuenow', numeric.toFixed(0));
-      singleProgressBar.textContent = `${numeric.toFixed(0)}%`;
-      singleProgressText.textContent = stage ? `Stage: ${formatStage(stage)}` : 'Processing…';
-    };
-
-    const setLivePreview = (previewUrl) => {
-      if (!previewUrl) {
-        return;
+      if (result.success) {
+        return result.error
+          ? `Completed with notes: ${result.error}`
+          : 'Background removal completed successfully.';
       }
-      singlePreviewSection.hidden = false;
-      singleLivePreview.src = previewUrl;
+      return result.error ? `Error: ${result.error}` : 'Background removal failed.';
     };
 
-    const setFinalPreview = async (resultUrl, mimeType, downloadUrl, downloadName, formatKey) => {
-      if (resultUrl) {
+    if (singleForm) {
+      singleForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        if (!singleForm.checkValidity()) {
+          singleForm.classList.add('was-validated');
+          singleAlertManager.show('Please fix the highlighted errors before submitting the form.');
+          return;
+        }
+
+        const file = singleFileInput?.files?.[0];
+        if (!file) {
+          singleAlertManager.show('Please choose an image to upload.');
+          return;
+        }
+
+        singleAlertManager.clear();
+        singleForm.classList.remove('was-validated');
+        activeFilename = file.name || 'image';
+
+        singleResult.hidden = true;
+        singlePreview?.removeAttribute('src');
+        singleSummary.textContent = '';
+        if (singleStatusText) {
+          singleStatusText.textContent = '';
+        }
+        clearDownloadLink();
+
+        const formData = new FormData(singleForm);
+
+        showSpinner(singleSpinner, true);
+
         try {
-          const response = await fetch(resultUrl, { cache: 'no-store' });
-          if (!response.ok) {
-            throw new Error(`Failed to fetch preview (${response.status})`);
+          const response = await fetch('/image/remove-bg?json=1', {
+            method: 'POST',
+            body: formData,
+          });
+
+          const payload = await response.json().catch(() => null);
+          if (!response.ok || !payload) {
+            const message = payload?.error || 'Background removal failed.';
+            throw new Error(message);
           }
-          const blob = await response.blob();
-          clearFinalPreviewObjectUrl();
-          finalPreviewObjectUrl = URL.createObjectURL(blob);
-          singlePreviewSection.hidden = false;
-          singlePreview.src = finalPreviewObjectUrl;
-          singleLivePreview.src = finalPreviewObjectUrl;
+
+          const mimeType = payload.mime_type || 'image/png';
+          if (payload.image_base64 && singlePreview) {
+            singlePreview.src = `data:${mimeType};base64,${payload.image_base64}`;
+          } else if (singlePreview) {
+            singlePreview.removeAttribute('src');
+          }
+
+          singleResult.hidden = false;
+          if (singleStatusText) {
+            singleStatusText.textContent = describeStatus(payload.result);
+          }
+          if (payload.result) {
+            singleSummary.textContent = JSON.stringify(payload.result, null, 2);
+          } else {
+            singleSummary.textContent = 'Background removal completed successfully.';
+          }
+
+          if (payload.image_base64 && singleDownload) {
+            try {
+              const blob = base64ToBlob(payload.image_base64, mimeType);
+              revokeDownloadUrl();
+              downloadObjectUrl = URL.createObjectURL(blob);
+              const resolvedDownloadName = resolveDownloadName(
+                payload.download_name,
+                payload.format,
+                mimeType,
+              );
+              singleDownload.href = downloadObjectUrl;
+              if (resolvedDownloadName) {
+                singleDownload.download = resolvedDownloadName;
+              } else {
+                singleDownload.removeAttribute('download');
+              }
+              singleDownload.textContent = formatDownloadLabel(
+                resolvedDownloadName,
+                payload.format,
+                mimeType,
+              );
+              singleDownload.classList.remove('d-none');
+            } catch (error) {
+              console.error('Unable to prepare the download link.', error);
+              clearDownloadLink();
+            }
+          } else {
+            clearDownloadLink();
+          }
         } catch (error) {
-          console.error('Unable to load the final preview image.', error);
+          singleAlertManager.show(error.message || 'Background removal failed.');
+        } finally {
+          showSpinner(singleSpinner, false);
         }
-      }
-      singleResult.hidden = false;
-
-      clearDownloadUrl();
-      if (downloadUrl) {
-        singleDownload.href = downloadUrl;
-        let resolvedDownloadName = downloadName || '';
-        if (!resolvedDownloadName) {
-          const baseName = activeFilename.replace(/\.[^./]+$/, '');
-          const fallbackExtension = (formatKey || (mimeType ? mimeType.split('/')[1] : '') || 'png')
-            .toString()
-            .toLowerCase();
-          resolvedDownloadName = `${baseName || 'image'}_no_bg.${fallbackExtension}`;
-        }
-        if (resolvedDownloadName) {
-          singleDownload.download = resolvedDownloadName;
-        }
-        let extension = '';
-        if (resolvedDownloadName) {
-          extension = (resolvedDownloadName.split('.').pop() || '').toUpperCase();
-        }
-        if (!extension && formatKey) {
-          extension = formatKey.toUpperCase();
-        }
-        if (!extension && mimeType) {
-          extension = (mimeType.split('/')[1] || '').toUpperCase();
-        }
-        singleDownload.textContent = extension ? `Download ${extension}` : 'Download result';
-        singleDownload.classList.remove('d-none');
-      }
-    };
-
-    socket.on('connect', () => {
-      socketId = socket.id;
-    });
-
-    socket.on('disconnect', () => {
-      socketId = null;
-    });
-
-    socket.on('progress', (payload) => {
-      if (!currentJobId || payload.job_id !== currentJobId) {
-        return;
-      }
-      updateProgress(payload.percent, payload.stage);
-    });
-
-    socket.on('preview', (payload) => {
-      if (!currentJobId || payload.job_id !== currentJobId) {
-        return;
-      }
-      const previewUrl = payload.preview_url
-        || (payload.preview_token ? `/image/remove-bg/live/preview/${payload.preview_token}` : null);
-      if (!previewUrl) {
-        return;
-      }
-      setLivePreview(previewUrl);
-      if (payload.stage) {
-        singleResultStage.textContent = `Latest stage: ${formatStage(payload.stage)}`;
-      }
-    });
-
-    socket.on('completed', async (payload) => {
-      if (!currentJobId || payload.job_id !== currentJobId) {
-        return;
-      }
-      showSpinner(singleSpinner, false);
-      updateProgress(100, 'complete');
-      singleProgressText.textContent = 'Processing complete.';
-      singleResultStage.textContent = 'Background removal completed successfully.';
-      const resultUrl = payload.result_url
-        || (payload.result_token ? `/image/remove-bg/live/result/${payload.result_token}` : null);
-      const downloadUrl = payload.download_url
-        || (payload.download_token ? `/image/remove-bg/file/${payload.download_token}` : null);
-      await setFinalPreview(resultUrl, payload.mime_type, downloadUrl, payload.download_name, payload.format);
-      if (payload.result) {
-        singleSummary.textContent = JSON.stringify(payload.result, null, 2);
-      } else {
-        singleSummary.textContent = 'Background removal completed successfully.';
-      }
-      currentJobId = null;
-    });
-
-    socket.on('error', (payload) => {
-      if (!currentJobId || payload.job_id !== currentJobId) {
-        return;
-      }
-      showSpinner(singleSpinner, false);
-      singleProgressText.textContent = `Error: ${payload.message}`;
-      singleResultStage.textContent = `Error: ${payload.message}`;
-      currentJobId = null;
-      singleAlertManager.show(payload.message || 'Background removal failed.');
-    });
-
-    singleForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (!singleForm.checkValidity()) {
-        singleForm.classList.add('was-validated');
-        singleAlertManager.show('Please fix the highlighted errors before submitting the form.');
-        return;
-      }
-
-      singleAlertManager.clear();
-
-      if (!socketId) {
-        singleAlertManager.show('Connecting to the live preview channel. Please try again in a moment.');
-        return;
-      }
-
-      const file = singleFileInput.files && singleFileInput.files[0];
-      if (!file) {
-        singleAlertManager.show('Please choose an image to upload.');
-        return;
-      }
-
-      activeFilename = file.name || 'image';
-      currentJobId = null;
-      singleResult.hidden = true;
-      singlePreviewSection.hidden = false;
-      singleSummary.textContent = '';
-      singleResultStage.textContent = '';
-      clearDownloadUrl();
-      clearFinalPreviewObjectUrl();
-      singlePreview.removeAttribute('src');
-      updateProgress(0, 'queued');
-      singleProgressText.textContent = 'Uploading image…';
-
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          singleLivePreview.src = reader.result;
-        }
-      };
-      reader.readAsDataURL(file);
-
-      const formData = new FormData(singleForm);
-      formData.append('socket_id', socketId);
-
-      showSpinner(singleSpinner, true);
-
-      try {
-        const response = await fetch('/image/remove-bg/live', {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!response.ok) {
-          const errorPayload = await response.json().catch(() => null);
-          const message = errorPayload?.error || 'Background removal failed to start.';
-          throw new Error(message);
-        }
-
-        const payload = await response.json();
-        currentJobId = payload.job_id;
-        singleProgressText.textContent = 'Processing…';
-      } catch (error) {
-        showSpinner(singleSpinner, false);
-        singleProgressText.textContent = 'Unable to start processing.';
-        currentJobId = null;
-        singleAlertManager.show(error.message || 'Background removal failed to start.');
-      }
-    });
+      });
+    }
 
     const folderForm = document.getElementById('folder-form');
     const folderSpinner = document.getElementById('folder-spinner');
@@ -535,104 +475,116 @@
     const folderAlert = document.getElementById('folder-form-alert');
     const folderAlertManager = createAlertManager(folderAlert);
 
-    folderForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (!folderForm.checkValidity()) {
-        folderForm.classList.add('was-validated');
-        folderAlertManager.show('Please fix the highlighted errors before submitting the form.');
-        return;
-      }
-
-      folderAlertManager.clear();
-
-      const formData = new FormData(folderForm);
-      let endpoint = '/image/remove-bg?json=1';
-      if (document.getElementById('folder-zip').checked) {
-        const params = new URLSearchParams(window.location.search);
-        params.set('json', '1');
-        params.set('zip', '1');
-        endpoint = `/image/remove-bg?${params.toString()}`;
-      }
-
-      showSpinner(folderSpinner, true);
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          body: formData,
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || 'Folder processing failed.');
+    if (folderForm) {
+      folderForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!folderForm.checkValidity()) {
+          folderForm.classList.add('was-validated');
+          folderAlertManager.show('Please fix the highlighted errors before submitting the form.');
+          return;
         }
 
-        folderResult.hidden = false;
-        folderSummary.classList.remove('d-none');
-        folderSummary.textContent = `Processed ${data.summary.success} of ${data.summary.total} images.`;
-        if (data.zip_error) {
-          folderSummary.textContent += ` ZIP error: ${data.zip_error}`;
-        }
-
-        folderTableBody.innerHTML = '';
-        data.results.forEach((item) => {
-          const row = document.createElement('tr');
-          const fileCell = document.createElement('td');
-          fileCell.textContent = item.path_in;
-          row.appendChild(fileCell);
-
-          const previewCell = document.createElement('td');
-          if (item.preview_url) {
-            const previewImage = document.createElement('img');
-            previewImage.src = item.preview_url;
-            previewImage.alt = `Preview of ${item.path_in}`;
-            previewImage.classList.add('img-thumbnail');
-            previewImage.style.maxWidth = '96px';
-            previewImage.style.maxHeight = '96px';
-            previewCell.appendChild(previewImage);
-          } else {
-            previewCell.textContent = item.error ? 'No preview' : '-';
-          }
-          row.appendChild(previewCell);
-
-          const statusCell = document.createElement('td');
-          statusCell.textContent = item.success ? 'Success' : 'Failed';
-          statusCell.classList.toggle('text-success', item.success);
-          statusCell.classList.toggle('text-danger', !item.success);
-          row.appendChild(statusCell);
-
-          const timeCell = document.createElement('td');
-          const numericTime = Number(item.timing_ms);
-          timeCell.textContent = Number.isFinite(numericTime) ? numericTime.toFixed(1) : (item.timing_ms ?? '-');
-          row.appendChild(timeCell);
-
-          const downloadCell = document.createElement('td');
-          if (item.download_url) {
-            const link = document.createElement('a');
-            link.href = item.download_url;
-            const formatLabel = (item.format || '').toString().toUpperCase();
-            link.textContent = formatLabel ? `Download ${formatLabel}` : 'Download';
-            link.classList.add('btn', 'btn-sm', 'btn-outline-primary');
-            downloadCell.appendChild(link);
-          } else {
-            downloadCell.textContent = item.error || '-';
-          }
-          row.appendChild(downloadCell);
-
-          folderTableBody.appendChild(row);
-        });
-
-        if (data.zip_download_url) {
-          folderZipLink.hidden = false;
-          folderZipButton.href = data.zip_download_url;
-          folderZipButton.download = 'results.zip';
-        } else {
-          folderZipLink.hidden = true;
-        }
         folderAlertManager.clear();
-      } catch (error) {
-        folderAlertManager.show(error.message || 'Folder processing failed.');
-      } finally {
-        showSpinner(folderSpinner, false);
-      }
+
+        const formData = new FormData(folderForm);
+        let endpoint = '/image/remove-bg?json=1';
+        const zipToggle = document.getElementById('folder-zip');
+        if (zipToggle && zipToggle.checked) {
+          endpoint = '/image/remove-bg?json=1&zip=1';
+        }
+
+        showSpinner(folderSpinner, true);
+        try {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            body: formData,
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Folder processing failed.');
+          }
+
+          folderResult.hidden = false;
+          folderSummary.classList.remove('d-none');
+          folderSummary.textContent = `Processed ${data.summary.success} of ${data.summary.total} images.`;
+          if (data.zip_error) {
+            folderSummary.textContent += ` ZIP error: ${data.zip_error}`;
+          }
+
+          if (folderTableBody) {
+            folderTableBody.innerHTML = '';
+            data.results.forEach((item) => {
+              const row = document.createElement('tr');
+
+              const fileCell = document.createElement('td');
+              fileCell.textContent = item.path_in;
+              row.appendChild(fileCell);
+
+              const previewCell = document.createElement('td');
+              if (item.preview_url) {
+                const previewImage = document.createElement('img');
+                previewImage.src = item.preview_url;
+                previewImage.alt = `Preview of ${item.path_in}`;
+                previewImage.classList.add('img-thumbnail');
+                previewImage.style.maxWidth = '96px';
+                previewImage.style.maxHeight = '96px';
+                previewCell.appendChild(previewImage);
+              } else {
+                previewCell.textContent = item.error ? 'No preview' : '-';
+              }
+              row.appendChild(previewCell);
+
+              const statusCell = document.createElement('td');
+              statusCell.textContent = item.success ? 'Success' : 'Failed';
+              statusCell.classList.toggle('text-success', Boolean(item.success));
+              statusCell.classList.toggle('text-danger', !item.success);
+              row.appendChild(statusCell);
+
+              const timeCell = document.createElement('td');
+              const numericTime = Number(item.timing_ms);
+              timeCell.textContent = Number.isFinite(numericTime)
+                ? numericTime.toFixed(1)
+                : (item.timing_ms ?? '-');
+              row.appendChild(timeCell);
+
+              const downloadCell = document.createElement('td');
+              if (item.download_url) {
+                const link = document.createElement('a');
+                link.href = item.download_url;
+                const formatLabel = (item.format || '').toString().toUpperCase();
+                link.textContent = formatLabel ? `Download ${formatLabel}` : 'Download';
+                link.classList.add('btn', 'btn-sm', 'btn-outline-primary');
+                downloadCell.appendChild(link);
+              } else {
+                downloadCell.textContent = item.error || '-';
+              }
+              row.appendChild(downloadCell);
+
+              folderTableBody.appendChild(row);
+            });
+          }
+
+          if (folderZipLink && folderZipButton) {
+            if (data.zip_download_url) {
+              folderZipLink.hidden = false;
+              folderZipButton.href = data.zip_download_url;
+              folderZipButton.download = 'results.zip';
+            } else {
+              folderZipLink.hidden = true;
+              folderZipButton.removeAttribute('href');
+            }
+          }
+          folderAlertManager.clear();
+        } catch (error) {
+          folderAlertManager.show(error.message || 'Folder processing failed.');
+        } finally {
+          showSpinner(folderSpinner, false);
+        }
+      });
+    }
+
+    window.addEventListener('beforeunload', () => {
+      revokeDownloadUrl();
     });
   });
 </script>

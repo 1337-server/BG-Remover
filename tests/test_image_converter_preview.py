@@ -43,6 +43,8 @@ def test_serialise_results_provides_preview_links(tmp_path: Path) -> None:
     entry = payload["results"][0]
     assert entry["download_url"].startswith("/image/remove-bg/file/")
     assert entry["preview_url"].startswith("/image/remove-bg/preview/")
+    assert entry["mime_type"] == "image/png"
+    assert entry["format"] == "png"
 
     client = app.test_client()
 
@@ -95,6 +97,7 @@ def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypat
     data = {
         "socket_id": "abc123",
         "image_file": (BytesIO(b"fake image"), "sample.jpg"),
+        "output_format": "webp",
     }
     response = client.post(
         "/image/remove-bg/live",

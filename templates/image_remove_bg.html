@@ -294,7 +294,7 @@
             <a class="btn btn-success d-none" id="single-download" href="#" download>Download result</a>
             <span class="text-muted" id="single-status-text"></span>
           </div>
-          <pre class="mt-3 bg-light p-3 rounded" id="single-summary"></pre>
+          <pre class="mt-3 summary-output p-3 rounded" id="single-summary"></pre>
         </div>
       </div>
       <div class="tab-pane fade" id="folder" role="tabpanel" aria-labelledby="folder-tab">
@@ -579,11 +579,217 @@
       </div>
     </div>
   </div>
+  <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1080" aria-live="polite" aria-atomic="true">
+    <div
+      class="toast align-items-center text-bg-success border-0"
+      id="preview-ready-toast"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-bs-delay="4000"
+    >
+      <div class="d-flex">
+        <div class="toast-body" id="preview-ready-toast-body">Preview ready — your background-free image is displayed.</div>
+        <button
+          type="button"
+          class="btn-close btn-close-white me-2 m-auto"
+          data-bs-dismiss="toast"
+          aria-label="Close"
+        ></button>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}
 {% block extra_scripts %}
 <script>
   document.addEventListener('DOMContentLoaded', () => {
+    const FORMAT_EXTENSION_MAP = new Map([
+      ['png', '.png'],
+      ['webp', '.webp'],
+      ['jpg', '.jpg'],
+      ['jpeg', '.jpg'],
+    ]);
+
+    let downloadObjectUrl = null;
+    let activeFilename = 'image';
+
+    /**
+     * Return a normalised, lower-case version of a format identifier.
+     * @param {string | null | undefined} value - The format key selected by the user.
+     * @returns {string} The trimmed, lower-case format identifier.
+     */
+    const normaliseFormatKey = (value) => {
+      if (typeof value !== 'string') {
+        return '';
+      }
+      return value.trim().toLowerCase();
+    };
+
+    /**
+     * Resolve a sensible file extension from a format key or MIME type.
+     * @param {string | null | undefined} formatKey - The selected output format key.
+     * @param {string | null | undefined} mimeType - The MIME type reported by the backend.
+     * @returns {string} The most appropriate extension including the leading dot.
+     */
+    const inferExtension = (formatKey, mimeType) => {
+      const normalisedKey = normaliseFormatKey(formatKey);
+      if (FORMAT_EXTENSION_MAP.has(normalisedKey)) {
+        return FORMAT_EXTENSION_MAP.get(normalisedKey);
+      }
+      if (typeof mimeType === 'string' && mimeType.includes('/')) {
+        const subtype = mimeType.split('/').pop();
+        if (subtype) {
+          return `.${subtype.toLowerCase()}`;
+        }
+      }
+      return '';
+    };
+
+    /**
+     * Ensure ``name`` ends with ``extension`` while preserving existing prefixes.
+     * @param {string} name - The desired download filename.
+     * @param {string} extension - The extension (including the dot) to apply.
+     * @returns {string} A filename guaranteed to include the requested extension.
+     */
+    const ensureExtension = (name, extension) => {
+      if (!name) {
+        return '';
+      }
+      if (!extension) {
+        return name;
+      }
+      const normalisedName = name.toLowerCase();
+      if (normalisedName.endsWith(extension.toLowerCase())) {
+        return name;
+      }
+      const stripped = name.replace(/\.[^./\\\s]+$/, '');
+      return `${stripped}${extension}`;
+    };
+
+    /**
+     * Build a download filename from user preferences and fallback values.
+     * @param {string | null | undefined} preferredName - Filename provided by the backend.
+     * @param {string | null | undefined} formatKey - Selected output format key.
+     * @param {string | null | undefined} mimeType - MIME type provided by the backend.
+     * @returns {string} The resolved filename, or an empty string when unavailable.
+     */
+    const resolveDownloadName = (preferredName, formatKey, mimeType) => {
+      const extension = inferExtension(formatKey, mimeType);
+      if (typeof preferredName === 'string' && preferredName.trim()) {
+        return ensureExtension(preferredName.trim(), extension);
+      }
+      if (typeof activeFilename === 'string' && activeFilename.trim()) {
+        const safeName = activeFilename.trim().replace(/[^A-Za-z0-9._-]/g, '_');
+        return ensureExtension(safeName, extension);
+      }
+      return '';
+    };
+
+    /**
+     * Describe the download action for the UI button label.
+     * @param {string | null | undefined} preferredName - The filename shown to users.
+     * @param {string | null | undefined} formatKey - Output format key.
+     * @param {string | null | undefined} mimeType - MIME type provided by the backend.
+     * @returns {string} Human-friendly download label text.
+     */
+    const formatDownloadLabel = (preferredName, formatKey, mimeType) => {
+      const resolvedName = (preferredName && preferredName.trim()) || activeFilename || 'result';
+      const normalisedKey = normaliseFormatKey(formatKey).toUpperCase();
+      if (normalisedKey) {
+        return `Download ${resolvedName} (${normalisedKey})`;
+      }
+      if (typeof mimeType === 'string' && mimeType.includes('/')) {
+        const subtype = mimeType.split('/').pop();
+        if (subtype) {
+          return `Download ${resolvedName} (${subtype.toUpperCase()})`;
+        }
+      }
+      return `Download ${resolvedName}`;
+    };
+
+    /**
+     * Toggle a spinner element depending on the processing state.
+     * @param {HTMLElement | null} spinner - The spinner element.
+     * @param {boolean} shouldShow - Whether the spinner should be visible.
+     */
+    const showSpinner = (spinner, shouldShow) => {
+      if (!spinner) {
+        return;
+      }
+      spinner.classList.toggle('d-none', !shouldShow);
+    };
+
+    /**
+     * Create a helper that manages Bootstrap alert visibility and content.
+     * @param {HTMLElement | null} element - The alert container element.
+     * @returns {object} Helper methods with ``show`` and ``clear`` operations.
+     */
+    const createAlertManager = (element) => ({
+      show(message) {
+        if (!element) {
+          return;
+        }
+        element.textContent = message;
+        element.classList.remove('d-none');
+        if (typeof element.focus === 'function') {
+          element.focus();
+        }
+      },
+      clear() {
+        if (!element) {
+          return;
+        }
+        element.textContent = '';
+        element.classList.add('d-none');
+      },
+    });
+
+    /**
+     * Normalise an image payload returned by the backend into convenient parts.
+     * @param {string | null | undefined} value - Raw or data URL image payload.
+     * @param {string | null | undefined} fallbackMimeType - MIME type reported by the backend.
+     * @returns {object} Base64 data, data URL, and MIME type for the processed image.
+     */
+    const normaliseImagePayload = (value, fallbackMimeType) => {
+      if (typeof value !== 'string' || !value.trim()) {
+        return { base64: null, dataUrl: null, mimeType: fallbackMimeType || null };
+      }
+      const trimmed = value.trim();
+      if (trimmed.startsWith('data:')) {
+        const match = trimmed.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          return { base64: match[2], dataUrl: trimmed, mimeType: match[1] || fallbackMimeType || null };
+        }
+        return { base64: null, dataUrl: trimmed, mimeType: fallbackMimeType || null };
+      }
+      const mimeType = fallbackMimeType || 'image/png';
+      return {
+        base64: trimmed,
+        dataUrl: `data:${mimeType};base64,${trimmed}`,
+        mimeType,
+      };
+    };
+
+    /**
+     * Convert a base64-encoded image payload into a Blob suitable for downloads.
+     * @param {string | null} base64Payload - The raw base64 data without any prefix.
+     * @param {string | null | undefined} mimeType - The MIME type associated with the image.
+     * @returns {Blob} The decoded binary payload wrapped as a Blob.
+     */
+    const base64ToBlob = (base64Payload, mimeType) => {
+      if (typeof base64Payload !== 'string' || !base64Payload) {
+        throw new Error('No image data available to download.');
+      }
+      const binaryString = atob(base64Payload);
+      const length = binaryString.length;
+      const bytes = new Uint8Array(length);
+      for (let index = 0; index < length; index += 1) {
+        bytes[index] = binaryString.charCodeAt(index);
+      }
+      return new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+    };
+
     /**
      * Clamp a numeric input to the inclusive range described by its HTML attributes.
      * This prevents out-of-range defaults that could come from server-side configuration.
@@ -640,8 +846,19 @@
 
     enforceNumericBounds();
 
-        const acceleratorInitialState = {{ accelerator_runtime|tojson }} || {};
     const acceleratorRuntimeBadge = document.getElementById('accelerator-runtime-badge');
+    const singleForm = document.getElementById('single-form');
+    const singleFileInput = document.getElementById('single-file');
+    const singleSpinner = document.getElementById('single-spinner');
+    const singleResult = document.getElementById('single-result');
+    const singlePreview = document.getElementById('single-preview');
+    const singleDownload = document.getElementById('single-download');
+    const singleSummary = document.getElementById('single-summary');
+    const singleStatusText = document.getElementById('single-status-text');
+    const singleFormatSelect = document.getElementById('single-format');
+    const singleAlert = document.getElementById('single-form-alert');
+    const singleAlertManager = createAlertManager(singleAlert);
+    const folderForm = document.getElementById('folder-form');
 
     const updateAcceleratorUi = (state = {}) => {
       const message = (state.accelerator_message || 'Using CPU (CPUExecutionProvider)').toString();
@@ -650,9 +867,30 @@
       }
     };
 
-const previewSizeInput = document.getElementById('single-preview-size');
+    const previewSizeInput = document.getElementById('single-preview-size');
     const previewSizeLabel = document.getElementById('single-preview-size-label');
     const previewContainer = document.getElementById('single-preview-container');
+    const previewToastElement = document.getElementById('preview-ready-toast');
+    const previewToastBody = document.getElementById('preview-ready-toast-body');
+    const previewToast =
+      window.bootstrap &&
+      typeof window.bootstrap.Toast === 'function' &&
+      previewToastElement
+        ? window.bootstrap.Toast.getOrCreateInstance(previewToastElement)
+        : null;
+
+    /**
+     * Display the preview-ready toast notification with an optional custom message.
+     * @param {string | null | undefined} message - Informational text shown inside the toast.
+     */
+    const showPreviewReadyToast = (message) => {
+      if (previewToastBody && typeof message === 'string' && message.trim()) {
+        previewToastBody.textContent = message.trim();
+      }
+      if (previewToast && typeof previewToast.show === 'function') {
+        previewToast.show();
+      }
+    };
 
     const applyPreviewSize = () => {
       if (!previewSizeInput) {
@@ -691,9 +929,6 @@ const previewSizeInput = document.getElementById('single-preview-size');
       edgeSlider.addEventListener('change', syncEdgeValue);
       syncEdgeValue();
     }
-
-    let downloadObjectUrl = null;
-    let activeFilename = 'image';
 
     const revokeDownloadUrl = () => {
       if (downloadObjectUrl) {
@@ -763,6 +998,10 @@ const previewSizeInput = document.getElementById('single-preview-size');
           singleStatusText.textContent = '';
         }
         clearDownloadLink();
+        if (previewToast && typeof previewToast.hide === 'function') {
+          // Hide any previous preview notification while a new request is pending.
+          previewToast.hide();
+        }
 
         const formData = new FormData(singleForm);
 
@@ -783,10 +1022,13 @@ const previewSizeInput = document.getElementById('single-preview-size');
           updateAcceleratorUi(payload);
 
           const mimeType = payload.mime_type || 'image/png';
-          if (payload.image_base64 && singlePreview) {
-            singlePreview.src = `data:${mimeType};base64,${payload.image_base64}`;
-          } else if (singlePreview) {
-            singlePreview.removeAttribute('src');
+          const imagePayload = normaliseImagePayload(payload.image_base64, mimeType);
+          if (singlePreview) {
+            if (imagePayload.dataUrl) {
+              singlePreview.src = imagePayload.dataUrl;
+            } else {
+              singlePreview.removeAttribute('src');
+            }
           }
           applyPreviewSize();
 
@@ -804,15 +1046,19 @@ const previewSizeInput = document.getElementById('single-preview-size');
             singleSummary.textContent = 'Background removal completed successfully.';
           }
 
-          if (payload.image_base64 && singleDownload) {
+          if (imagePayload.dataUrl) {
+            showPreviewReadyToast('Preview ready — background removed successfully.');
+          }
+
+          if (imagePayload.base64 && singleDownload) {
             try {
-              const blob = base64ToBlob(payload.image_base64, mimeType);
+              const blob = base64ToBlob(imagePayload.base64, imagePayload.mimeType || mimeType);
               revokeDownloadUrl();
               downloadObjectUrl = URL.createObjectURL(blob);
               const resolvedDownloadName = resolveDownloadName(
                 payload.download_name,
                 payload.format,
-                mimeType,
+                imagePayload.mimeType || mimeType,
               );
               singleDownload.href = downloadObjectUrl;
               if (resolvedDownloadName) {
@@ -823,7 +1069,7 @@ const previewSizeInput = document.getElementById('single-preview-size');
               singleDownload.textContent = formatDownloadLabel(
                 resolvedDownloadName,
                 payload.format,
-                mimeType,
+                imagePayload.mimeType || mimeType,
               );
               singleDownload.classList.remove('d-none');
             } catch (error) {

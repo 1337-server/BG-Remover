@@ -40,6 +40,26 @@ LOGGER = logging.getLogger(__name__)
 
 _INFERENCE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="onnx-inference")
 
+_RUNTIME_LOGGING_CONFIGURED = False
+
+
+def _configure_runtime_logging() -> None:
+    """Ensure ONNX Runtime and TensorRT logs do not spam the console."""
+
+    global _RUNTIME_LOGGING_CONFIGURED
+    if _RUNTIME_LOGGING_CONFIGURED or ort is None:
+        return
+
+    try:
+        set_severity = getattr(ort, "set_default_logger_severity", None)
+        severity = getattr(getattr(ort, "LoggingSeverity", None), "ORT_LOGGING_LEVEL_WARNING", 2)
+        if callable(set_severity):
+            set_severity(severity)
+    except Exception:  # pragma: no cover - depends on onnxruntime build
+        LOGGER.debug("Unable to configure ONNX Runtime logging severity", exc_info=True)
+
+    _RUNTIME_LOGGING_CONFIGURED = True
+
 
 def _run_session_in_thread(
     session: Session,
@@ -546,6 +566,7 @@ def _initialise_session_context(
 ) -> SessionContext:
     """Return a ready-to-use :class:`SessionContext` for ``model_name``."""
 
+    _configure_runtime_logging()
     model_registry.preload_models(config={"BG_ACCELERATOR": requested_mode, "BG_CUDA_DEVICE_ID": device_id})
     session_obj = model_registry.get_session(model_name)
     if session_obj is None:

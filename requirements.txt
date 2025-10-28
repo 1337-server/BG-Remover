@@ -4,8 +4,8 @@ rembg==2.0.59
 Pillow==10.3.0
 numpy==1.26.4
 opencv-python-headless==4.9.0.80
-onnxruntime==1.17.1; platform_system != "Linux" or platform_machine != "x86_64"
-onnxruntime-gpu==1.17.1; platform_system == "Linux" and platform_machine == "x86_64"
+onnxruntime==1.18.1; platform_system != "Linux" or platform_machine != "x86_64"
+onnxruntime-gpu==1.18.1; platform_system == "Linux" and platform_machine == "x86_64"
 torch==2.2.2
 torchvision==0.17.2
 eventlet==0.35.2

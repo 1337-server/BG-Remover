@@ -28,10 +28,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
 else:
     _REMBG_IMPORT_ERROR = None
 
-try:  # pragma: no cover - optional dependency during testing
-    import torch
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    torch = None  # type: ignore[assignment]
+from app.services import runtime_compat
 
 
 LOGGER = logging.getLogger(__name__)
@@ -219,16 +216,29 @@ class RemovalResult:
 def _build_gpu_providers() -> Optional[List[str]]:
     """Return CUDA providers for ``rembg`` when a compatible GPU is available."""
 
-    if torch is None:
+    if runtime_compat.is_force_cpu_enabled():
+        LOGGER.info("BR_FORCE_CPU enabled; forcing CPU execution")
         return None
 
+    if not runtime_compat.has_cuda_support():
+        return None
+
+    onnxruntime = runtime_compat.ensure_runtime_ready()
     try:
-        if torch.cuda.is_available():
-            LOGGER.info("Using GPU for background removal")
-            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        providers = set(onnxruntime.get_available_providers())
     except Exception as exc:  # pragma: no cover - defensive
-        LOGGER.warning("Failed to query CUDA availability via torch: %s", exc)
-    return None
+        LOGGER.warning("Failed to query ONNXRuntime providers: %s", exc)
+        return None
+
+    if "CUDAExecutionProvider" not in providers:
+        LOGGER.warning(
+            "CUDA detected but the CUDAExecutionProvider is unavailable. Install "
+            "onnxruntime-gpu>=1.18.0 to enable GPU acceleration."
+        )
+        return None
+
+    LOGGER.info("Using GPU for background removal")
+    return ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
 def create_session(model_name: str = "u2net") -> Session:
@@ -236,6 +246,8 @@ def create_session(model_name: str = "u2net") -> Session:
 
     if _rembg_new_session is None:
         raise RuntimeError("rembg is required to create a background removal session.") from _REMBG_IMPORT_ERROR
+
+    runtime_compat.ensure_runtime_ready()
 
     providers = _build_gpu_providers()
     if providers:

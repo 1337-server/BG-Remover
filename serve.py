@@ -12,11 +12,23 @@ from typing import Any
 try:  # pragma: no cover - eventlet optional during tests
     import eventlet
 
-    eventlet.monkey_patch()
+    eventlet.monkey_patch(thread=False)
 except ModuleNotFoundError:  # pragma: no cover - fallback to standard library
     eventlet = None  # type: ignore[assignment]
 
 from app import create_app, run_startup_tasks
+
+
+def _configure_logging() -> None:
+    """Initialise logging so structured JSON events are emitted to stdout."""
+
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(level=logging.INFO)
+    root_logger.setLevel(logging.INFO)
+
+
+_configure_logging()
 
 _LOGGER = logging.getLogger(__name__)
 

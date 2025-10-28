@@ -1,10 +1,9 @@
-"""Flask routes for interactive background removal."""
+"""Flask blueprint implementing the interactive background removal interface."""
 from __future__ import annotations
 
 import json
 import shutil
 import tempfile
-import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,7 +15,6 @@ from flask import (
     Response,
     abort,
     after_this_request,
-    current_app,
     jsonify,
     render_template,
     request,
@@ -27,10 +25,9 @@ from flask.typing import ResponseReturnValue
 from werkzeug.utils import secure_filename
 
 from app.services.bg_remove import (
+    DEFAULT_OUTPUT_FORMAT,
     OUTPUT_FORMATS,
     RemovalResult,
-    SessionContext,
-    create_session,
     encode_result_image,
     ensure_global_session,
     get_accelerator_status,
@@ -43,8 +40,6 @@ from app.services.bg_remove import (
 
 image_converter_bp = Blueprint("image_converter", __name__)
 
-_ZIP_REGISTRY: dict[str, Path] = {}
-
 
 @dataclass
 class RegistryItem:
@@ -56,15 +51,15 @@ class RegistryItem:
     download_name: str | None = None
 
 
+_ZIP_REGISTRY: dict[str, Path] = {}
 _FILE_REGISTRY: dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: dict[str, RegistryItem] = {}
-_SESSION_CACHE: dict[str, SessionContext] = {}
-_SESSION_CACHE_LOCK = threading.Lock()
+
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
     for spec in OUTPUT_FORMATS
 ]
-DEFAULT_OUTPUT_FORMAT_KEY = get_output_format_spec(None).key
+DEFAULT_OUTPUT_FORMAT_KEY = DEFAULT_OUTPUT_FORMAT
 REMOVAL_MODEL_OPTIONS = [
     {"key": "general", "label": "General Model", "model_name": "isnet-general-use"},
     {"key": "human", "label": "Human Model", "model_name": "u2net_human_seg"},
@@ -84,7 +79,6 @@ DEFAULT_SINGLE_OPTIONS: dict[str, Any] = {
     "removal_model": DEFAULT_REMOVAL_MODEL_KEY,
 }
 DEFAULT_CHECKBOX_OPTIONS: dict[str, bool] = {
-    # UI toggles that have sensible disabled defaults.
     "alpha_matting": False,
     "recursive": False,
     "zip": False,
@@ -125,20 +119,9 @@ def _collect_single_options(form: Mapping[str, str], defaults: dict[str, int]) -
     }
 
 
-def _get_session_context(model_name: str) -> SessionContext:
-    """Return a cached background removal session for ``model_name``."""
-
-    with _SESSION_CACHE_LOCK:
-        context = _SESSION_CACHE.get(model_name)
-        if context is None:
-            context = create_session(model_name=model_name)
-            _SESSION_CACHE[model_name] = context
-        return context
-
-
 @image_converter_bp.route("/", methods=["GET", "POST"])
 @image_converter_bp.route("/image/remove-bg", methods=["GET", "POST"])
-def remove_bg_view() -> ResponseReturnValue:
+def remove_background_view() -> ResponseReturnValue:
     """Render the UI or process incoming form submissions."""
 
     defaults = DEFAULT_SINGLE_OPTIONS.copy()
@@ -178,14 +161,8 @@ def remove_bg_view() -> ResponseReturnValue:
         except (TypeError, ValueError):
             preview_size = None
 
-    session_context = None
-    if current_app and current_app.config.get("TESTING"):
-        session = None
-        runtime_info = get_runtime_payload()
-    else:
-        session_context = _get_session_context(model_name)
-        session = session_context.session
-        runtime_info = session_context.runtime_payload()
+    ensure_global_session(model_name)
+    runtime_info = get_runtime_payload()
 
     json_requested = request.args.get("json") == "1"
 
@@ -201,7 +178,7 @@ def remove_bg_view() -> ResponseReturnValue:
                 folder_path,
                 output_dir,
                 output_format=format_spec.key,
-                session=session,
+                model_name=model_name,
                 recursive=recursive,
                 alpha_matting=options["alpha_matting"],
                 am_foreground=options["am_foreground"],
@@ -234,7 +211,7 @@ def remove_bg_view() -> ResponseReturnValue:
 
     file_storage = request.files.get("image_file")
     if not file_storage or file_storage.filename == "":
-        return _bad_request("Please upload an image or provide a folder path.")
+        return _bad_request("Please choose an image to upload or provide a folder path.")
 
     filename = secure_filename(file_storage.filename or "image.png")
     temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_"))
@@ -256,14 +233,15 @@ def remove_bg_view() -> ResponseReturnValue:
     result = remove_bg_file(
         input_path,
         output_path,
-        session=session,
+        output_format=format_spec.key,
+        model_name=model_name,
         alpha_matting=options["alpha_matting"],
         am_foreground=options["am_foreground"],
         am_background=options["am_background"],
         am_erode=options["am_erode"],
         colorkey_tolerance=options["colorkey_tolerance"],
         feather_radius=options["feather_radius"],
-        output_format=format_spec.key,
+        retain_image=True,
     )
 
     if not result.success:
@@ -271,8 +249,7 @@ def remove_bg_view() -> ResponseReturnValue:
         return _bad_request(result.error or "Background removal failed.")
 
     if json_requested:
-        final_path = result.path_out or output_path
-        encoded = encode_result_image(final_path)
+        encoded = encode_result_image(result)
         response_data = {
             "result": result.to_dict(),
             "image_base64": encoded,
@@ -287,12 +264,16 @@ def remove_bg_view() -> ResponseReturnValue:
             },
         }
         response_data.update(runtime_info)
+        if result.image is not None:
+            result.image.close()
         shutil.rmtree(temp_dir, ignore_errors=True)
         return jsonify(response_data)
 
     @after_this_request
     def cleanup(_: Response) -> Response:
         shutil.rmtree(temp_dir, ignore_errors=True)
+        if result.image is not None:
+            result.image.close()
         return _
 
     response = send_file(
@@ -302,6 +283,7 @@ def remove_bg_view() -> ResponseReturnValue:
     )
     response.headers["X-Removal-Result"] = json.dumps(result.to_dict())
     return response
+
 
 def _register_registry_item(
     registry: dict[str, RegistryItem],

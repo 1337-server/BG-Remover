@@ -21,11 +21,13 @@ def test_pick_execution_provider_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -
     assert options == {"device_id": 2}
 
 
-def test_pick_execution_provider_prefers_tensorrt(monkeypatch: pytest.MonkeyPatch) -> None:
-    """TensorRT should take precedence over CUDA when available."""
+def test_pick_execution_provider_uses_tensorrt_when_cuda_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TensorRT should be selected when CUDA is unavailable but TensorRT exists."""
 
     def fake_providers() -> List[str]:
-        return ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+        return ["TensorrtExecutionProvider", "CPUExecutionProvider"]
 
     monkeypatch.setattr(accelerator, "onnx_providers_available", fake_providers)
 

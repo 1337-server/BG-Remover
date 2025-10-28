@@ -6,6 +6,7 @@ import os
 from typing import Any, Mapping, MutableMapping
 
 from app.services import runtime_compat
+from app.services.model_preload import preload_all_models
 from app.services.bg_remove import ensure_global_session
 
 try:  # pragma: no cover - optional during testing
@@ -95,6 +96,8 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> "Flask":
     # Initialise the runtime stack before creating the rembg session. This
     # ensures NumPy/ONNXRuntime compatibility issues are surfaced early.
     runtime_compat.ensure_runtime_ready()
+    # Warm up ONNX models to avoid cold-start latency before requests arrive.
+    preload_all_models(config=app.config)
     # Initialise the global background removal session once at startup.
     ensure_global_session(config=app.config)
 

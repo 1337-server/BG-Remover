@@ -72,7 +72,7 @@ def pick_execution_provider(mode: str, device_id: int) -> Tuple[str, Dict[str, i
     """Select the best available execution provider for ``mode``.
 
     The provider selection honours the ONNX Runtime priority order of
-    TensorRT, CUDA, and finally the CPU execution provider. When GPU support
+    CUDA, TensorRT, and finally the CPU execution provider. When GPU support
     is requested and a compatible GPU provider is present, a dictionary of
     provider options including the requested ``device_id`` is returned.
     """
@@ -82,7 +82,7 @@ def pick_execution_provider(mode: str, device_id: int) -> Tuple[str, Dict[str, i
         return "CPUExecutionProvider", {}
 
     providers = onnx_providers_available()
-    preferred_gpu_providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+    preferred_gpu_providers = ["CUDAExecutionProvider", "TensorrtExecutionProvider"]
 
     if normalised_mode in {"cuda", "auto"}:
         for provider_name in preferred_gpu_providers:

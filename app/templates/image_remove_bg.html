@@ -17,6 +17,14 @@
     <div class="tab-content pt-3">
       <div class="tab-pane fade show active" id="single" role="tabpanel" aria-labelledby="single-tab">
         <form id="single-form" enctype="multipart/form-data" class="needs-validation" novalidate>
+          <div
+            class="alert alert-danger d-none"
+            id="single-form-alert"
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            tabindex="-1"
+          ></div>
           <div class="mb-3">
             <label class="form-label" for="single-file">Image file</label>
             <input class="form-control" type="file" id="single-file" name="image_file" accept="image/*" required>
@@ -88,6 +96,14 @@
       <div class="tab-pane fade" id="folder" role="tabpanel" aria-labelledby="folder-tab">
         <form id="folder-form" novalidate>
           <input type="hidden" name="process_folder" value="on">
+          <div
+            class="alert alert-danger d-none"
+            id="folder-form-alert"
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            tabindex="-1"
+          ></div>
           <div class="mb-3">
             <label class="form-label" for="folder-path">Folder path on server</label>
             <input class="form-control" type="text" id="folder-path" name="folder_path" placeholder="/path/to/images" required>
@@ -210,6 +226,67 @@
       element.classList.toggle('d-none', !show);
     };
 
+    const createAlertManager = (container) => {
+      const normalizeMessages = (messages) => {
+        if (Array.isArray(messages)) {
+          return messages.filter((message) => Boolean(message));
+        }
+        if (messages == null) {
+          return [];
+        }
+        return [messages].filter((message) => Boolean(message));
+      };
+
+      const hideContainer = () => {
+        if (!container) {
+          return;
+        }
+        container.classList.add('d-none');
+        container.innerHTML = '';
+      };
+
+      if (!container) {
+        return {
+          show: (messages) => {
+            normalizeMessages(messages).forEach((message) => console.error(message));
+          },
+          clear: () => {},
+        };
+      }
+
+      const showMessages = (messages) => {
+        const items = normalizeMessages(messages);
+        if (!items.length) {
+          hideContainer();
+          return;
+        }
+
+        container.innerHTML = '';
+        if (items.length === 1) {
+          container.textContent = items[0];
+        } else {
+          const list = document.createElement('ul');
+          list.classList.add('mb-0');
+          items.forEach((message) => {
+            const listItem = document.createElement('li');
+            listItem.textContent = message;
+            list.appendChild(listItem);
+          });
+          container.appendChild(list);
+        }
+
+        container.classList.remove('d-none');
+        if (typeof container.focus === 'function') {
+          container.focus({ preventScroll: true });
+        }
+      };
+
+      return {
+        show: showMessages,
+        clear: hideContainer,
+      };
+    };
+
     const formatStage = (stage) => {
       if (!stage) {
         return '';
@@ -233,6 +310,8 @@
     const singleResultStage = document.getElementById('single-result-stage');
     const singleDownload = document.getElementById('single-download');
     const singleFileInput = document.getElementById('single-file');
+    const singleAlert = document.getElementById('single-form-alert');
+    const singleAlertManager = createAlertManager(singleAlert);
 
     if (singleFormatSelect) {
       singleFormatSelect.addEventListener('change', () => {
@@ -361,24 +440,27 @@
       singleProgressText.textContent = `Error: ${payload.message}`;
       singleResultStage.textContent = `Error: ${payload.message}`;
       currentJobId = null;
-      alert(payload.message || 'Background removal failed.');
+      singleAlertManager.show(payload.message || 'Background removal failed.');
     });
 
     singleForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       if (!singleForm.checkValidity()) {
         singleForm.classList.add('was-validated');
+        singleAlertManager.show('Please fix the highlighted errors before submitting the form.');
         return;
       }
 
+      singleAlertManager.clear();
+
       if (!socketId) {
-        alert('Connecting to the live preview channel. Please try again in a moment.');
+        singleAlertManager.show('Connecting to the live preview channel. Please try again in a moment.');
         return;
       }
 
       const file = singleFileInput.files && singleFileInput.files[0];
       if (!file) {
-        alert('Please choose an image to upload.');
+        singleAlertManager.show('Please choose an image to upload.');
         return;
       }
 
@@ -424,7 +506,7 @@
         showSpinner(singleSpinner, false);
         singleProgressText.textContent = 'Unable to start processing.';
         currentJobId = null;
-        alert(error.message || 'Background removal failed to start.');
+        singleAlertManager.show(error.message || 'Background removal failed to start.');
       }
     });
 
@@ -435,13 +517,18 @@
     const folderTableBody = document.querySelector('#folder-table tbody');
     const folderZipLink = document.getElementById('folder-zip-link');
     const folderZipButton = document.getElementById('folder-zip-button');
+    const folderAlert = document.getElementById('folder-form-alert');
+    const folderAlertManager = createAlertManager(folderAlert);
 
     folderForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       if (!folderForm.checkValidity()) {
         folderForm.classList.add('was-validated');
+        folderAlertManager.show('Please fix the highlighted errors before submitting the form.');
         return;
       }
+
+      folderAlertManager.clear();
 
       const formData = new FormData(folderForm);
       let endpoint = '/image/remove-bg?json=1';
@@ -525,8 +612,9 @@
         } else {
           folderZipLink.hidden = true;
         }
+        folderAlertManager.clear();
       } catch (error) {
-        alert(error.message);
+        folderAlertManager.show(error.message || 'Folder processing failed.');
       } finally {
         showSpinner(folderSpinner, false);
       }

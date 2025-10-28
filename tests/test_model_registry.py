@@ -58,6 +58,11 @@ def test_preload_models_initialises_sessions(monkeypatch: pytest.MonkeyPatch, tm
         provider_names = [entry if isinstance(entry, str) else entry[0] for entry in providers]
         session = _FakeSession(provider_names)
         session_store[path] = session
+        assert provider_options
+        cuda_options = provider_options[0]
+        assert cuda_options.get("arena_extend_strategy") == "kSameAsRequested"
+        assert cuda_options.get("cudnn_conv_algo_search") == "EXHAUSTIVE"
+        assert cuda_options.get("do_copy_in_default_stream") is True
         return session
 
     fake_ort = SimpleNamespace(
@@ -163,6 +168,8 @@ def test_provider_priority_prefers_tensorrt(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert providers[0] == "TensorrtExecutionProvider"
     assert options[0]["device_id"] == 0
+    assert options[0]["trt_engine_cache_enable"] is True
+    assert options[0]["trt_fp16_enable"] is True
 
 
 @pytest.mark.integration

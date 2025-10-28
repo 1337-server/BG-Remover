@@ -41,6 +41,41 @@ _PRELOAD_SIGNATURE: tuple[str, tuple[str, ...], str, int] | None = None
 _AVAILABLE_PROVIDERS: list[str] = []
 _PRELOAD_LOCK = Lock()
 
+_CACHE_DIR = (Path(__file__).resolve().parent / ".." / "cache").resolve()
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_TIMING_CACHE_PATH = _CACHE_DIR / "timing_cache"
+
+
+def _tensorrt_provider_options(device_id: int) -> MutableMapping[str, Any]:
+    """Return tuned TensorRT execution provider options for fast warm starts."""
+
+    options: dict[str, Any] = {
+        "device_id": int(device_id),
+        "trt_engine_cache_enable": True,
+        "trt_engine_cache_path": str(_CACHE_DIR),
+        "trt_fp16_enable": True,
+        "trt_timing_cache_enable": True,
+        "trt_timing_cache_path": str(_TIMING_CACHE_PATH),
+        "trt_force_sequential_engine_build": False,
+        "trt_int8_enable": False,
+        "trt_dla_enable": False,
+        "trt_cuda_graph_enable": True,
+        "trt_detailed_build_log": True,
+    }
+    return options
+
+
+def _cuda_provider_options(device_id: int) -> MutableMapping[str, Any]:
+    """Return CUDA execution provider options tuned for aggressive caching."""
+
+    return {
+        "device_id": int(device_id),
+        "arena_extend_strategy": "kSameAsRequested",
+        "gpu_mem_limit": 0,
+        "cudnn_conv_algo_search": "EXHAUSTIVE",
+        "do_copy_in_default_stream": True,
+    }
+
 
 def _resolve_model_dir(model_dir: str | os.PathLike[str] | None) -> Path:
     """Return the directory containing cached ONNX model weights."""
@@ -76,12 +111,12 @@ def _extract_accelerator_config(config: Mapping[str, object] | None) -> tuple[st
     return mode, device_id
 
 
-def _provider_priority(mode: str, device_id: int) -> tuple[list[str], list[MutableMapping[str, int]]]:
+def _provider_priority(mode: str, device_id: int) -> tuple[list[str], list[MutableMapping[str, Any]]]:
     """Return provider names and configuration dictionaries for ONNXRuntime."""
 
     available = accelerator.onnx_providers_available()
     providers: list[str] = []
-    provider_options: list[MutableMapping[str, int]] = []
+    provider_options: list[MutableMapping[str, Any]] = []
 
     gpu_requested = mode != "cpu"
     prefer_tensorrt = False
@@ -103,7 +138,12 @@ def _provider_priority(mode: str, device_id: int) -> tuple[list[str], list[Mutab
     if gpu_requested:
         for provider in provider_candidates:
             if provider in available:
-                options: MutableMapping[str, int] = {"device_id": int(device_id)}
+                if provider == "TensorrtExecutionProvider":
+                    options = _tensorrt_provider_options(device_id)
+                elif provider == "CUDAExecutionProvider":
+                    options = _cuda_provider_options(device_id)
+                else:
+                    options = {"device_id": int(device_id)}
                 providers.append(provider)
                 provider_options.append(options)
 

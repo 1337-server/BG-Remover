@@ -112,7 +112,7 @@ def _collect_single_options(form: Mapping[str, str], defaults: Dict[str, int]) -
     }
 
 
-@image_converter_bp.route("/image/remove-bg", methods=["GET", "POST"])
+@image_converter_bp.route("/", methods=["GET", "POST"])
 def remove_bg_view() -> Response:
     """Render the UI or process incoming form submissions."""
 

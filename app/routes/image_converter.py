@@ -31,6 +31,7 @@ image_converter_bp = Blueprint("image_converter", __name__)
 
 _ZIP_REGISTRY: Dict[str, Path] = {}
 _FILE_REGISTRY: Dict[str, Path] = {}
+_PREVIEW_REGISTRY: Dict[str, Path] = {}
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -179,6 +180,16 @@ def download_file(token: str) -> Response:
     return send_file(path, mimetype="image/png", as_attachment=True, download_name=path.name)
 
 
+@image_converter_bp.route("/image/remove-bg/preview/<token>")
+def preview_file(token: str) -> Response:
+    """Serve an inline preview PNG for a processed image."""
+
+    path = _PREVIEW_REGISTRY.pop(token, None)
+    if path is None or not path.exists():
+        abort(404)
+    return send_file(path, mimetype="image/png", as_attachment=False)
+
+
 def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
     """Convert ``RemovalResult`` objects to JSON-compatible data."""
 
@@ -189,9 +200,12 @@ def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
     for result in results:
         data = result.to_dict()
         if result.success and result.path_out is not None:
-            token = uuid.uuid4().hex
-            _FILE_REGISTRY[token] = result.path_out
-            data["download_url"] = url_for("image_converter.download_file", token=token)
+            download_token = uuid.uuid4().hex
+            preview_token = uuid.uuid4().hex
+            _FILE_REGISTRY[download_token] = result.path_out
+            _PREVIEW_REGISTRY[preview_token] = result.path_out
+            data["download_url"] = url_for("image_converter.download_file", token=download_token)
+            data["preview_url"] = url_for("image_converter.preview_file", token=preview_token)
             successes.append(result)
         else:
             failures.append(result)

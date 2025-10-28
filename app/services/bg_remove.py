@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -26,6 +27,14 @@ except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
     _REMBG_IMPORT_ERROR = exc
 else:
     _REMBG_IMPORT_ERROR = None
+
+try:  # pragma: no cover - optional dependency during testing
+    import torch
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore[assignment]
+
+
+LOGGER = logging.getLogger(__name__)
 
 Session = Any
 
@@ -79,11 +88,38 @@ class RemovalResult:
         }
 
 
+def _build_gpu_providers() -> Optional[List[str]]:
+    """Return CUDA providers for ``rembg`` when a compatible GPU is available."""
+
+    if torch is None:
+        return None
+
+    try:
+        if torch.cuda.is_available():
+            LOGGER.info("Using GPU for background removal")
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.warning("Failed to query CUDA availability via torch: %s", exc)
+    return None
+
+
 def create_session(model_name: str = "u2net") -> Session:
-    """Create a new ``rembg`` session for the desired model."""
+    """Create a new ``rembg`` session with optional GPU acceleration."""
 
     if _rembg_new_session is None:
         raise RuntimeError("rembg is required to create a background removal session.") from _REMBG_IMPORT_ERROR
+
+    providers = _build_gpu_providers()
+    if providers:
+        try:
+            return _rembg_new_session(model_name, providers=providers)
+        except Exception as exc:
+            LOGGER.warning(
+                "Falling back to CPU background removal after GPU initialisation failure: %s",
+                exc,
+            )
+
+    LOGGER.info("Using CPU for background removal")
     return _rembg_new_session(model_name)
 
 

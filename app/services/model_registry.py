@@ -27,6 +27,7 @@ DEFAULT_MODEL_NAMES: tuple[str, ...] = (
     "u2netp",
     "isnet-general-use",
     "isnet-anime",
+    "u2net_human_seg",
 )
 
 PROVIDERS_PRIORITY: tuple[str, ...] = (

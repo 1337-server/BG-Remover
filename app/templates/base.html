@@ -50,37 +50,44 @@
       document.addEventListener('DOMContentLoaded', () => {
         const themeToggleButton = document.getElementById('theme-toggle');
 
-        if (!themeToggleButton) {
-          return;
+        if (themeToggleButton) {
+          const THEME_STORAGE_KEY = 'bg-remover-theme';
+          const rootElement = document.documentElement;
+
+          /**
+           * Apply the requested theme to the root element and update the toggle button label.
+           * @param {string | null} themeName - The desired theme name, "light" or "dark".
+           */
+          const applyTheme = (themeName) => {
+            // Ensure an expected value is always set on the root element.
+            const resolvedTheme = themeName === 'dark' ? 'dark' : 'light';
+            rootElement.setAttribute('data-bs-theme', resolvedTheme);
+            rootElement.style.colorScheme = resolvedTheme;
+            themeToggleButton.setAttribute('aria-pressed', String(resolvedTheme === 'dark'));
+            themeToggleButton.textContent = resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+          };
+
+          // Load the previously stored theme preference, if any, otherwise fall back to light mode.
+          const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+          applyTheme(storedTheme);
+
+          themeToggleButton.addEventListener('click', () => {
+            const currentTheme = rootElement.getAttribute('data-bs-theme') === 'dark' ? 'dark' : 'light';
+            const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+            applyTheme(nextTheme);
+            localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+          });
         }
 
-        const THEME_STORAGE_KEY = 'bg-remover-theme';
-        const rootElement = document.documentElement;
-
         /**
-         * Apply the requested theme to the root element and update the toggle button label.
-         * @param {string | null} themeName - The desired theme name, "light" or "dark".
+         * Activate Bootstrap tooltip widgets on every element that declares a tooltip trigger.
+         * The check guards against errors if Bootstrap fails to load.
          */
-        const applyTheme = (themeName) => {
-          // Ensure an expected value is always set on the root element.
-          const resolvedTheme = themeName === 'dark' ? 'dark' : 'light';
-          rootElement.setAttribute('data-bs-theme', resolvedTheme);
-          rootElement.style.colorScheme = resolvedTheme;
-          themeToggleButton.setAttribute('aria-pressed', String(resolvedTheme === 'dark'));
-          themeToggleButton.textContent = resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
-        };
-
-        // Load the previously stored theme preference, if any, otherwise fall back to light mode.
-        const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
-        applyTheme(storedTheme);
-
-        themeToggleButton.addEventListener('click', () => {
-          const currentTheme = rootElement.getAttribute('data-bs-theme') === 'dark' ? 'dark' : 'light';
-          const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-          applyTheme(nextTheme);
-          localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
-        });
+        if (window.bootstrap && typeof window.bootstrap.Tooltip === 'function') {
+          const tooltipTriggerList = Array.from(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+          tooltipTriggerList.forEach((tooltipTriggerEl) => new window.bootstrap.Tooltip(tooltipTriggerEl));
+        }
       });
     </script>
     {% block extra_scripts %}{% endblock %}

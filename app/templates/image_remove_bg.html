@@ -560,6 +560,62 @@
 {% block extra_scripts %}
 <script>
   document.addEventListener('DOMContentLoaded', () => {
+    /**
+     * Clamp a numeric input to the inclusive range described by its HTML attributes.
+     * This prevents out-of-range defaults that could come from server-side configuration.
+     * @param {HTMLInputElement} input - The input to normalise.
+     */
+    const clampInputValue = (input) => {
+      if (!(input instanceof HTMLInputElement)) {
+        return;
+      }
+
+      const rawValue = input.value;
+      if (rawValue === '') {
+        return;
+      }
+
+      const numericValue = Number(rawValue);
+      if (Number.isNaN(numericValue)) {
+        return;
+      }
+
+      const hasMin = input.min !== '';
+      const hasMax = input.max !== '';
+      const minValue = hasMin ? Number(input.min) : Number.NEGATIVE_INFINITY;
+      const maxValue = hasMax ? Number(input.max) : Number.POSITIVE_INFINITY;
+      let clampedValue = numericValue;
+
+      if (!Number.isNaN(minValue) && numericValue < minValue) {
+        clampedValue = minValue;
+      }
+      if (!Number.isNaN(maxValue) && clampedValue > maxValue) {
+        clampedValue = maxValue;
+      }
+
+      if (clampedValue !== numericValue) {
+        input.value = clampedValue.toString();
+      }
+    };
+
+    /**
+     * Ensure every numeric input respects its declared bounds on load and when changed.
+     */
+    const enforceNumericBounds = () => {
+      const numericInputs = document.querySelectorAll(
+        '#single-form input[type="number"], #single-form input[type="range"], ' +
+          '#folder-form input[type="number"], #folder-form input[type="range"]',
+      );
+
+      numericInputs.forEach((input) => {
+        clampInputValue(input);
+        input.addEventListener('change', () => clampInputValue(input));
+        input.addEventListener('blur', () => clampInputValue(input));
+      });
+    };
+
+    enforceNumericBounds();
+
     const acceleratorInitialState = {{ accelerator_runtime|tojson }} || {};
     const acceleratorRuntimeBadge = document.getElementById('accelerator-runtime-badge');
     const acceleratorGpuBadge = document.getElementById('accelerator-gpu-badge');

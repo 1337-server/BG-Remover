@@ -403,9 +403,20 @@ def _initialise_session_context(
     """Return a ready-to-use :class:`SessionContext` for ``model_name``."""
 
     providers_available = accelerator.onnx_providers_available()
-    provider_name, _ = accelerator.pick_execution_provider(requested_mode, device_id)
+    preferred_provider_name, _ = accelerator.pick_execution_provider(
+        requested_mode, device_id
+    )
+
+    gpu_name = accelerator.detect_gpu_name()
+    rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
 
     gpu_providers = ["CUDAExecutionProvider", "TensorrtExecutionProvider"]
+    ordered_gpu_providers = list(gpu_providers)
+    if rtx_50_series:
+        # TensorRT may provide additional performance on RTX 50 hardware when
+        # available, so test it before CUDA while still keeping CUDA close by
+        # as a compatible fallback option.
+        ordered_gpu_providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
     provider_options_map: Dict[str, Mapping[str, Any]] = {
         name: {"device_id": int(device_id)} for name in gpu_providers
     }
@@ -414,7 +425,7 @@ def _initialise_session_context(
     provider_chain: List[tuple[str, Any]] = []
     gpu_requested = requested_mode != "cpu"
     if gpu_requested:
-        for candidate in gpu_providers:
+        for candidate in ordered_gpu_providers:
             if candidate in providers_available:
                 options = dict(provider_options_map.get(candidate, {}))
                 provider_chain.append((candidate, (candidate, options)))
@@ -427,9 +438,6 @@ def _initialise_session_context(
     if log_diagnostics:
         chain_description = " -> ".join(name for name, _ in provider_chain)
         LOGGER.info("Execution provider priority: %s", chain_description)
-
-    gpu_name = accelerator.detect_gpu_name()
-    rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
 
     if log_diagnostics:
         LOGGER.info(
@@ -446,6 +454,7 @@ def _initialise_session_context(
     warning_message: Optional[str] = None
     accelerator_message: Optional[str] = None
     session_obj: Optional[Session] = None
+    active_provider_name = "CPUExecutionProvider"
     active_chain: List[tuple[str, Any]] = list(provider_chain)
     last_error: Optional[BaseException] = None
 
@@ -463,7 +472,7 @@ def _initialise_session_context(
             active_chain.pop(0)
             continue
         else:
-            provider_name = current_provider
+            active_provider_name = current_provider
             break
 
     if session_obj is None:
@@ -476,7 +485,10 @@ def _initialise_session_context(
     except Exception:  # pragma: no cover - provider introspection best effort
         LOGGER.debug("Unable to introspect session providers", exc_info=True)
 
-    if resolved_providers:
+    provider_name = active_provider_name
+    if provider_name in gpu_providers and preferred_provider_name in gpu_providers:
+        provider_name = preferred_provider_name
+    elif resolved_providers:
         provider_name = resolved_providers[0]
 
     runtime = "cuda" if provider_name in gpu_providers else "cpu"

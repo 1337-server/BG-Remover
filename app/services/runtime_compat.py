@@ -5,9 +5,13 @@ import importlib
 import importlib.metadata
 import logging
 import os
-import threading
 from types import ModuleType, SimpleNamespace
 from typing import Iterable, Optional
+
+try:  # pragma: no cover - optional dependency when Eventlet is unavailable
+    from eventlet.green import threading as cooperative_threading  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - Eventlet not installed in some environments
+    import threading as cooperative_threading  # type: ignore
 
 
 LOGGER = logging.getLogger(__name__)
@@ -24,7 +28,7 @@ try:  # pragma: no cover - optional dependency during testing
 except ModuleNotFoundError:  # pragma: no cover - handled by runtime checks
     _torch = None  # type: ignore[assignment]
 
-_RUNTIME_LOCK = threading.Lock()
+_RUNTIME_LOCK = cooperative_threading.Lock()
 _CACHED_ONNXRUNTIME: Optional[ModuleType] = None
 
 

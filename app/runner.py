@@ -4,17 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.socketio_utils import ensure_eventlet_monkey_patched, validate_eventlet_patch
+
 # Ensure cooperative sockets and threading primitives are in place before any
 # Flask or Socket.IO modules are imported.
-try:  # pragma: no cover - eventlet may be optional in some environments
-    import eventlet  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - tolerate missing dependency
-    eventlet = None  # type: ignore[assignment]
-else:  # pragma: no cover - import side effect only
-    eventlet.monkey_patch()
-
-from app.socketio_utils import ensure_eventlet_monkey_patched
-
 ensure_eventlet_monkey_patched()
 
 from app.extensions import socketio
@@ -30,6 +23,8 @@ def run_socketio_server(host: str = "0.0.0.0", port: int = 5000, **kwargs: Any) 
     """
 
     from app import create_app
+
+    validate_eventlet_patch()
 
     app = create_app()
     socketio.run(app, host=host, port=port, **kwargs)

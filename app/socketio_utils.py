@@ -10,6 +10,8 @@ if TYPE_CHECKING:  # pragma: no cover - hints only
 
 _LOGGER = logging.getLogger(__name__)
 _PATCH_RESULT: bool | None = None
+_PATCH_ERROR: BaseException | None = None
+_EVENTLET_AVAILABLE: bool | None = None
 
 
 def _is_eventlet_monkey_patched(patcher: "Callable[[str], bool]") -> bool:
@@ -37,6 +39,8 @@ def ensure_eventlet_monkey_patched() -> bool:
         succeeds, ``False`` otherwise.
     """
 
+    global _EVENTLET_AVAILABLE
+    global _PATCH_ERROR
     global _PATCH_RESULT
     if _PATCH_RESULT is not None:
         return _PATCH_RESULT
@@ -48,14 +52,20 @@ def ensure_eventlet_monkey_patched() -> bool:
         _LOGGER.warning(
             "Eventlet is not installed. Running without cooperative sockets.",
         )
+        _EVENTLET_AVAILABLE = False
+        _PATCH_ERROR = None
         _PATCH_RESULT = False
         return False
     except Exception:  # pragma: no cover - defensive guard
         _LOGGER.exception(
             "Unexpected error importing Eventlet; continuing without monkey patching.",
         )
+        _EVENTLET_AVAILABLE = None
+        _PATCH_ERROR = None
         _PATCH_RESULT = False
         return False
+
+    _EVENTLET_AVAILABLE = True
 
     if _is_eventlet_monkey_patched(patcher.is_monkey_patched):
         _LOGGER.debug("Eventlet monkey patching already active.")
@@ -64,13 +74,34 @@ def ensure_eventlet_monkey_patched() -> bool:
 
     try:
         eventlet.monkey_patch()
-    except Exception:  # pragma: no cover - defensive guard
+    except Exception as exc:  # pragma: no cover - defensive guard
         _LOGGER.exception(
             "Eventlet monkey patching failed; continuing without cooperative sockets.",
         )
+        _PATCH_ERROR = exc
         _PATCH_RESULT = False
         return False
 
     _LOGGER.debug("Eventlet monkey patching applied successfully.")
+    _PATCH_ERROR = None
     _PATCH_RESULT = True
     return True
+
+
+def validate_eventlet_patch() -> None:
+    """Raise a helpful error if Eventlet monkey patching is unexpectedly inactive."""
+
+    patched = ensure_eventlet_monkey_patched()
+    if patched:
+        return
+
+    if _EVENTLET_AVAILABLE is False:
+        _LOGGER.warning(
+            "Eventlet is not installed. Falling back to threading mode; WebSocket support may be limited.",
+        )
+        return
+
+    if _PATCH_ERROR is not None:
+        raise RuntimeError("Eventlet monkey patching failed. See logs for details.") from _PATCH_ERROR
+
+    raise RuntimeError("Eventlet monkey patching was not applied before server startup.")

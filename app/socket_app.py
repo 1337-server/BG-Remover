@@ -1,15 +1,12 @@
 """Socket.IO entry point for running the Flask application with WebSocket support."""
 from __future__ import annotations
 
+from app.socketio_utils import ensure_eventlet_monkey_patched, validate_eventlet_patch
+
 # ``eventlet.monkey_patch`` must execute before importing any Flask, Socket.IO or
-# Torch modules. This placement keeps Docker and direct module execution paths
-# consistent.
-try:  # pragma: no cover - eventlet is optional when running tests
-    import eventlet  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - tolerate environments without eventlet
-    eventlet = None  # type: ignore[assignment]
-else:  # pragma: no cover - import side effect only
-    eventlet.monkey_patch()
+# Torch modules. Trigger the cooperative patch immediately so the runtime is
+# prepared for the remaining imports.
+ensure_eventlet_monkey_patched()
 
 import os
 from typing import TYPE_CHECKING
@@ -27,6 +24,7 @@ def create_socketio_app() -> tuple["Flask", "SocketIO"]:
     from app import create_app
 
     flask_app = create_app()
+    validate_eventlet_patch()
     return flask_app, socketio
 
 

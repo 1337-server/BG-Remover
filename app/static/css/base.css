@@ -1,0 +1,59 @@
+/*
+ * Base styles for the background remover application.
+ * These rules configure the global body colors and the checkerboard background.
+ */
+:root {
+  color-scheme: light;
+  --body-bg: #f5f6fa;
+  --body-color: #212529;
+  --card-bg: #ffffff;
+  --card-border: rgba(0, 0, 0, 0.125);
+  --card-header-bg: rgba(0, 0, 0, 0.03);
+  --pre-bg: #f8f9fa;
+  --checkerboard-color: #cccccc;
+}
+
+body {
+  background-color: var(--body-bg);
+  color: var(--body-color);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.card {
+  background-color: var(--card-bg);
+  border-color: var(--card-border);
+}
+
+.card-header {
+  background-color: var(--card-header-bg);
+}
+
+pre {
+  background-color: var(--pre-bg);
+  color: inherit;
+}
+
+.checkerboard {
+  background-image:
+    linear-gradient(45deg, var(--checkerboard-color) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--checkerboard-color) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--checkerboard-color) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--checkerboard-color) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+
+[data-bs-theme="dark"] {
+  color-scheme: dark;
+  --body-bg: #0f172a;
+  --body-color: #e2e8f0;
+  --card-bg: #1f2937;
+  --card-border: #334155;
+  --card-header-bg: #111827;
+  --pre-bg: #111827;
+  --checkerboard-color: #4b5563;
+}
+
+[data-bs-theme="dark"] .table {
+  color: inherit;
+}

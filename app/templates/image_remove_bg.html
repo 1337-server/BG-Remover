@@ -132,6 +132,7 @@
               <thead>
                 <tr>
                   <th>File</th>
+                  <th>Preview</th>
                   <th>Status</th>
                   <th>Time (ms)</th>
                   <th>Download</th>
@@ -251,6 +252,20 @@
           const fileCell = document.createElement('td');
           fileCell.textContent = item.path_in;
           row.appendChild(fileCell);
+
+          const previewCell = document.createElement('td');
+          if (item.preview_url) {
+            const previewImage = document.createElement('img');
+            previewImage.src = item.preview_url;
+            previewImage.alt = `Preview of ${item.path_in}`;
+            previewImage.classList.add('img-thumbnail');
+            previewImage.style.maxWidth = '96px';
+            previewImage.style.maxHeight = '96px';
+            previewCell.appendChild(previewImage);
+          } else {
+            previewCell.textContent = item.error ? 'No preview' : '-';
+          }
+          row.appendChild(previewCell);
 
           const statusCell = document.createElement('td');
           statusCell.textContent = item.success ? 'Success' : 'Failed';

@@ -4,7 +4,15 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from typing import Any, Dict, Sequence
+from collections.abc import Sequence
+from typing import Any
+
+try:  # pragma: no cover - eventlet optional during tests
+    import eventlet
+
+    eventlet.monkey_patch()
+except ModuleNotFoundError:  # pragma: no cover - fallback to standard library
+    eventlet = None  # type: ignore[assignment]
 
 from app import create_app
 
@@ -91,7 +99,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     port = args.port if args.port is not None else env_port or 5000
     debug = args.debug or os.getenv("FLASK_DEBUG") == "1"
 
-    config_overrides: Dict[str, Any] = {}
+    config_overrides: dict[str, Any] = {}
     if args.accelerator:
         config_overrides["BG_ACCELERATOR"] = args.accelerator
     if args.cuda_device_id is not None:
@@ -100,7 +108,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         config_overrides["BG_WARN_ON_CPU"] = False
 
     app = create_app(config_overrides=config_overrides or None)
-    _LOGGER.info("Starting Flask development server on http://%s:%s", host, port)
+    if eventlet is None:
+        _LOGGER.info("Starting Flask development server on http://%s:%s (standard threading)", host, port)
+    else:
+        _LOGGER.info("Starting Flask development server on http://%s:%s with eventlet", host, port)
     app.run(host=host, port=port, debug=debug)
 
 

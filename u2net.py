@@ -1,8 +1,6 @@
 """U\u00b2-Net model definitions used for background removal."""
 from __future__ import annotations
 
-from typing import Tuple
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -345,7 +343,7 @@ class U2NET(nn.Module):
 
         self.outconv = nn.Conv2d(6 * out_ch, out_ch, 1)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, ...]:
         hx1 = self.stage1(x)
         hx = self.pool12(hx1)
 
@@ -425,7 +423,7 @@ class U2NETP(nn.Module):
 
         self.outconv = nn.Conv2d(6 * out_ch, out_ch, 1)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, ...]:
         hx1 = self.stage1(x)
         hx = self.pool12(hx1)
 

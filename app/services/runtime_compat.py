@@ -5,8 +5,8 @@ import importlib
 import importlib.metadata
 import logging
 import os
+from collections.abc import Iterable
 from types import ModuleType, SimpleNamespace
-from typing import Iterable, Optional
 
 try:  # pragma: no cover - optional dependency when Eventlet is unavailable
     from eventlet.green import threading as cooperative_threading  # type: ignore
@@ -29,10 +29,10 @@ except ModuleNotFoundError:  # pragma: no cover - handled by runtime checks
     _torch = None  # type: ignore[assignment]
 
 _RUNTIME_LOCK = cooperative_threading.Lock()
-_CACHED_ONNXRUNTIME: Optional[ModuleType] = None
+_CACHED_ONNXRUNTIME: ModuleType | None = None
 
 
-def _read_numpy_version() -> Optional[str]:
+def _read_numpy_version() -> str | None:
     """Return the installed NumPy version or ``None`` if unavailable."""
 
     if _np is None:
@@ -122,7 +122,7 @@ def _import_onnxruntime(distribution: str) -> ModuleType:
     return module
 
 
-def _format_dependency_note(version: Optional[str]) -> str:
+def _format_dependency_note(version: str | None) -> str:
     """Return a human-readable description of the NumPy dependency set."""
 
     if not version:
@@ -143,7 +143,7 @@ def verify_runtime_compatibility() -> ModuleType:
     LOGGER.info("Initialising rembg runtime using %s", _format_dependency_note(numpy_version))
 
     prefer_gpu = has_cuda_support()
-    last_error: Optional[BaseException] = None
+    last_error: BaseException | None = None
 
     for distribution in _iter_candidate_distributions(prefer_gpu):
         if not _distribution_installed(distribution):

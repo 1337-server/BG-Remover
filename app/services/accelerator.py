@@ -1,7 +1,6 @@
-"""Helpers for selecting the optimal ONNX Runtime execution provider."""
-from __future__ import annotations
+"""Hardware accelerator helpers for ONNX Runtime and PyTorch."""
 
-from typing import Dict, List, Tuple
+from __future__ import annotations
 
 import logging
 
@@ -51,7 +50,7 @@ def detect_gpu_name() -> str | None:
     return None
 
 
-def onnx_providers_available() -> List[str]:
+def onnx_providers_available() -> list[str]:
     """Return the list of ONNX Runtime execution providers available."""
 
     try:
@@ -68,7 +67,7 @@ def onnx_providers_available() -> List[str]:
     return providers
 
 
-def pick_execution_provider(mode: str, device_id: int) -> Tuple[str, Dict[str, int]]:
+def pick_execution_provider(mode: str, device_id: int) -> tuple[str, dict[str, int]]:
     """Select the best available execution provider for ``mode``.
 
     The provider selection honours the ONNX Runtime priority order of

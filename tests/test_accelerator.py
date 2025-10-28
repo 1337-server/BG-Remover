@@ -1,8 +1,6 @@
 """Tests for the accelerator selection utilities."""
 from __future__ import annotations
 
-from typing import List
-
 import pytest
 
 from app.services import accelerator
@@ -11,7 +9,7 @@ from app.services import accelerator
 def test_pick_execution_provider_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     """CUDA should be selected when the provider is available."""
 
-    def fake_providers() -> List[str]:
+    def fake_providers() -> list[str]:
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
     monkeypatch.setattr(accelerator, "onnx_providers_available", fake_providers)
@@ -26,7 +24,7 @@ def test_pick_execution_provider_uses_tensorrt_when_cuda_missing(
 ) -> None:
     """TensorRT should be selected when CUDA is unavailable but TensorRT exists."""
 
-    def fake_providers() -> List[str]:
+    def fake_providers() -> list[str]:
         return ["TensorrtExecutionProvider", "CPUExecutionProvider"]
 
     monkeypatch.setattr(accelerator, "onnx_providers_available", fake_providers)

@@ -1,15 +1,15 @@
-## 🖼️ Background Remover (rembg + U²-Net)
+## 🖼️ Background Remover (U²-Net ONNX)
 
-This project combines a rich command-line tool and a small Flask UI to remove image backgrounds with
-[rembg](https://github.com/danielgatis/rembg) (U²-Net based) while keeping memory usage and processing
-times predictable. It can clean up single images, entire folders, or uploaded files, and exports in
-multiple formats (PNG, WebP, JPEG, BMP, TIFF) with transparency preserved whenever the format allows it.
+This project combines a rich command-line tool and a small Flask UI to remove image backgrounds using
+direct ONNX Runtime sessions powered by the U²-Net family of models. It can clean up single images,
+entire folders, or uploaded files, and exports in multiple formats (PNG, WebP, JPEG, BMP, TIFF) with
+transparency preserved whenever the format allows it.
 
 ---
 
 ### 🚀 Features
 
-* ✅ **rembg-powered masks** with optional alpha matting for detailed hair and fur handling.
+* ✅ **ONNX Runtime-powered masks** with optional alpha matting for detailed hair and fur handling.
 * ✅ **Solid background fallback** (colour-key) plus configurable feathering when OpenCV is available.
 * ✅ **Single-image CLI** and **folder batch mode** that respect EXIF orientation and reuse one model session.
 * ✅ **Flexible exports** with selectable PNG, WebP, JPEG, BMP, or TIFF output (alpha preserved when supported).
@@ -130,7 +130,7 @@ python -m compileall main.py app.py bg_removal.py tests
 ### 📂 Project layout
 
 * `app.py` – Flask application, routes, and dev-server entry point.
-* `bg_removal.py` – rembg session management plus background removal helpers.
+* `bg_removal.py` – ONNX Runtime session management plus background removal helpers.
 * `main.py` – CLI entry point for batch processing.
 * `templates/` – Base template + background removal form.
 * `tests/` – Pytest-based regression tests for the service utilities.
@@ -140,4 +140,4 @@ python -m compileall main.py app.py bg_removal.py tests
 ### 🧰 Credits
 
 * **Model:** [U²-Net – Qin et al., Pattern Recognition 2020](https://github.com/xuebinqin/U-2-Net)
-* **Background removal engine:** [rembg](https://github.com/danielgatis/rembg)
+* **Background removal engine:** [U²-Net – Qin et al., Pattern Recognition 2020](https://github.com/xuebinqin/U-2-Net)

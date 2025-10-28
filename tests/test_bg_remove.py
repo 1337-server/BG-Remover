@@ -24,14 +24,19 @@ def test_get_output_format_spec_handles_extensions() -> None:
 
 
 def test_remove_background_bytes_returns_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
     call_count = 0
 
-    def fake_remove(data: bytes, session: object, **_: object) -> bytes:
+    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
         nonlocal call_count
         call_count += 1
-        return data
+        mask = Image.new("L", image.size, color=255)
+        return mask
 
-    monkeypatch.setattr(bg_remove, "_rembg_remove", fake_remove)
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(bg_remove, "_predict_mask", fake_predict)
 
     result = bg_remove.remove_background_bytes(_make_image_bytes())
     assert result.success
@@ -45,7 +50,14 @@ def test_remove_bg_file_writes_to_directory(tmp_path: Path, monkeypatch: pytest.
     source = tmp_path / "source.png"
     Image.new("RGBA", (2, 2), color=(0, 128, 255, 255)).save(source, "PNG")
 
-    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session, **_: data)
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+        return Image.new("L", image.size, color=255)
+
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(bg_remove, "_predict_mask", fake_predict)
 
     result = bg_remove.remove_bg_file(source, tmp_path)
     assert result.path_out is not None
@@ -54,7 +66,15 @@ def test_remove_bg_file_writes_to_directory(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_encode_result_image_returns_data_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session, **_: data)
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(
+        bg_remove,
+        "_predict_mask",
+        lambda image, session: Image.new("L", image.size, color=255),
+    )
     result = bg_remove.remove_background_bytes(_make_image_bytes())
     data_url = bg_remove.encode_result_image(result)
     assert data_url.startswith("data:image/png;base64,")

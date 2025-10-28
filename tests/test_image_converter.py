@@ -43,7 +43,15 @@ def test_post_without_file_returns_error(client: FlaskClient) -> None:
 def test_post_with_image_displays_result(
     client: FlaskClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session, **_: data)
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(
+        bg_remove,
+        "_predict_mask",
+        lambda image, session: Image.new("L", image.size, color=255),
+    )
     upload = _make_upload()
     response = client.post(
         "/?json=1",

@@ -1,8 +1,21 @@
 {% extends "base.html" %}
 {% block title %}Remove Background{% endblock %}
+{% block extra_head %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/help_tips.css') }}">
+{% endblock %}
 {% block content %}
-  <h1 class="mb-4">Remove Image Background</h1>
-  <p class="text-muted">Runtime: {{ runtime_info.provider }} ({{ runtime_info.runtime|upper }})</p>
+  {% set runtime = runtime_info or {} %}
+  <div class="mb-3">
+    <div class="d-flex flex-wrap gap-2 align-items-center" id="accelerator-status">
+      <span class="badge bg-secondary" id="accelerator-runtime-badge">
+        {{ runtime.provider or 'Using CPU (CPUExecutionProvider)' }}
+      </span>
+      {% if runtime.warning %}
+        <span class="text-warning small">{{ runtime.warning }}</span>
+      {% endif %}
+    </div>
+  </div>
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
       <div class="mb-3">
@@ -12,28 +25,178 @@
       </div>
     {% endif %}
   {% endwith %}
-  <form method="post" enctype="multipart/form-data" class="border rounded p-3 mb-4">
-    <div class="mb-3">
-      <label class="form-label" for="image">Choose an image</label>
-      <input class="form-control" type="file" id="image" name="image" accept="image/*" required>
+  <div class="card shadow-sm">
+    <div class="card-header">
+      <h1 class="h4 mb-0">Remove Background</h1>
     </div>
-    <div class="mb-3">
-      <label class="form-label" for="output_format">Output format</label>
-      <select class="form-select" id="output_format" name="output_format">
-        {% for option in format_options %}
-          <option value="{{ option.key }}" {% if option.key == selected_format %}selected{% endif %}>{{ option.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <button class="btn btn-primary" type="submit">Remove background</button>
-  </form>
-  {% if result_data %}
-    <div class="card shadow-sm">
-      <div class="card-header">Result preview</div>
-      <div class="card-body text-center">
-        <img src="{{ result_data }}" alt="Background removed preview" class="img-fluid" />
-        <p class="mt-3 mb-0">Right click the image to save it locally.</p>
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+        <h2 class="h4 mb-0">Single Image</h2>
+        <div class="form-check form-switch" data-help-toggle>
+          <input class="form-check-input" type="checkbox" id="help-toggle" checked>
+          <label class="form-check-label" for="help-toggle">Show help hints</label>
+        </div>
       </div>
+      <form method="post" enctype="multipart/form-data" class="needs-validation" novalidate data-help-container>
+        <div class="alert alert-danger d-none" id="single-form-alert" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1"></div>
+        <div class="mb-3">
+          <div class="form-label d-flex align-items-center gap-2">
+            <span>Upload your image</span>
+            <button
+              type="button"
+              class="help-icon btn btn-link p-0"
+              data-help-element
+              data-bs-toggle="tooltip"
+              data-bs-placement="top"
+              data-bs-html="true"
+              data-bs-custom-class="help-tooltip"
+              data-bs-title="<p class='mb-2'>Choose any photo you want to process. The system will detect the subject and remove the background automatically.</p><p class='mb-2'>Supported formats: <strong>JPG</strong>, <strong>PNG</strong>, and <strong>WebP</strong>. Transparent images are supported too.</p><p class='mb-0'>For best results, use clear, well-lit photos where the main subject is easy to see.</p>"
+              aria-label="Help: Upload your image"
+            >
+              <span aria-hidden="true">?</span>
+            </button>
+          </div>
+          <input class="form-control" type="file" id="image" name="image" accept="image/*" required>
+          <div class="invalid-feedback">Please choose an image to upload.</div>
+        </div>
+        <div class="mb-3">
+          <div class="form-label d-flex align-items-center gap-2">
+            <span>Removal Model</span>
+            <button
+              type="button"
+              class="help-icon btn btn-link p-0"
+              data-help-element
+              data-bs-toggle="tooltip"
+              data-bs-placement="top"
+              data-bs-html="true"
+              data-bs-custom-class="help-tooltip"
+              data-bs-title="<p class='mb-2'>Determines the method used to separate the subject from the background.</p><ul class='mb-0 ps-3'><li><strong>General Model</strong> – works for most photos (people, animals, objects).</li><li><strong>Human Model</strong> – best when the main subject is a person.</li><li><strong>Object Model</strong> – optimised for products or isolated objects.</li><li><strong>Anime / Illustration Model</strong> – tuned for drawn or digital images.</li></ul><p class='mb-0 mt-2'>A more advanced model may take longer to process but often gives a cleaner edge.</p>"
+              aria-label="Help: Removal Model"
+            >
+              <span aria-hidden="true">?</span>
+            </button>
+          </div>
+          <select class="form-select" id="removal_model" name="removal_model">
+            {% for option in removal_model_options %}
+              <option value="{{ option.key }}" {% if option.key == selected_model %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="mb-3">
+          <div class="form-label d-flex align-items-center gap-2">
+            <span>Final File Type</span>
+            <button
+              type="button"
+              class="help-icon btn btn-link p-0"
+              data-help-element
+              data-bs-toggle="tooltip"
+              data-bs-placement="top"
+              data-bs-html="true"
+              data-bs-custom-class="help-tooltip"
+              data-bs-title="<p class='mb-2'>Choose how your processed image will be saved:</p><ul class='mb-0 ps-3'><li><strong>PNG (transparent)</strong> – keeps transparency so you can layer it over other backgrounds.</li><li><strong>JPG (white background)</strong> – smaller file size but no transparency.</li><li><strong>WebP</strong> – modern format with excellent compression and transparency support.</li></ul><p class='mb-0 mt-2'>Pick PNG if you plan to edit or overlay the result later.</p>"
+              aria-label="Help: Final File Type"
+            >
+              <span aria-hidden="true">?</span>
+            </button>
+          </div>
+          <select class="form-select" id="output_format" name="output_format">
+            {% for option in format_options %}
+              <option value="{{ option.key }}" data-extension="{{ option.extension }}" {% if option.key == selected_format %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="mb-3">
+          <div class="form-label d-flex align-items-center gap-2">
+            <span>Preview Size</span>
+            <button
+              type="button"
+              class="help-icon btn btn-link p-0"
+              data-help-element
+              data-bs-toggle="tooltip"
+              data-bs-placement="top"
+              data-bs-html="true"
+              data-bs-custom-class="help-tooltip"
+              data-bs-title="<p class='mb-2'>Controls how large the preview will be.</p><p class='mb-2'>Lower resolutions load faster but may look slightly blurred.</p><p class='mb-2'>This does not change the quality of your final saved image — it only affects what you see on screen.</p><p class='mb-0'><strong>Range:</strong> 320 – 1280 pixels (steps of 160).</p>"
+              aria-label="Help: Preview Size"
+            >
+              <span aria-hidden="true">?</span>
+            </button>
+          </div>
+          <input class="form-range" type="range" id="preview-size" name="preview_size" min="320" max="1280" step="160" value="{{ preview_size or 1024 }}">
+          <div class="form-text" data-help-element>
+            Preview displayed at <span id="preview-size-label">{{ (preview_size or 1024)|int }}&nbsp;px</span> on the longest edge.
+          </div>
+        </div>
+        <details class="learn-more-box mt-4" data-help-element>
+          <summary class="fw-semibold">💡 How it Works</summary>
+          <div class="pt-3">
+            <p>When you upload a photo, an AI model analyzes every pixel to find the main subject (for example, a person or an object) and separates it from the background.</p>
+            <p>It then creates a new image with the background removed — usually transparent — so you can reuse it anywhere (design projects, thumbnails, product listings, etc.).</p>
+            <p>Processing runs on the server's CPU. Faster processors complete batches more quickly, but every image receives the same high-quality mask.</p>
+            <p class="mb-0">You can experiment with the settings above. Nothing is permanent until you save the result, so feel free to try different models and edge smoothness levels to see what looks best.</p>
+          </div>
+        </details>
+        <div class="mt-4 d-flex gap-2 align-items-center">
+          <button class="btn btn-primary" type="submit">Remove background</button>
+        </div>
+      </form>
+      {% if result_data %}
+        <div class="mt-5" id="single-result">
+          <h2 class="h5">Result</h2>
+          <div class="checkerboard rounded p-3">
+            <img src="{{ result_data }}" alt="Background removed preview" class="img-fluid rounded" style="max-width: 100%; height: auto;">
+          </div>
+          {% if result_summary %}
+            <dl class="row mt-3 small">
+              <dt class="col-sm-3">Selected model</dt>
+              <dd class="col-sm-9">{{ result_summary.model_label }}</dd>
+              <dt class="col-sm-3">Output format</dt>
+              <dd class="col-sm-9">{{ result_summary.format_label }}</dd>
+              <dt class="col-sm-3">Processing time</dt>
+              <dd class="col-sm-9">{{ '%.2f'|format(result_summary.elapsed_ms) }} ms</dd>
+            </dl>
+          {% endif %}
+          <p class="text-muted mb-0">Right click the image to save it locally.</p>
+        </div>
+      {% endif %}
     </div>
-  {% endif %}
+  </div>
+{% endblock %}
+{% block extra_scripts %}
+  {{ super() }}
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const tooltipTriggerList = Array.from(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+      tooltipTriggerList.forEach((tooltipTriggerEl) => {
+        // Bootstrap is loaded globally from the base template.
+        new bootstrap.Tooltip(tooltipTriggerEl);
+      });
+
+      const helpToggle = document.getElementById('help-toggle');
+      const helpElements = document.querySelectorAll('[data-help-element]');
+      const syncHelpVisibility = () => {
+        const shouldShow = helpToggle ? helpToggle.checked : true;
+        helpElements.forEach((element) => {
+          element.classList.toggle('visually-hidden', !shouldShow);
+        });
+      };
+      if (helpToggle) {
+        helpToggle.addEventListener('change', syncHelpVisibility);
+        syncHelpVisibility();
+      }
+
+      const previewSlider = document.getElementById('preview-size');
+      const previewLabel = document.getElementById('preview-size-label');
+      const updatePreviewLabel = () => {
+        if (previewSlider && previewLabel) {
+          previewLabel.textContent = `${previewSlider.value}\u00A0px`;
+        }
+      };
+      if (previewSlider) {
+        previewSlider.addEventListener('input', updatePreviewLabel);
+        previewSlider.addEventListener('change', updatePreviewLabel);
+        updatePreviewLabel();
+      }
+    });
+  </script>
 {% endblock %}

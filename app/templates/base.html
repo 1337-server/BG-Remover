@@ -4,19 +4,77 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Background Remover{% endblock %}</title>
+    <script>
+      /**
+       * Ensure the stored theme preference is applied before the first paint to prevent flashes.
+       */
+      (() => {
+        const THEME_STORAGE_KEY = 'bg-remover-theme';
+        const prefersDarkScheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const storedTheme = window.localStorage ? localStorage.getItem(THEME_STORAGE_KEY) : null;
+        const resolvedTheme = storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : (prefersDarkScheme ? 'dark' : 'light');
+        const rootElement = document.documentElement;
+
+        rootElement.setAttribute('data-bs-theme', resolvedTheme);
+        rootElement.style.colorScheme = resolvedTheme;
+      })();
+    </script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-      body {
-        background-color: #f5f6fa;
+      :root {
+        color-scheme: light;
+        --body-bg: #f5f6fa;
+        --body-color: #212529;
+        --card-bg: #ffffff;
+        --card-border: rgba(0, 0, 0, 0.125);
+        --card-header-bg: rgba(0, 0, 0, 0.03);
+        --pre-bg: #f8f9fa;
+        --checkerboard-color: #cccccc;
       }
+
+      body {
+        background-color: var(--body-bg);
+        color: var(--body-color);
+        transition: background-color 0.3s ease, color 0.3s ease;
+      }
+
+      .card {
+        background-color: var(--card-bg);
+        border-color: var(--card-border);
+      }
+
+      .card-header {
+        background-color: var(--card-header-bg);
+      }
+
+      pre {
+        background-color: var(--pre-bg);
+        color: inherit;
+      }
+
       .checkerboard {
         background-image:
-          linear-gradient(45deg, #ccc 25%, transparent 25%),
-          linear-gradient(-45deg, #ccc 25%, transparent 25%),
-          linear-gradient(45deg, transparent 75%, #ccc 75%),
-          linear-gradient(-45deg, transparent 75%, #ccc 75%);
+          linear-gradient(45deg, var(--checkerboard-color) 25%, transparent 25%),
+          linear-gradient(-45deg, var(--checkerboard-color) 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, var(--checkerboard-color) 75%),
+          linear-gradient(-45deg, transparent 75%, var(--checkerboard-color) 75%);
         background-size: 20px 20px;
         background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+      }
+
+      [data-bs-theme="dark"] {
+        color-scheme: dark;
+        --body-bg: #0f172a;
+        --body-color: #e2e8f0;
+        --card-bg: #1f2937;
+        --card-border: #334155;
+        --card-header-bg: #111827;
+        --pre-bg: #111827;
+        --checkerboard-color: #4b5563;
+      }
+
+      [data-bs-theme="dark"] .table {
+        color: inherit;
       }
     </style>
     {% block extra_head %}{% endblock %}
@@ -34,6 +92,9 @@
               <a class="nav-link" href="{{ url_for('image_converter.remove_bg_view') }}">Remove Background</a>
             </li>
           </ul>
+          <div class="d-flex">
+            <button class="btn btn-outline-light" id="theme-toggle" type="button" aria-pressed="false">Switch to dark mode</button>
+          </div>
         </div>
       </div>
     </nav>
@@ -41,6 +102,43 @@
       {% block content %}{% endblock %}
     </main>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const themeToggleButton = document.getElementById('theme-toggle');
+
+        if (!themeToggleButton) {
+          return;
+        }
+
+        const THEME_STORAGE_KEY = 'bg-remover-theme';
+        const rootElement = document.documentElement;
+
+        /**
+         * Apply the requested theme to the root element and update the toggle button label.
+         * @param {string | null} themeName - The desired theme name, "light" or "dark".
+         */
+        const applyTheme = (themeName) => {
+          // Ensure an expected value is always set on the root element.
+          const resolvedTheme = themeName === 'dark' ? 'dark' : 'light';
+          rootElement.setAttribute('data-bs-theme', resolvedTheme);
+          rootElement.style.colorScheme = resolvedTheme;
+          themeToggleButton.setAttribute('aria-pressed', String(resolvedTheme === 'dark'));
+          themeToggleButton.textContent = resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+        };
+
+        // Load the previously stored theme preference, if any, otherwise fall back to light mode.
+        const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+        applyTheme(storedTheme);
+
+        themeToggleButton.addEventListener('click', () => {
+          const currentTheme = rootElement.getAttribute('data-bs-theme') === 'dark' ? 'dark' : 'light';
+          const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+          applyTheme(nextTheme);
+          localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+        });
+      });
+    </script>
     {% block extra_scripts %}{% endblock %}
   </body>
 </html>

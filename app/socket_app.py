@@ -4,29 +4,21 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-import eventlet
 from flask import Flask
 
-from app import create_app
 from app.extensions import socketio
+from app.socketio_utils import ensure_eventlet_monkey_patched
 
-if TYPE_CHECKING:  # pragma: no cover - used only for type checkers
+if TYPE_CHECKING:  # pragma: no cover - hints only
     from flask_socketio import SocketIO
-
-# Eventlet is required so that Flask-SocketIO can handle long-lived WebSocket
-# connections efficiently. The monkey patching call must happen before most
-# other imports to ensure the standard library behaves cooperatively.
-eventlet.monkey_patch()
 
 
 def create_socketio_app() -> tuple[Flask, "SocketIO"]:
-    """Initialise and return the Flask application and shared Socket.IO server.
+    """Initialise and return the Flask application and Socket.IO server."""
 
-    Returning the globally configured :class:`~flask_socketio.SocketIO` instance
-    keeps background tasks and server-emitted events consistent across
-    environments (development or Docker) because every request handler interacts
-    with the same Socket.IO object that ultimately runs the server.
-    """
+    ensure_eventlet_monkey_patched(socketio)
+
+    from app import create_app
 
     flask_app = create_app()
     return flask_app, socketio

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import threading
 import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Tuple
 
 from app.services import runtime_compat
 
@@ -31,6 +32,7 @@ from werkzeug.utils import secure_filename
 from app.services.bg_remove import (
     OUTPUT_FORMATS,
     RemovalResult,
+    create_session,
     encode_result_image,
     ensure_global_session,
     get_accelerator_status,
@@ -59,6 +61,8 @@ class RegistryItem:
 
 _FILE_REGISTRY: Dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: Dict[str, RegistryItem] = {}
+_SESSION_CACHE: Dict[Tuple[str, str, int], "SessionContext"] = {}
+_SESSION_CACHE_LOCK = threading.Lock()
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
     for spec in OUTPUT_FORMATS
@@ -131,6 +135,21 @@ def _collect_single_options(form: Mapping[str, str], defaults: Dict[str, int]) -
     }
 
 
+def _get_session_context(model_name: str, config: Mapping[str, Any]) -> "SessionContext":
+    """Return a cached background removal session for ``model_name``."""
+
+    accelerator_mode = str(config.get("BG_ACCELERATOR", "auto")).strip().lower()
+    device_id = int(config.get("BG_CUDA_DEVICE_ID", 0) or 0)
+    cache_key = (model_name, accelerator_mode, device_id)
+
+    with _SESSION_CACHE_LOCK:
+        context = _SESSION_CACHE.get(cache_key)
+        if context is None:
+            context = create_session(model_name=model_name, config=config)
+            _SESSION_CACHE[cache_key] = context
+        return context
+
+
 @image_converter_bp.route("/", methods=["GET", "POST"])
 @image_converter_bp.route("/image/remove-bg", methods=["GET", "POST"])
 def remove_bg_view() -> Response:
@@ -176,7 +195,25 @@ def remove_bg_view() -> Response:
         except (TypeError, ValueError):
             preview_size = None
 
-    gpu_available =  runtime_compat.has_cuda_support()
+    session_config: Dict[str, Any] = {}
+    if current_app:
+        session_config.update(current_app.config)
+
+    accelerator_mode = hardware_accelerator
+    if accelerator_mode == "gpu":
+        accelerator_mode = "cuda"
+    session_config["BG_ACCELERATOR"] = accelerator_mode
+
+    session_context = None
+    if current_app and current_app.config.get("TESTING"):
+        session = None
+        runtime_info = get_runtime_payload()
+        gpu_available = bool(runtime_compat.has_cuda_support() or runtime_info.get("gpu_name"))
+    else:
+        session_context = _get_session_context(model_name, session_config)
+        session = session_context.session
+        runtime_info = session_context.runtime_payload()
+        gpu_available = bool(session_context.gpu_name or runtime_compat.has_cuda_support())
 
     json_requested = request.args.get("json") == "1"
 
@@ -192,6 +229,7 @@ def remove_bg_view() -> Response:
                 folder_path,
                 output_dir,
                 output_format=format_spec.key,
+                session=session,
                 recursive=recursive,
                 alpha_matting=options["alpha_matting"],
                 am_foreground=options["am_foreground"],
@@ -203,7 +241,6 @@ def remove_bg_view() -> Response:
         except Exception as exc:  # pragma: no cover - depends on runtime environment
             return _bad_request(str(exc))
 
-        runtime_info = get_runtime_payload()
         payload = _serialise_results(results)
         payload["selected_format"] = format_spec.key
         payload.update(runtime_info)
@@ -249,6 +286,7 @@ def remove_bg_view() -> Response:
     result = remove_bg_file(
         input_path,
         output_path,
+        session=session,
         alpha_matting=options["alpha_matting"],
         am_foreground=options["am_foreground"],
         am_background=options["am_background"],
@@ -265,7 +303,6 @@ def remove_bg_view() -> Response:
     if json_requested:
         final_path = result.path_out or output_path
         encoded = encode_result_image(final_path)
-        runtime_info = get_runtime_payload()
         response_data = {
             "result": result.to_dict(),
             "image_base64": encoded,

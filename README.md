@@ -2,8 +2,8 @@
 
 This project combines a rich command-line tool and a small Flask UI to remove image backgrounds with
 [rembg](https://github.com/danielgatis/rembg) (U²-Net based) while keeping memory usage and processing
-times predictable. It can clean up single images, entire folders, or uploaded files, and always writes
-PNG output with transparency preserved.
+times predictable. It can clean up single images, entire folders, or uploaded files, and exports in
+multiple formats (PNG, WebP, JPEG, BMP, TIFF) with transparency preserved whenever the format allows it.
 
 ---
 
@@ -12,7 +12,8 @@ PNG output with transparency preserved.
 * ✅ **rembg-powered masks** with optional alpha matting for detailed hair and fur handling.
 * ✅ **Solid background fallback** (colour-key) plus configurable feathering when OpenCV is available.
 * ✅ **Single-image CLI** and **folder batch mode** that respect EXIF orientation and reuse one model session.
-* ✅ **Web interface** built with Flask featuring upload + server-folder workflows and ZIP downloads.
+* ✅ **Flexible exports** with selectable PNG, WebP, JPEG, BMP, or TIFF output (alpha preserved when supported).
+* ✅ **Web interface** built with Flask featuring upload + server-folder workflows, ZIP downloads, and previews.
 * ✅ Works on CPU or GPU, auto-orients input files, and limits oversized images to keep RAM usage stable.
 
 ---
@@ -37,7 +38,7 @@ PNG output with transparency preserved.
    ```
 
 The first run of either the CLI or web service initialises a single ONNX Runtime session and caches the
-U²-Net weights automatically.
+U²-Net / ISNet weights automatically.
 
 ---
 
@@ -96,18 +97,20 @@ Run the CLI with:
 
 ```bash
 python main.py --input path/to/image_or_folder --output optional/output/dir \
-  --alpha-matting --am-foreground 240 --am-background 10 --am-erode 10 \
+  --format webp --alpha-matting --am-foreground 240 --am-background 10 --am-erode 10 \
   --colorkey-tolerance 14 --feather-radius 3 --recursive
 ```
 
 Key behaviour:
 
-* Passing a **file** writes to `./output/<name>.png` (or to `--output` if given).
-* Passing a **folder** produces PNGs under `./output` (or the directory from `--output`).
+* Passing a **file** writes to `./output/<name>.<format>` (or to `--output` if given).
+* Passing a **folder** produces results under `./output` (or the directory from `--output`).
 * Use `--alpha-matting` + thresholds for tricky edges, `--no-colorkey-fallback` to disable the
   solid-colour helper, and `--recursive` to process nested folders.
 * Override accelerator selection with `--accelerator [auto|cuda|cpu]`, `--cuda-device-id`, and
   `--no-warn-on-cpu` to suppress CLI warnings.
+* Specify `--format [png|webp|jpg|bmp|tiff]` to control the export type; unsupported values raise
+  a clear validation error.
 
 ---
 
@@ -127,9 +130,10 @@ background removal is complete—no streaming or WebSocket connection is require
 
 Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 
-* **Single Image** tab – upload an image, receive the processed file once complete, or fetch JSON payloads.
+* **Single Image** tab – upload an image, receive the processed file once complete, request alternate
+  formats, or fetch JSON payloads.
 * **Folder Processing** tab – supply a server-side folder, optional output directory, recursive mode,
-  alpha-matting settings, and request a ZIP bundle of the processed results.
+  alpha-matting settings, ZIP bundle downloads, and preview-size controls.
 
 The Flask app initialises a single ONNX Runtime session on startup so repeated requests remain fast. Set
 `BR_FORCE_CPU=1` to disable CUDA when troubleshooting GPU driver mismatches. The UI header always
@@ -146,17 +150,12 @@ The suite includes service-level regression tests. Run them with:
 pytest
 ```
 
-You can also sanity-check the project compiles with:
-
-```bash
-python -m compileall main.py app tests
-```
-
 Static analysis helpers are included:
 
 ```bash
 ruff check .
 mypy app
+python -m compileall main.py app tests
 ```
 
 ---

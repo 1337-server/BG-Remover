@@ -26,7 +26,7 @@ def test_get_output_format_spec_handles_extensions() -> None:
 def test_remove_background_bytes_returns_result(monkeypatch: pytest.MonkeyPatch) -> None:
     call_count = 0
 
-    def fake_remove(data: bytes, session: object) -> bytes:  # type: ignore[override]
+    def fake_remove(data: bytes, session: object, **_: object) -> bytes:
         nonlocal call_count
         call_count += 1
         return data
@@ -45,7 +45,7 @@ def test_remove_bg_file_writes_to_directory(tmp_path: Path, monkeypatch: pytest.
     source = tmp_path / "source.png"
     Image.new("RGBA", (2, 2), color=(0, 128, 255, 255)).save(source, "PNG")
 
-    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session: data)
+    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session, **_: data)
 
     result = bg_remove.remove_bg_file(source, tmp_path)
     assert result.path_out is not None
@@ -54,7 +54,7 @@ def test_remove_bg_file_writes_to_directory(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_encode_result_image_returns_data_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session: data)
+    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session, **_: data)
     result = bg_remove.remove_background_bytes(_make_image_bytes())
     data_url = bg_remove.encode_result_image(result)
     assert data_url.startswith("data:image/png;base64,")

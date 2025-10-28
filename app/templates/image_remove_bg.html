@@ -5,198 +5,964 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/help_tips.css') }}">
 {% endblock %}
 {% block content %}
-  {% set runtime = runtime_info or {} %}
-  <div class="mb-3">
-    <div class="d-flex flex-wrap gap-2 align-items-center" id="accelerator-status">
-      <span class="badge bg-secondary" id="accelerator-runtime-badge">
-        {{ runtime.provider or 'Using CPU (CPUExecutionProvider)' }}
-      </span>
-      {% if runtime.warning %}
-        <span class="text-warning small">{{ runtime.warning }}</span>
-      {% endif %}
-    </div>
+{% set runtime = accelerator_runtime or {} %}
+<div class="mb-3">
+  <div class="d-flex flex-wrap gap-2 align-items-center" id="accelerator-status">
+    <span class="badge bg-secondary" id="accelerator-runtime-badge">
+      {{ runtime.accelerator_message or 'Using CPU (CPUExecutionProvider)' }}
+    </span>
   </div>
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      <div class="mb-3">
-        {% for category, message in messages %}
-          <div class="alert alert-{{ 'danger' if category == 'error' else category }}" role="alert">{{ message }}</div>
-        {% endfor %}
-      </div>
-    {% endif %}
-  {% endwith %}
-  <div class="card shadow-sm">
-    <div class="card-header">
-      <h1 class="h4 mb-0">Remove Background</h1>
-    </div>
-    <div class="card-body">
-      <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
-        <h2 class="h4 mb-0">Single Image</h2>
-        <div class="form-check form-switch" data-help-toggle>
-          <input class="form-check-input" type="checkbox" id="help-toggle" checked>
-          <label class="form-check-label" for="help-toggle">Show help hints</label>
-        </div>
-      </div>
-      <form method="post" enctype="multipart/form-data" class="needs-validation" novalidate data-help-container>
-        <div class="alert alert-danger d-none" id="single-form-alert" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1"></div>
-        <div class="mb-3">
-          <div class="form-label d-flex align-items-center gap-2">
-            <span>Upload your image</span>
-            <button
-              type="button"
-              class="help-icon btn btn-link p-0"
-              data-help-element
-              data-bs-toggle="tooltip"
-              data-bs-placement="top"
-              data-bs-html="true"
-              data-bs-custom-class="help-tooltip"
-              data-bs-title="<p class='mb-2'>Choose any photo you want to process. The system will detect the subject and remove the background automatically.</p><p class='mb-2'>Supported formats: <strong>JPG</strong>, <strong>PNG</strong>, and <strong>WebP</strong>. Transparent images are supported too.</p><p class='mb-0'>For best results, use clear, well-lit photos where the main subject is easy to see.</p>"
-              aria-label="Help: Upload your image"
-            >
-              <span aria-hidden="true">?</span>
-            </button>
-          </div>
-          <input class="form-control" type="file" id="image" name="image" accept="image/*" required>
-          <div class="invalid-feedback">Please choose an image to upload.</div>
-        </div>
-        <div class="mb-3">
-          <div class="form-label d-flex align-items-center gap-2">
-            <span>Removal Model</span>
-            <button
-              type="button"
-              class="help-icon btn btn-link p-0"
-              data-help-element
-              data-bs-toggle="tooltip"
-              data-bs-placement="top"
-              data-bs-html="true"
-              data-bs-custom-class="help-tooltip"
-              data-bs-title="<p class='mb-2'>Determines the method used to separate the subject from the background.</p><ul class='mb-0 ps-3'><li><strong>General Model</strong> – works for most photos (people, animals, objects).</li><li><strong>Human Model</strong> – best when the main subject is a person.</li><li><strong>Object Model</strong> – optimised for products or isolated objects.</li><li><strong>Anime / Illustration Model</strong> – tuned for drawn or digital images.</li></ul><p class='mb-0 mt-2'>A more advanced model may take longer to process but often gives a cleaner edge.</p>"
-              aria-label="Help: Removal Model"
-            >
-              <span aria-hidden="true">?</span>
-            </button>
-          </div>
-          <select class="form-select" id="removal_model" name="removal_model">
-            {% for option in removal_model_options %}
-              <option value="{{ option.key }}" {% if option.key == selected_model %}selected{% endif %}>{{ option.label }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="mb-3">
-          <div class="form-label d-flex align-items-center gap-2">
-            <span>Final File Type</span>
-            <button
-              type="button"
-              class="help-icon btn btn-link p-0"
-              data-help-element
-              data-bs-toggle="tooltip"
-              data-bs-placement="top"
-              data-bs-html="true"
-              data-bs-custom-class="help-tooltip"
-              data-bs-title="<p class='mb-2'>Choose how your processed image will be saved:</p><ul class='mb-0 ps-3'><li><strong>PNG (transparent)</strong> – keeps transparency so you can layer it over other backgrounds.</li><li><strong>JPG (white background)</strong> – smaller file size but no transparency.</li><li><strong>WebP</strong> – modern format with excellent compression and transparency support.</li></ul><p class='mb-0 mt-2'>Pick PNG if you plan to edit or overlay the result later.</p>"
-              aria-label="Help: Final File Type"
-            >
-              <span aria-hidden="true">?</span>
-            </button>
-          </div>
-          <select class="form-select" id="output_format" name="output_format">
-            {% for option in format_options %}
-              <option value="{{ option.key }}" data-extension="{{ option.extension }}" {% if option.key == selected_format %}selected{% endif %}>{{ option.label }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="mb-3">
-          <div class="form-label d-flex align-items-center gap-2">
-            <span>Preview Size</span>
-            <button
-              type="button"
-              class="help-icon btn btn-link p-0"
-              data-help-element
-              data-bs-toggle="tooltip"
-              data-bs-placement="top"
-              data-bs-html="true"
-              data-bs-custom-class="help-tooltip"
-              data-bs-title="<p class='mb-2'>Controls how large the preview will be.</p><p class='mb-2'>Lower resolutions load faster but may look slightly blurred.</p><p class='mb-2'>This does not change the quality of your final saved image — it only affects what you see on screen.</p><p class='mb-0'><strong>Range:</strong> 320 – 1280 pixels (steps of 160).</p>"
-              aria-label="Help: Preview Size"
-            >
-              <span aria-hidden="true">?</span>
-            </button>
-          </div>
-          <input class="form-range" type="range" id="preview-size" name="preview_size" min="320" max="1280" step="160" value="{{ preview_size or 1024 }}">
-          <div class="form-text" data-help-element>
-            Preview displayed at <span id="preview-size-label">{{ (preview_size or 1024)|int }}&nbsp;px</span> on the longest edge.
+</div>
+<div class="card shadow-sm">
+  <div class="card-header">
+    <h1 class="h4 mb-0">Remove Background</h1>
+  </div>
+  <div class="card-body">
+    <ul class="nav nav-tabs" id="modeTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single" type="button" role="tab" aria-controls="single" aria-selected="true">Single Image</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="folder-tab" data-bs-toggle="tab" data-bs-target="#folder" type="button" role="tab" aria-controls="folder" aria-selected="false">Folder</button>
+      </li>
+    </ul>
+    <div class="tab-content pt-3">
+      <div class="tab-pane fade show active" id="single" role="tabpanel" aria-labelledby="single-tab">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+          <h2 class="h4 mb-0">Single Image</h2>
+          <div class="form-check form-switch" data-help-toggle>
+            <input class="form-check-input" type="checkbox" id="single-help-toggle" checked>
+            <label class="form-check-label" for="single-help-toggle">Show help hints</label>
           </div>
         </div>
-        <details class="learn-more-box mt-4" data-help-element>
-          <summary class="fw-semibold">💡 How it Works</summary>
-          <div class="pt-3">
-            <p>When you upload a photo, an AI model analyzes every pixel to find the main subject (for example, a person or an object) and separates it from the background.</p>
-            <p>It then creates a new image with the background removed — usually transparent — so you can reuse it anywhere (design projects, thumbnails, product listings, etc.).</p>
-            <p>Processing runs on the server's CPU. Faster processors complete batches more quickly, but every image receives the same high-quality mask.</p>
-            <p class="mb-0">You can experiment with the settings above. Nothing is permanent until you save the result, so feel free to try different models and edge smoothness levels to see what looks best.</p>
+        <form
+          id="single-form"
+          enctype="multipart/form-data"
+          class="needs-validation"
+          novalidate
+          data-help-container
+        >
+          <div
+            class="alert alert-danger d-none"
+            id="single-form-alert"
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            tabindex="-1"
+          ></div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Upload your image</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Choose any photo you want to process. The system will detect the subject and remove the background automatically.</p><p class='mb-2'>Supported formats: <strong>JPG</strong>, <strong>PNG</strong>, and <strong>WebP</strong>. Transparent images are supported too.</p><p class='mb-0'>For best results, use clear, well-lit photos where the main subject is easy to see.</p>"
+                aria-label="Help: Upload your image"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <input class="form-control" type="file" id="single-file" name="image_file" accept="image/*" required>
+            <div class="invalid-feedback">Please choose an image to upload.</div>
           </div>
-        </details>
-        <div class="mt-4 d-flex gap-2 align-items-center">
-          <button class="btn btn-primary" type="submit">Remove background</button>
-        </div>
-      </form>
-      {% if result_data %}
-        <div class="mt-5" id="single-result">
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Removal Model</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Determines the method used to separate the subject from the background.</p><ul class='mb-0 ps-3'><li><strong>General Model</strong> – works for most photos (people, animals, objects).</li><li><strong>Human Model</strong> – best when the main subject is a person.</li><li><strong>Object Model</strong> – optimised for products or isolated objects.</li><li><strong>Anime / Illustration Model</strong> – tuned for drawn or digital images.</li></ul><p class='mb-0 mt-2'>A more advanced model may take longer to process but often gives a cleaner edge.</p>"
+                aria-label="Help: Removal Model"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <select class="form-select" id="single-model" name="removal_model">
+              {% for option in removal_model_options %}
+              <option value="{{ option.key }}" {% if option.key == defaults.removal_model %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Final File Type</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Choose how your processed image will be saved:</p><ul class='mb-0 ps-3'><li><strong>PNG (transparent)</strong> – keeps transparency so you can layer it over other backgrounds.</li><li><strong>JPG (white background)</strong> – smaller file size but no transparency.</li><li><strong>WEBP</strong> – modern format with excellent compression and transparency support.</li></ul><p class='mb-0 mt-2'>Pick PNG if you plan to edit or overlay the result later.</p>"
+                aria-label="Help: Final File Type"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <select class="form-select" id="single-format" name="output_format">
+              {% for option in format_options %}
+              <option value="{{ option.key }}" data-extension="{{ option.extension }}" {% if option.key == defaults.output_format %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Preview Size</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Controls how large the preview will be.</p><p class='mb-2'>Lower resolutions load faster but may look slightly blurred.</p><p class='mb-2'>This does not change the quality of your final saved image — it only affects what you see on screen.</p><p class='mb-0'><strong>Range:</strong> 320 – 1280 pixels (steps of 160).</p>"
+                aria-label="Help: Preview Size"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <input class="form-range" type="range" id="single-preview-size" name="preview_size" min="320" max="1280" step="160" value="1024">
+            <div class="form-text" data-help-element>
+              Preview displayed at <span id="single-preview-size-label">1024&nbsp;px</span> on the longest edge.
+            </div>
+          </div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Edge Smoothing</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Adjusts how soft or sharp the edges of the cut-out appear.</p><ul class='mb-0 ps-3'><li>Lower values = sharp edges (good for clean product photos).</li><li>Higher values = softer blending (good for portraits or hair).</li></ul><p class='mb-2 mt-2'>Use this if the outline of the subject looks too harsh or jagged.</p><p class='mb-0'><strong>Range:</strong> 0 – 50 pixels.</p>"
+                aria-label="Help: Edge Smoothing"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <input class="form-range" type="range" id="single-feather" name="feather_radius" min="0" max="50" step="1" value="{{ defaults.feather_radius }}">
+            <div class="d-flex justify-content-between small text-muted">
+              <span>Sharper</span>
+              <span>Current: <span id="single-feather-value">{{ defaults.feather_radius }}</span></span>
+              <span>Softer</span>
+            </div>
+          </div>
+          <div class="mb-4">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Output Folder</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Where the processed image will be saved on your system.</p><p class='mb-2'>You can choose any folder with write permissions.</p><p class='mb-0'>The app will automatically add a “_no_bg” suffix to the filename.</p>"
+                aria-label="Help: Output Folder"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <input class="form-control" type="text" id="single-output-dir" name="single_output_dir" placeholder="e.g. ~/Pictures/Background-Free" autocomplete="off">
+            <div class="form-text" data-help-element>Leave blank if you prefer to choose the location manually when downloading.</div>
+          </div>
+          <details class="advanced-options mt-4">
+            <summary class="fw-semibold">Advanced refinements</summary>
+            <div>
+              <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" id="single-alpha" name="alpha_matting" value="1" {% if defaults.alpha_matting %}checked{% endif %}>
+                <label class="form-check-label" for="single-alpha">Alpha matting (better hair/edges)</label>
+              </div>
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <div class="form-label d-flex align-items-center gap-2">
+                    <span>Alpha matting foreground</span>
+                    <button
+                      type="button"
+                      class="help-icon btn btn-link p-0"
+                      data-help-element
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      data-bs-html="true"
+                      data-bs-custom-class="help-tooltip"
+                      data-bs-title="<p class='mb-2'>Sets how strongly the foreground (subject) should be kept when alpha matting is enabled.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                      aria-label="Help: Alpha matting foreground"
+                    >
+                      <span aria-hidden="true">?</span>
+                    </button>
+                  </div>
+                  <input class="form-control" type="number" id="single-foreground" name="am_foreground" min="0" max="255" value="{{ defaults.am_foreground }}">
+                </div>
+                <div class="col-md-4">
+                  <div class="form-label d-flex align-items-center gap-2">
+                    <span>Alpha matting background</span>
+                    <button
+                      type="button"
+                      class="help-icon btn btn-link p-0"
+                      data-help-element
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      data-bs-html="true"
+                      data-bs-custom-class="help-tooltip"
+                      data-bs-title="<p class='mb-2'>Controls how aggressively the background should be removed when alpha matting runs.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                      aria-label="Help: Alpha matting background"
+                    >
+                      <span aria-hidden="true">?</span>
+                    </button>
+                  </div>
+                  <input class="form-control" type="number" id="single-background" name="am_background" min="0" max="255" value="{{ defaults.am_background }}">
+                </div>
+                <div class="col-md-4">
+                  <div class="form-label d-flex align-items-center gap-2">
+                    <span>Alpha matting erode size</span>
+                    <button
+                      type="button"
+                      class="help-icon btn btn-link p-0"
+                      data-help-element
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      data-bs-html="true"
+                      data-bs-custom-class="help-tooltip"
+                      data-bs-title="<p class='mb-0'>Fine-tunes how much of the original edges get trimmed before the alpha matting refinement.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                      aria-label="Help: Alpha matting erode size"
+                    >
+                      <span aria-hidden="true">?</span>
+                    </button>
+                  </div>
+                  <input class="form-control" type="number" id="single-erode" name="am_erode" min="0" max="255" value="{{ defaults.am_erode }}">
+                </div>
+              </div>
+              <div class="row g-3 mt-3">
+                <div class="col-md-6">
+                  <div class="form-label d-flex align-items-center gap-2">
+                    <span>Color-key tolerance</span>
+                    <button
+                      type="button"
+                      class="help-icon btn btn-link p-0"
+                      data-help-element
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      data-bs-html="true"
+                      data-bs-custom-class="help-tooltip"
+                      data-bs-title="<p class='mb-2'>Useful when removing a solid background (like a green screen). Higher values remove a wider range of colours.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                      aria-label="Help: Color-key tolerance"
+                    >
+                      <span aria-hidden="true">?</span>
+                    </button>
+                  </div>
+                  <input class="form-control" type="number" id="single-tolerance" name="colorkey_tolerance" min="0" max="255" value="{{ defaults.colorkey_tolerance }}">
+                </div>
+              </div>
+            </div>
+          </details>
+          <details class="learn-more-box mt-4" data-help-element>
+            <summary class="fw-semibold">💡 How it Works</summary>
+            <div class="pt-3">
+              <p>When you upload a photo, an AI model analyzes every pixel to find the main subject (for example, a person or an object) and separates it from the background.</p>
+              <p>It then creates a new image with the background removed — usually transparent — so you can reuse it anywhere (design projects, thumbnails, product listings, etc.).</p>
+              <p>Processing runs on the server's CPU. Faster processors complete batches more quickly, but every image receives the same high-quality mask.</p>
+              <p class="mb-0">You can experiment with the settings above. Nothing is permanent until you save the result, so feel free to try different models and edge smoothness levels to see what looks best.</p>
+            </div>
+          </details>
+          <div class="mt-4 d-flex gap-2">
+            <button class="btn btn-primary" type="submit">Remove background</button>
+            <div class="spinner-border text-primary d-none" id="single-spinner" role="status" aria-hidden="true"></div>
+          </div>
+        </form>
+        <div class="mt-4" id="single-result" hidden>
           <h2 class="h5">Result</h2>
-          <div class="checkerboard rounded p-3">
-            <img src="{{ result_data }}" alt="Background removed preview" class="img-fluid rounded" style="max-width: 100%; height: auto;">
+          <div class="checkerboard rounded p-3" id="single-preview-container">
+            <img id="single-preview" alt="Processed preview" class="img-fluid rounded" />
           </div>
-          {% if result_summary %}
-            <dl class="row mt-3 small">
-              <dt class="col-sm-3">Selected model</dt>
-              <dd class="col-sm-9">{{ result_summary.model_label }}</dd>
-              <dt class="col-sm-3">Output format</dt>
-              <dd class="col-sm-9">{{ result_summary.format_label }}</dd>
-              <dt class="col-sm-3">Processing time</dt>
-              <dd class="col-sm-9">{{ '%.2f'|format(result_summary.elapsed_ms) }} ms</dd>
-            </dl>
-          {% endif %}
-          <p class="text-muted mb-0">Right click the image to save it locally.</p>
+          <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+            <a class="btn btn-success d-none" id="single-download" href="#" download>Download result</a>
+            <span class="text-muted" id="single-status-text"></span>
+          </div>
+          <pre class="mt-3 bg-light p-3 rounded" id="single-summary"></pre>
         </div>
-      {% endif %}
+      </div>
+      <div class="tab-pane fade" id="folder" role="tabpanel" aria-labelledby="folder-tab">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+          <h2 class="h4 mb-0">Folder Batch</h2>
+          <div class="form-check form-switch" data-help-toggle>
+            <input class="form-check-input" type="checkbox" id="folder-help-toggle" checked>
+            <label class="form-check-label" for="folder-help-toggle">Show help hints</label>
+          </div>
+        </div>
+        <form id="folder-form" novalidate data-help-container>
+          <input type="hidden" name="process_folder" value="on">
+          <div
+            class="alert alert-danger d-none"
+            id="folder-form-alert"
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            tabindex="-1"
+          ></div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Folder path on server</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Tell the app where your images live on the server. Every supported image in this folder will be processed in one go.</p><p class='mb-0'>Use an absolute path (for example, <code>/home/user/photos</code>) that the server can access.</p>"
+                aria-label="Help: Folder path on server"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <input class="form-control" type="text" id="folder-path" name="folder_path" placeholder="/path/to/images" required>
+            <div class="invalid-feedback">Enter the directory containing images.</div>
+          </div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Output directory (optional)</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Choose where the processed results should be saved.</p><p class='mb-0'>Leave this blank to use the default <code>_no_bg</code> folder next to your originals.</p>"
+                aria-label="Help: Output directory"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <input class="form-control" type="text" id="folder-output" name="output_dir" placeholder="Leave blank for default">
+          </div>
+          <div class="mb-3">
+            <div class="form-label d-flex align-items-center gap-2">
+              <span>Final File Type</span>
+              <button
+                type="button"
+                class="help-icon btn btn-link p-0"
+                data-help-element
+                data-bs-toggle="tooltip"
+                data-bs-placement="top"
+                data-bs-html="true"
+                data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Choose how each processed image will be saved:</p><ul class='mb-0 ps-3'><li><strong>PNG (transparent)</strong> – perfect if you plan to place the subject on new backgrounds.</li><li><strong>JPG (white background)</strong> – smaller files without transparency.</li><li><strong>WEBP</strong> – modern format with great compression and transparency support.</li></ul><p class='mb-0 mt-2'>Pick PNG for the most flexible editing later.</p>"
+                aria-label="Help: Final File Type"
+              >
+                <span aria-hidden="true">?</span>
+              </button>
+            </div>
+            <select class="form-select" id="folder-format" name="output_format">
+              {% for option in format_options %}
+              <option value="{{ option.key }}" data-extension="{{ option.extension }}" {% if option.key == defaults.output_format %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="folder-alpha" name="alpha_matting" value="1" {% if defaults.alpha_matting %}checked{% endif %}>
+                <label class="form-check-label d-flex align-items-center gap-2" for="folder-alpha">
+                  <span>Alpha matting</span>
+                  <button
+                    type="button"
+                    class="help-icon btn btn-link p-0"
+                    data-help-element
+                    data-bs-toggle="tooltip"
+                    data-bs-placement="top"
+                    data-bs-html="true"
+                    data-bs-custom-class="help-tooltip"
+                    data-bs-title="<p class='mb-2'>Enables an extra refinement step that keeps tricky details like hair and fur intact.</p><p class='mb-0'>Turn this on if your subjects have fine edges, at the cost of slightly longer processing.</p>"
+                    aria-label="Help: Alpha matting"
+                  >
+                    <span aria-hidden="true">?</span>
+                  </button>
+                </label>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="folder-recursive" name="recursive" value="1" {% if defaults.recursive %}checked{% endif %}>
+                <label class="form-check-label d-flex align-items-center gap-2" for="folder-recursive">
+                  <span>Process recursively</span>
+                  <button
+                    type="button"
+                    class="help-icon btn btn-link p-0"
+                    data-help-element
+                    data-bs-toggle="tooltip"
+                    data-bs-placement="top"
+                    data-bs-html="true"
+                    data-bs-custom-class="help-tooltip"
+                    data-bs-title="<p class='mb-0'>Also scan through every sub-folder and process their images. Handy for large photo libraries.</p>"
+                    aria-label="Help: Process recursively"
+                  >
+                    <span aria-hidden="true">?</span>
+                  </button>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="row g-3 mt-1">
+            <div class="col-md-4">
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Alpha matting foreground</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Sets how strongly the foreground (subject) should be kept when alpha matting is enabled.</p><p class='mb-2'>Higher numbers protect more of the subject but may keep bits of background.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                  aria-label="Help: Alpha matting foreground"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
+              <input class="form-control" type="number" id="folder-foreground" name="am_foreground" min="0" max="255" value="{{ defaults.am_foreground }}">
+            </div>
+            <div class="col-md-4">
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Alpha matting background</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Controls how aggressively the background should be removed when alpha matting runs.</p><p class='mb-2'>Increase if you still see a halo; decrease if parts of the subject vanish.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                  aria-label="Help: Alpha matting background"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
+              <input class="form-control" type="number" id="folder-background" name="am_background" min="0" max="255" value="{{ defaults.am_background }}">
+            </div>
+            <div class="col-md-4">
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Alpha matting erode size</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Fine-tunes how much of the original edges get trimmed before the alpha matting refinement.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                  aria-label="Help: Alpha matting erode size"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
+              <input class="form-control" type="number" id="folder-erode" name="am_erode" min="0" max="255" value="{{ defaults.am_erode }}">
+            </div>
+          </div>
+          <div class="row g-3 mt-1">
+            <div class="col-md-4">
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Color-key tolerance</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-0'>Useful when removing a solid background (like a green screen). Higher values remove a wider range of colours.</p><p class='mb-0'><strong>Range:</strong> 0 – 255.</p>"
+                  aria-label="Help: Color-key tolerance"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
+              <input class="form-control" type="number" id="folder-tolerance" name="colorkey_tolerance" min="0" max="255" value="{{ defaults.colorkey_tolerance }}">
+            </div>
+            <div class="col-md-4">
+              <div class="form-label d-flex align-items-center gap-2">
+                <span>Edge Smoothing</span>
+                <button
+                  type="button"
+                  class="help-icon btn btn-link p-0"
+                  data-help-element
+                  data-bs-toggle="tooltip"
+                  data-bs-placement="top"
+                  data-bs-html="true"
+                  data-bs-custom-class="help-tooltip"
+                data-bs-title="<p class='mb-2'>Adjusts how soft the borders of each subject will appear.</p><ul class='mb-0 ps-3'><li>Lower values = crisp edges (great for product photos).</li><li>Higher values = softer blending (great for portraits and hair).</li></ul><p class='mb-0 mt-2'><strong>Range:</strong> 0 – 50 pixels.</p>"
+                  aria-label="Help: Edge Smoothing"
+                >
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
+              <input class="form-control" type="number" id="folder-feather" name="feather_radius" min="0" max="50" value="{{ defaults.feather_radius }}">
+            </div>
+            <div class="col-md-4">
+              <div class="form-check form-switch mt-4">
+                <input class="form-check-input" type="checkbox" id="folder-zip" name="zip" value="1" {% if defaults.zip %}checked{% endif %}>
+                <label class="form-check-label d-flex align-items-center gap-2" for="folder-zip">
+                  <span>Create ZIP archive</span>
+                  <button
+                    type="button"
+                    class="help-icon btn btn-link p-0"
+                    data-help-element
+                    data-bs-toggle="tooltip"
+                    data-bs-placement="top"
+                    data-bs-html="true"
+                    data-bs-custom-class="help-tooltip"
+                    data-bs-title="<p class='mb-0'>Bundle every processed result into a single ZIP download. Ideal when you plan to transfer the files elsewhere.</p>"
+                    aria-label="Help: Create ZIP archive"
+                  >
+                    <span aria-hidden="true">?</span>
+                  </button>
+                </label>
+              </div>
+            </div>
+          </div>
+          <details class="learn-more-box mt-4" data-help-element>
+            <summary class="fw-semibold">🧠 How batch processing works</summary>
+            <div class="pt-3">
+              <p>Point the tool at a folder and it scans every supported image, removing backgrounds one after another using your chosen settings.</p>
+              <p>Each file keeps its original name with a <code>_no_bg</code> suffix (or goes into a ZIP if you enable that option), so nothing gets overwritten.</p>
+              <p>Processing happens on the server. The CPU handles every file, so results are consistent even on machines without dedicated graphics hardware.</p>
+              <p class="mb-0">You can re-run the same folder whenever you update the settings — previous outputs stay intact unless you replace them manually.</p>
+            </div>
+          </details>
+          <div class="mt-4 d-flex gap-2">
+            <button class="btn btn-primary" type="submit">Process folder</button>
+            <div class="spinner-border text-primary d-none" id="folder-spinner" role="status" aria-hidden="true"></div>
+          </div>
+        </form>
+        <div class="mt-4" id="folder-result" hidden>
+          <h2 class="h5">Results</h2>
+          <div class="alert alert-info d-none" id="folder-summary" role="alert"></div>
+          <div class="table-responsive">
+            <table class="table table-striped" id="folder-table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Preview</th>
+                  <th>Status</th>
+                  <th>Time (ms)</th>
+                  <th>Download</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="mt-3" id="folder-zip-link" hidden>
+            <a class="btn btn-success" id="folder-zip-button" href="#" download>Download ZIP</a>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
+</div>
 {% endblock %}
 {% block extra_scripts %}
-  {{ super() }}
-  <script>
-    document.addEventListener('DOMContentLoaded', () => {
-      const tooltipTriggerList = Array.from(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-      tooltipTriggerList.forEach((tooltipTriggerEl) => {
-        // Bootstrap is loaded globally from the base template.
-        new bootstrap.Tooltip(tooltipTriggerEl);
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    /**
+     * Clamp a numeric input to the inclusive range described by its HTML attributes.
+     * This prevents out-of-range defaults that could come from server-side configuration.
+     * @param {HTMLInputElement} input - The input to normalise.
+     */
+    const clampInputValue = (input) => {
+      if (!(input instanceof HTMLInputElement)) {
+        return;
+      }
+
+      const rawValue = input.value;
+      if (rawValue === '') {
+        return;
+      }
+
+      const numericValue = Number(rawValue);
+      if (Number.isNaN(numericValue)) {
+        return;
+      }
+
+      const hasMin = input.min !== '';
+      const hasMax = input.max !== '';
+      const minValue = hasMin ? Number(input.min) : Number.NEGATIVE_INFINITY;
+      const maxValue = hasMax ? Number(input.max) : Number.POSITIVE_INFINITY;
+      let clampedValue = numericValue;
+
+      if (!Number.isNaN(minValue) && numericValue < minValue) {
+        clampedValue = minValue;
+      }
+      if (!Number.isNaN(maxValue) && clampedValue > maxValue) {
+        clampedValue = maxValue;
+      }
+
+      if (clampedValue !== numericValue) {
+        input.value = clampedValue.toString();
+      }
+    };
+
+    /**
+     * Ensure every numeric input respects its declared bounds on load and when changed.
+     */
+    const enforceNumericBounds = () => {
+      const numericInputs = document.querySelectorAll(
+        '#single-form input[type="number"], #single-form input[type="range"], ' +
+          '#folder-form input[type="number"], #folder-form input[type="range"]',
+      );
+
+      numericInputs.forEach((input) => {
+        clampInputValue(input);
+        input.addEventListener('change', () => clampInputValue(input));
+        input.addEventListener('blur', () => clampInputValue(input));
       });
+    };
 
-      const helpToggle = document.getElementById('help-toggle');
-      const helpElements = document.querySelectorAll('[data-help-element]');
-      const syncHelpVisibility = () => {
-        const shouldShow = helpToggle ? helpToggle.checked : true;
-        helpElements.forEach((element) => {
-          element.classList.toggle('visually-hidden', !shouldShow);
-        });
-      };
-      if (helpToggle) {
-        helpToggle.addEventListener('change', syncHelpVisibility);
-        syncHelpVisibility();
+    enforceNumericBounds();
+
+        const acceleratorInitialState = {{ accelerator_runtime|tojson }} || {};
+    const acceleratorRuntimeBadge = document.getElementById('accelerator-runtime-badge');
+
+    const updateAcceleratorUi = (state = {}) => {
+      const message = (state.accelerator_message || 'Using CPU (CPUExecutionProvider)').toString();
+      if (acceleratorRuntimeBadge) {
+        acceleratorRuntimeBadge.textContent = message;
       }
+    };
 
-      const previewSlider = document.getElementById('preview-size');
-      const previewLabel = document.getElementById('preview-size-label');
-      const updatePreviewLabel = () => {
-        if (previewSlider && previewLabel) {
-          previewLabel.textContent = `${previewSlider.value}\u00A0px`;
+const previewSizeInput = document.getElementById('single-preview-size');
+    const previewSizeLabel = document.getElementById('single-preview-size-label');
+    const previewContainer = document.getElementById('single-preview-container');
+
+    const applyPreviewSize = () => {
+      if (!previewSizeInput) {
+        return;
+      }
+      const value = Number(previewSizeInput.value) || 0;
+      if (previewSizeLabel) {
+        previewSizeLabel.textContent = value ? `${value} px` : 'Auto';
+      }
+      const sizeText = value > 0 ? `${value}px` : '';
+      if (previewContainer) {
+        previewContainer.style.maxWidth = sizeText;
+      }
+      if (singlePreview) {
+        singlePreview.style.maxWidth = sizeText;
+      }
+    };
+
+    if (previewSizeInput) {
+      previewSizeInput.addEventListener('input', applyPreviewSize);
+      previewSizeInput.addEventListener('change', applyPreviewSize);
+      applyPreviewSize();
+    }
+
+    const edgeSlider = document.getElementById('single-feather');
+    const edgeValueLabel = document.getElementById('single-feather-value');
+
+    const syncEdgeValue = () => {
+      if (edgeSlider && edgeValueLabel) {
+        edgeValueLabel.textContent = edgeSlider.value;
+      }
+    };
+
+    if (edgeSlider) {
+      edgeSlider.addEventListener('input', syncEdgeValue);
+      edgeSlider.addEventListener('change', syncEdgeValue);
+      syncEdgeValue();
+    }
+
+    let downloadObjectUrl = null;
+    let activeFilename = 'image';
+
+    const revokeDownloadUrl = () => {
+      if (downloadObjectUrl) {
+        URL.revokeObjectURL(downloadObjectUrl);
+        downloadObjectUrl = null;
+      }
+    };
+
+    const clearDownloadLink = () => {
+      if (!singleDownload) {
+        return;
+      }
+      revokeDownloadUrl();
+      singleDownload.classList.add('d-none');
+      singleDownload.removeAttribute('href');
+      singleDownload.removeAttribute('download');
+      const defaultFormat = singleFormatSelect && singleFormatSelect.value;
+      singleDownload.textContent = formatDownloadLabel(null, defaultFormat, null);
+    };
+
+    clearDownloadLink();
+
+    if (singleFormatSelect && singleDownload) {
+      singleFormatSelect.addEventListener('change', () => {
+        if (singleDownload.classList.contains('d-none')) {
+          singleDownload.textContent = formatDownloadLabel(null, singleFormatSelect.value, null);
         }
-      };
-      if (previewSlider) {
-        previewSlider.addEventListener('input', updatePreviewLabel);
-        previewSlider.addEventListener('change', updatePreviewLabel);
-        updatePreviewLabel();
+      });
+    }
+
+    const describeStatus = (result) => {
+      if (!result) {
+        return 'Background removal completed successfully.';
       }
+      if (result.success) {
+        return result.error
+          ? `Completed with notes: ${result.error}`
+          : 'Background removal completed successfully.';
+      }
+      return result.error ? `Error: ${result.error}` : 'Background removal failed.';
+    };
+
+    if (singleForm) {
+      singleForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        if (!singleForm.checkValidity()) {
+          singleForm.classList.add('was-validated');
+          singleAlertManager.show('Please fix the highlighted errors before submitting the form.');
+          return;
+        }
+
+        const file = singleFileInput?.files?.[0];
+        if (!file) {
+          singleAlertManager.show('Please choose an image to upload.');
+          return;
+        }
+
+        singleAlertManager.clear();
+        singleForm.classList.remove('was-validated');
+        activeFilename = file.name || 'image';
+
+        singleResult.hidden = true;
+        singlePreview?.removeAttribute('src');
+        singleSummary.textContent = '';
+        if (singleStatusText) {
+          singleStatusText.textContent = '';
+        }
+        clearDownloadLink();
+
+        const formData = new FormData(singleForm);
+
+        showSpinner(singleSpinner, true);
+
+        try {
+          const response = await fetch('/image/remove-bg?json=1', {
+            method: 'POST',
+            body: formData,
+          });
+
+          const payload = await response.json().catch(() => null);
+          if (!response.ok || !payload) {
+            const message = payload?.error || 'Background removal failed.';
+            throw new Error(message);
+          }
+
+          updateAcceleratorUi(payload);
+
+          const mimeType = payload.mime_type || 'image/png';
+          if (payload.image_base64 && singlePreview) {
+            singlePreview.src = `data:${mimeType};base64,${payload.image_base64}`;
+          } else if (singlePreview) {
+            singlePreview.removeAttribute('src');
+          }
+          applyPreviewSize();
+
+          singleResult.hidden = false;
+          if (singleStatusText) {
+            singleStatusText.textContent = describeStatus(payload.result);
+          }
+          if (payload.result) {
+            const summaryData = { ...payload.result };
+            if (payload.selection) {
+              summaryData.selection = payload.selection;
+            }
+            singleSummary.textContent = JSON.stringify(summaryData, null, 2);
+          } else {
+            singleSummary.textContent = 'Background removal completed successfully.';
+          }
+
+          if (payload.image_base64 && singleDownload) {
+            try {
+              const blob = base64ToBlob(payload.image_base64, mimeType);
+              revokeDownloadUrl();
+              downloadObjectUrl = URL.createObjectURL(blob);
+              const resolvedDownloadName = resolveDownloadName(
+                payload.download_name,
+                payload.format,
+                mimeType,
+              );
+              singleDownload.href = downloadObjectUrl;
+              if (resolvedDownloadName) {
+                singleDownload.download = resolvedDownloadName;
+              } else {
+                singleDownload.removeAttribute('download');
+              }
+              singleDownload.textContent = formatDownloadLabel(
+                resolvedDownloadName,
+                payload.format,
+                mimeType,
+              );
+              singleDownload.classList.remove('d-none');
+            } catch (error) {
+              console.error('Unable to prepare the download link.', error);
+              clearDownloadLink();
+            }
+          } else {
+            clearDownloadLink();
+          }
+        } catch (error) {
+          singleAlertManager.show(error.message || 'Background removal failed.');
+        } finally {
+          showSpinner(singleSpinner, false);
+        }
+      });
+    }
+
+    const folderSpinner = document.getElementById('folder-spinner');
+    const folderResult = document.getElementById('folder-result');
+    const folderSummary = document.getElementById('folder-summary');
+    const folderTableBody = document.querySelector('#folder-table tbody');
+    const folderZipLink = document.getElementById('folder-zip-link');
+    const folderZipButton = document.getElementById('folder-zip-button');
+    const folderAlert = document.getElementById('folder-form-alert');
+    const folderAlertManager = createAlertManager(folderAlert);
+
+    if (folderForm) {
+      folderForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!folderForm.checkValidity()) {
+          folderForm.classList.add('was-validated');
+          folderAlertManager.show('Please fix the highlighted errors before submitting the form.');
+          return;
+        }
+
+        folderAlertManager.clear();
+
+        const formData = new FormData(folderForm);
+        let endpoint = '/image/remove-bg?json=1';
+        const zipToggle = document.getElementById('folder-zip');
+        if (zipToggle && zipToggle.checked) {
+          endpoint = '/image/remove-bg?json=1&zip=1';
+        }
+
+        showSpinner(folderSpinner, true);
+        try {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            body: formData,
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Folder processing failed.');
+          }
+
+          updateAcceleratorUi(data);
+
+          folderResult.hidden = false;
+          folderSummary.classList.remove('d-none');
+          folderSummary.textContent = `Processed ${data.summary.success} of ${data.summary.total} images.`;
+          if (data.zip_error) {
+            folderSummary.textContent += ` ZIP error: ${data.zip_error}`;
+          }
+
+          if (folderTableBody) {
+            folderTableBody.innerHTML = '';
+            data.results.forEach((item) => {
+              const row = document.createElement('tr');
+
+              const fileCell = document.createElement('td');
+              fileCell.textContent = item.path_in;
+              row.appendChild(fileCell);
+
+              const previewCell = document.createElement('td');
+              if (item.preview_url) {
+                const previewImage = document.createElement('img');
+                previewImage.src = item.preview_url;
+                previewImage.alt = `Preview of ${item.path_in}`;
+                previewImage.classList.add('img-thumbnail');
+                previewImage.style.maxWidth = '96px';
+                previewImage.style.maxHeight = '96px';
+                previewCell.appendChild(previewImage);
+              } else {
+                previewCell.textContent = item.error ? 'No preview' : '-';
+              }
+              row.appendChild(previewCell);
+
+              const statusCell = document.createElement('td');
+              statusCell.textContent = item.success ? 'Success' : 'Failed';
+              statusCell.classList.toggle('text-success', Boolean(item.success));
+              statusCell.classList.toggle('text-danger', !item.success);
+              row.appendChild(statusCell);
+
+              const timeCell = document.createElement('td');
+              const numericTime = Number(item.timing_ms);
+              timeCell.textContent = Number.isFinite(numericTime)
+                ? numericTime.toFixed(1)
+                : (item.timing_ms ?? '-');
+              row.appendChild(timeCell);
+
+              const downloadCell = document.createElement('td');
+              if (item.download_url) {
+                const link = document.createElement('a');
+                link.href = item.download_url;
+                const formatLabel = (item.format || '').toString().toUpperCase();
+                link.textContent = formatLabel ? `Download ${formatLabel}` : 'Download';
+                link.classList.add('btn', 'btn-sm', 'btn-outline-primary');
+                downloadCell.appendChild(link);
+              } else {
+                downloadCell.textContent = item.error || '-';
+              }
+              row.appendChild(downloadCell);
+
+              folderTableBody.appendChild(row);
+            });
+          }
+
+          if (folderZipLink && folderZipButton) {
+            if (data.zip_download_url) {
+              folderZipLink.hidden = false;
+              folderZipButton.href = data.zip_download_url;
+              folderZipButton.download = 'results.zip';
+            } else {
+              folderZipLink.hidden = true;
+              folderZipButton.removeAttribute('href');
+            }
+          }
+          folderAlertManager.clear();
+        } catch (error) {
+          folderAlertManager.show(error.message || 'Folder processing failed.');
+        } finally {
+          showSpinner(folderSpinner, false);
+        }
+      });
+    }
+
+    window.addEventListener('beforeunload', () => {
+      revokeDownloadUrl();
     });
-  </script>
+  });
+</script>
 {% endblock %}

@@ -33,22 +33,27 @@ def test_get_request_returns_form(client: FlaskClient) -> None:
 
 
 def test_post_without_file_returns_error(client: FlaskClient) -> None:
-    response = client.post("/", data={}, follow_redirects=True)
+    response = client.post("/?json=1", data={}, follow_redirects=False)
     assert response.status_code == 400
-    assert b"Please choose an image" in response.data
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["error"].startswith("Please choose an image")
 
 
 def test_post_with_image_displays_result(
     client: FlaskClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session: data)
+    monkeypatch.setattr(bg_remove, "_rembg_remove", lambda data, session, **_: data)
     upload = _make_upload()
     response = client.post(
-        "/",
-        data={"image": upload, "output_format": "png"},
+        "/?json=1",
+        data={"image_file": upload, "output_format": "png"},
         content_type="multipart/form-data",
-        follow_redirects=True,
+        follow_redirects=False,
     )
     assert response.status_code == 200
-    assert b"Background removed successfully" in response.data
-    assert b"data:image/png;base64" in response.data
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["mime_type"] == "image/png"
+    assert payload["result"]["success"] is True
+    assert payload["image_base64"].startswith("data:image/png;base64,")

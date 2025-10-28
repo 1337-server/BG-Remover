@@ -108,6 +108,9 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
     assert selection["hardware_accelerator"] == image_converter.DEFAULT_HARDWARE_ACCELERATOR_KEY
     assert selection["output_directory"] is None
     assert selection["preview_size"] is None
+    assert payload["runtime"] == "cuda"
+    assert payload["gpu_name"] == "Test GPU"
+    assert payload.get("warning") is None
 
 
 def test_single_image_post_requires_file() -> None:

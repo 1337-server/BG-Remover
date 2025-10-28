@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping
 
+from app.services import runtime_compat
+
 if TYPE_CHECKING:  # pragma: no cover - hints only
     from flask import Flask
 
@@ -26,7 +28,6 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
-from app.services import runtime_compat
 from app.services.bg_remove import (
     OUTPUT_FORMATS,
     RemovalResult,
@@ -38,6 +39,7 @@ from app.services.bg_remove import (
     get_runtime_payload,
     remove_bg_file,
     remove_bg_folder,
+    OUTPUT_FORMATS,
 )
 
 image_converter_bp = Blueprint("image_converter", __name__)
@@ -146,9 +148,9 @@ def remove_bg_view() -> Response:
             "image_remove_bg.html",
             defaults=defaults,
             format_options=FORMAT_OPTIONS,
+            accelerator_runtime=runtime_info,
             removal_model_options=REMOVAL_MODEL_OPTIONS,
             hardware_accelerator_options=HARDWARE_ACCELERATOR_OPTIONS,
-            gpu_available=runtime_compat.has_cuda_support(),
         )
 
     form = request.form
@@ -174,7 +176,7 @@ def remove_bg_view() -> Response:
         except (TypeError, ValueError):
             preview_size = None
 
-    gpu_available = runtime_compat.has_cuda_support()
+    gpu_available =  runtime_compat.has_cuda_support()
 
     json_requested = request.args.get("json") == "1"
 
@@ -190,8 +192,6 @@ def remove_bg_view() -> Response:
                 folder_path,
                 output_dir,
                 output_format=format_spec.key,
-                model_name=model_name,
-                hardware_accelerator=hardware_accelerator,
                 recursive=recursive,
                 alpha_matting=options["alpha_matting"],
                 am_foreground=options["am_foreground"],
@@ -206,6 +206,7 @@ def remove_bg_view() -> Response:
         runtime_info = get_runtime_payload()
         payload = _serialise_results(results)
         payload["selected_format"] = format_spec.key
+        payload.update(runtime_info)
         payload["selection"] = {
             "removal_model": removal_model_key,
             "model_name": model_name,
@@ -248,8 +249,6 @@ def remove_bg_view() -> Response:
     result = remove_bg_file(
         input_path,
         output_path,
-        model_name=model_name,
-        hardware_accelerator=hardware_accelerator,
         alpha_matting=options["alpha_matting"],
         am_foreground=options["am_foreground"],
         am_background=options["am_background"],

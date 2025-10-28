@@ -204,6 +204,8 @@ class SessionContext:
     rtx_50_series: bool
     warning: str | None
     device_id: int
+    gpu_available: bool
+    accelerator_message: Optional[str]
 
     def runtime_payload(self) -> Dict[str, Any]:
         """Return a serialisable snapshot of the accelerator runtime."""
@@ -214,6 +216,8 @@ class SessionContext:
             "gpu_name": self.gpu_name,
             "warning": self.warning,
             "providers_available": self.providers_available,
+            "gpu_available": self.gpu_available,
+            "accelerator_message": self.accelerator_message,
         }
 
 
@@ -324,7 +328,7 @@ def create_session(
     providers_available = accelerator.onnx_providers_available()
     provider_name, _ = accelerator.pick_execution_provider(requested_mode, device_id)
 
-    gpu_providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+    gpu_providers = ["CUDAExecutionProvider", "TensorrtExecutionProvider"]
     provider_options_map: Dict[str, Mapping[str, Any]] = {
         name: {"device_id": int(device_id)} for name in gpu_providers
     }
@@ -359,6 +363,7 @@ def create_session(
     LOGGER.info("Accelerator preference: %s", requested_mode)
 
     warning_message: Optional[str] = None
+    accelerator_message: Optional[str] = None
     session_obj: Optional[Session] = None
     active_chain: List[tuple[str, Any]] = list(provider_chain)
     last_error: Optional[BaseException] = None
@@ -406,6 +411,16 @@ def create_session(
             )
             _CUDA_HINT_LOGGED = True
 
+    gpu_active = runtime == "cuda"
+    gpu_requested_for_message = requested_mode in {"cuda", "auto"}
+
+    if gpu_requested_for_message and gpu_active:
+        accelerator_message = f"Using GPU ({provider_name})"
+        LOGGER.info(accelerator_message)
+    elif gpu_requested_for_message and not gpu_active:
+        accelerator_message = "GPU requested but unavailable — falling back to CPU"
+        LOGGER.warning(accelerator_message)
+
     cpu_fallback = runtime == "cpu" and attempted_gpu
     if cpu_fallback and warning_message is None:
         warning_message = (
@@ -429,6 +444,8 @@ def create_session(
         rtx_50_series=rtx_50_series,
         warning=warning_message if should_warn or cpu_fallback else None,
         device_id=device_id,
+        gpu_available=gpu_active,
+        accelerator_message=accelerator_message,
     )
 
 
@@ -476,6 +493,8 @@ def get_runtime_payload() -> Dict[str, Any]:
             "gpu_name": None,
             "warning": None,
             "providers_available": providers_available,
+            "gpu_available": False,
+            "accelerator_message": None,
         }
     return context.runtime_payload()
 

@@ -20,7 +20,7 @@ def _stub_session(providers: list[str]) -> object:
 
 
 def test_create_session_uses_gpu_priority(monkeypatch: pytest.MonkeyPatch) -> None:
-    """GPU providers should be ordered TensorRT → CUDA → CPU."""
+    """GPU providers should be ordered CUDA → TensorRT → CPU."""
 
     recorded_providers: list = []
 
@@ -42,12 +42,15 @@ def test_create_session_uses_gpu_priority(monkeypatch: pytest.MonkeyPatch) -> No
 
     context = bg_remove.create_session(config={})
 
-    assert recorded_providers[0][0] == "TensorrtExecutionProvider"
-    assert recorded_providers[1][0] == "CUDAExecutionProvider"
+    assert recorded_providers[0][0] == "CUDAExecutionProvider"
+    assert recorded_providers[1][0] == "TensorrtExecutionProvider"
     assert recorded_providers[-1] == "CPUExecutionProvider"
     assert context.runtime == "cuda"
-    assert context.provider == "TensorrtExecutionProvider"
+    assert context.provider == "CUDAExecutionProvider"
     assert context.warning is None
+    runtime_payload = context.runtime_payload()
+    assert runtime_payload["gpu_available"] is True
+    assert runtime_payload["accelerator_message"] == "Using GPU (CUDAExecutionProvider)"
 
 
 def test_create_session_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,6 +83,9 @@ def test_create_session_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> No
     assert context.runtime == "cpu"
     assert context.provider == "CPUExecutionProvider"
     assert context.warning is not None
+    runtime_payload = context.runtime_payload()
+    assert runtime_payload["gpu_available"] is False
+    assert runtime_payload["accelerator_message"] == "GPU requested but unavailable — falling back to CPU"
 
 
 def test_build_colorkey_mask_detects_foreground() -> None:

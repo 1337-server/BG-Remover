@@ -1,6 +1,7 @@
 """Tests covering preview URLs returned by the folder conversion endpoint."""
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from flask import Flask
 
 from app.routes import image_converter
 from app.services.bg_remove import RemovalResult
+from PIL import Image
 
 
 def test_serialise_results_provides_preview_links(tmp_path: Path) -> None:
@@ -53,4 +55,60 @@ def test_serialise_results_provides_preview_links(tmp_path: Path) -> None:
     assert download_response.status_code == 200
     assert download_response.mimetype == "image/png"
     assert "attachment" in download_response.headers.get("Content-Disposition", "").lower()
+
+
+def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live endpoint should enqueue work and emit websocket messages."""
+
+    app = Flask(__name__)
+    app.register_blueprint(image_converter.image_converter_bp)
+    app.config.update(TESTING=True)
+
+    class DummySocket:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        def emit(self, event: str, payload: dict, namespace: str | None = None, to: str | None = None) -> None:
+            self.events.append((event, payload))
+
+        def start_background_task(self, target, *args, **kwargs):  # type: ignore[no-untyped-def]
+            target(*args, **kwargs)
+
+    dummy_socket = DummySocket()
+    monkeypatch.setattr(image_converter, "socketio", dummy_socket)
+
+    def fake_remove_bg_file(*args, **kwargs):  # type: ignore[override]
+        input_path = Path(args[0])
+        output_path = Path(args[1])
+        output_path.write_bytes(b"png")
+        progress_callback = kwargs.get("progress_callback")
+        preview_callback = kwargs.get("preview_callback")
+        if callable(progress_callback):
+            progress_callback("mask", 50.0)
+        if callable(preview_callback):
+            preview_callback(Image.new("RGBA", (1, 1), (255, 255, 255, 128)), "initial")
+        return RemovalResult(input_path, output_path, True, None, 10.0)
+
+    monkeypatch.setattr(image_converter, "remove_bg_file", fake_remove_bg_file)
+
+    client = app.test_client()
+    data = {
+        "socket_id": "abc123",
+        "image_file": (BytesIO(b"fake image"), "sample.jpg"),
+    }
+    response = client.post(
+        "/image/remove-bg/live",
+        data=data,
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "processing"
+    assert isinstance(payload.get("job_id"), str)
+
+    emitted_events = [event for event, _ in dummy_socket.events]
+    assert "progress" in emitted_events
+    assert "preview" in emitted_events
+    assert "completed" in emitted_events
 

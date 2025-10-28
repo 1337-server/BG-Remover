@@ -23,8 +23,10 @@ def create_app() -> "Flask":
     # Initialise the global background removal session once at startup.
     ensure_global_session()
 
+    from app.extensions import socketio
     from app.routes.image_converter import image_converter_bp
 
+    socketio.init_app(app)
     app.register_blueprint(image_converter_bp)
     return app
 

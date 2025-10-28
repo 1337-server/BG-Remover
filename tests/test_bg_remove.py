@@ -110,3 +110,39 @@ def test_remove_bg_file_default_output_path(tmp_path: Path, monkeypatch: pytest.
     assert result.success
     assert result.path_out == expected_output
     assert expected_output.exists()
+
+
+def test_remove_bg_file_emits_callbacks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Progress and preview callbacks should receive updates during processing."""
+
+    monkeypatch.chdir(tmp_path)
+    input_file = tmp_path / "sample.jpg"
+    image = Image.new("RGB", (4, 4), color=(255, 0, 0))
+    image.save(input_file)
+
+    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None: object())
+
+    def fake_run_rembg(image: Image.Image, session: object) -> Image.Image:
+        return Image.new("RGBA", image.size, color=(255, 255, 255, 128))
+
+    monkeypatch.setattr(bg_remove, "_run_rembg", fake_run_rembg)
+
+    progress_events: list[tuple[str, float]] = []
+    preview_events: list[str] = []
+
+    def progress_callback(stage: str, percent: float) -> None:
+        progress_events.append((stage, percent))
+
+    def preview_callback(preview_image: Image.Image, stage: str) -> None:
+        assert isinstance(preview_image, Image.Image)
+        preview_events.append(stage)
+
+    result = bg_remove.remove_bg_file(
+        input_file,
+        progress_callback=progress_callback,
+        preview_callback=preview_callback,
+    )
+
+    assert result.success
+    assert any(stage == "mask" for stage, _ in progress_events)
+    assert any(stage == "refined" for stage in preview_events)

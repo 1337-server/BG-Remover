@@ -39,31 +39,31 @@
             </select>
           </div>
           <div class="form-check form-switch mb-3">
-            <input class="form-check-input" type="checkbox" id="single-alpha" name="alpha_matting">
+            <input class="form-check-input" type="checkbox" id="single-alpha" name="alpha_matting" value="1" {% if defaults.alpha_matting %}checked{% endif %}>
             <label class="form-check-label" for="single-alpha">Alpha matting (better hair/edges)</label>
           </div>
           <div class="row g-3">
             <div class="col-md-4">
               <label class="form-label" for="single-foreground">Alpha matting foreground</label>
-              <input class="form-control" type="number" id="single-foreground" name="am_foreground" min="0" max="255">
+              <input class="form-control" type="number" id="single-foreground" name="am_foreground" min="0" max="255" value="{{ defaults.am_foreground }}">
             </div>
             <div class="col-md-4">
               <label class="form-label" for="single-background">Alpha matting background</label>
-              <input class="form-control" type="number" id="single-background" name="am_background" min="0" max="255">
+              <input class="form-control" type="number" id="single-background" name="am_background" min="0" max="255" value="{{ defaults.am_background }}">
             </div>
             <div class="col-md-4">
               <label class="form-label" for="single-erode">Alpha matting erode size</label>
-              <input class="form-control" type="number" id="single-erode" name="am_erode" min="0" max="255">
+              <input class="form-control" type="number" id="single-erode" name="am_erode" min="0" max="255" value="{{ defaults.am_erode }}">
             </div>
           </div>
           <div class="row g-3 mt-1">
             <div class="col-md-6">
               <label class="form-label" for="single-tolerance">Color-key tolerance</label>
-              <input class="form-control" type="number" id="single-tolerance" name="colorkey_tolerance" min="0" max="255">
+              <input class="form-control" type="number" id="single-tolerance" name="colorkey_tolerance" min="0" max="255" value="{{ defaults.colorkey_tolerance }}">
             </div>
             <div class="col-md-6">
               <label class="form-label" for="single-feather">Feather radius</label>
-              <input class="form-control" type="number" id="single-feather" name="feather_radius" min="0" max="50">
+              <input class="form-control" type="number" id="single-feather" name="feather_radius" min="0" max="50" value="{{ defaults.feather_radius }}">
             </div>
           </div>
           <div class="mt-4 d-flex gap-2">
@@ -124,13 +124,13 @@
           <div class="row g-3">
             <div class="col-md-6">
               <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" id="folder-alpha" name="alpha_matting">
+                <input class="form-check-input" type="checkbox" id="folder-alpha" name="alpha_matting" value="1" {% if defaults.alpha_matting %}checked{% endif %}>
                 <label class="form-check-label" for="folder-alpha">Alpha matting</label>
               </div>
             </div>
             <div class="col-md-6">
               <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" id="folder-recursive" name="recursive">
+                <input class="form-check-input" type="checkbox" id="folder-recursive" name="recursive" value="1" {% if defaults.recursive %}checked{% endif %}>
                 <label class="form-check-label" for="folder-recursive">Process recursively</label>
               </div>
             </div>
@@ -138,29 +138,29 @@
           <div class="row g-3 mt-1">
             <div class="col-md-4">
               <label class="form-label" for="folder-foreground">Alpha matting foreground</label>
-              <input class="form-control" type="number" id="folder-foreground" name="am_foreground" min="0" max="255">
+              <input class="form-control" type="number" id="folder-foreground" name="am_foreground" min="0" max="255" value="{{ defaults.am_foreground }}">
             </div>
             <div class="col-md-4">
               <label class="form-label" for="folder-background">Alpha matting background</label>
-              <input class="form-control" type="number" id="folder-background" name="am_background" min="0" max="255">
+              <input class="form-control" type="number" id="folder-background" name="am_background" min="0" max="255" value="{{ defaults.am_background }}">
             </div>
             <div class="col-md-4">
               <label class="form-label" for="folder-erode">Alpha matting erode size</label>
-              <input class="form-control" type="number" id="folder-erode" name="am_erode" min="0" max="255">
+              <input class="form-control" type="number" id="folder-erode" name="am_erode" min="0" max="255" value="{{ defaults.am_erode }}">
             </div>
           </div>
           <div class="row g-3 mt-1">
             <div class="col-md-4">
               <label class="form-label" for="folder-tolerance">Color-key tolerance</label>
-              <input class="form-control" type="number" id="folder-tolerance" name="colorkey_tolerance" min="0" max="255">
+              <input class="form-control" type="number" id="folder-tolerance" name="colorkey_tolerance" min="0" max="255" value="{{ defaults.colorkey_tolerance }}">
             </div>
             <div class="col-md-4">
               <label class="form-label" for="folder-feather">Feather radius</label>
-              <input class="form-control" type="number" id="folder-feather" name="feather_radius" min="0" max="50">
+              <input class="form-control" type="number" id="folder-feather" name="feather_radius" min="0" max="50" value="{{ defaults.feather_radius }}">
             </div>
             <div class="col-md-4">
               <div class="form-check form-switch mt-4">
-                <input class="form-check-input" type="checkbox" id="folder-zip" name="zip">
+                <input class="form-check-input" type="checkbox" id="folder-zip" name="zip" value="1" {% if defaults.zip %}checked{% endif %}>
                 <label class="form-check-label" for="folder-zip">Create ZIP archive</label>
               </div>
             </div>
@@ -200,27 +200,7 @@
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
   document.addEventListener('DOMContentLoaded', () => {
-    const defaults = {{ defaults|tojson }};
-
-    const assignDefaults = (prefix) => {
-      document.getElementById(`${prefix}-foreground`).value = defaults.am_foreground;
-      document.getElementById(`${prefix}-background`).value = defaults.am_background;
-      document.getElementById(`${prefix}-erode`).value = defaults.am_erode;
-      document.getElementById(`${prefix}-tolerance`).value = defaults.colorkey_tolerance;
-      document.getElementById(`${prefix}-feather`).value = defaults.feather_radius;
-    };
-
-    assignDefaults('single');
-    assignDefaults('folder');
-
     const singleFormatSelect = document.getElementById('single-format');
-    const folderFormatSelect = document.getElementById('folder-format');
-    if (singleFormatSelect && defaults.output_format) {
-      singleFormatSelect.value = defaults.output_format;
-    }
-    if (folderFormatSelect && defaults.output_format) {
-      folderFormatSelect.value = defaults.output_format;
-    }
 
     const showSpinner = (element, show) => {
       element.classList.toggle('d-none', !show);

@@ -55,6 +55,12 @@ DEFAULT_SINGLE_OPTIONS: Dict[str, Any] = {
     "colorkey_tolerance": 14,
     "feather_radius": 3,
 }
+DEFAULT_CHECKBOX_OPTIONS: Dict[str, bool] = {
+    # UI toggles that have sensible disabled defaults.
+    "alpha_matting": False,
+    "recursive": False,
+    "zip": False,
+}
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -97,6 +103,7 @@ def remove_bg_view() -> Response:
 
     defaults = DEFAULT_SINGLE_OPTIONS.copy()
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
+    defaults.update(DEFAULT_CHECKBOX_OPTIONS)
 
     if request.method == "GET":
         return render_template(

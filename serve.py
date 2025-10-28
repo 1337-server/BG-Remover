@@ -1,4 +1,4 @@
-"""Helper script for running the Flask development server with accelerator overrides."""
+"""Development server entry point for the Flask web interface."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,6 @@ import os
 from typing import Any, Dict, Sequence
 
 from app import create_app
-from app.services.bg_remove import get_accelerator_status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,18 +62,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--accelerator",
         choices=["auto", "cuda", "cpu"],
         default=None,
-        help="Override BG_ACCELERATOR for this process.",
+        help="Select the execution accelerator (overrides BG_ACCELERATOR).",
     )
     parser.add_argument(
         "--cuda-device-id",
         type=int,
         default=None,
-        help="Override BG_CUDA_DEVICE_ID for this process.",
+        help="Select the CUDA device id when using GPU acceleration.",
     )
     parser.add_argument(
         "--no-warn-on-cpu",
         action="store_true",
-        help="Suppress CPU fallback warnings regardless of BG_WARN_ON_CPU.",
+        help="Disable CPU fallback warnings for this process.",
     )
     return parser
 
@@ -100,18 +99,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.no_warn_on_cpu:
         config_overrides["BG_WARN_ON_CPU"] = False
 
-    app = create_app(config_overrides if config_overrides else None)
-    status = get_accelerator_status()
-    runtime_label = "cuda" if status.provider == "cuda" else "cpu"
-    _LOGGER.info(
-        "Selected execution provider: %s (runtime=%s, gpu=%s)",
-        status.provider_description,
-        runtime_label,
-        status.gpu_name or "n/a",
-    )
-    if status.warning and app.config.get("BG_WARN_ON_CPU", True):
-        _LOGGER.warning("%s", status.warning)
-
+    app = create_app(config_overrides=config_overrides or None)
     _LOGGER.info("Starting Flask development server on http://%s:%s", host, port)
     app.run(host=host, port=port, debug=debug)
 

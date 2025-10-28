@@ -11,7 +11,7 @@ pytest.importorskip("flask")
 from flask import Flask
 
 from app.routes import image_converter
-from app.services.bg_remove import AcceleratorStatus, RemovalResult
+from app.services.bg_remove import RemovalResult
 
 
 def _create_app() -> Flask:
@@ -76,6 +76,12 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
         destination.write_bytes(b"png")
         return RemovalResult(Path(input_path), destination, True, None, 8.4)
 
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(
+        image_converter,
+        "get_runtime_payload",
+        lambda: {"runtime": "cuda", "gpu_name": "Test GPU", "warning": None},
+    )
     monkeypatch.setattr(image_converter, "remove_bg_file", fake_remove_bg_file)
 
     client = app.test_client()
@@ -96,8 +102,9 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
     assert payload["download_name"].endswith(".png")
     assert payload["result"]["success"] is True
     assert payload["image_base64"] == "cG5n"
-    assert payload["accelerator"]["runtime"] in {"cpu", "cuda"}
-    assert "providers" in payload["accelerator"]
+    assert payload["runtime"] == "cuda"
+    assert payload["gpu_name"] == "Test GPU"
+    assert payload.get("warning") is None
 
 
 def test_single_image_post_requires_file() -> None:
@@ -115,70 +122,67 @@ def test_single_image_post_requires_file() -> None:
     assert response.status_code == 400
     payload = response.get_json()
     assert payload["error"] == "Please upload an image or provide a folder path."
-    assert payload["accelerator"]["runtime"] in {"cpu", "cuda"}
+    assert payload["runtime"] in {"cpu", "cuda"}
+    assert "warning" in payload
 
 
-def test_accelerator_warning_included_in_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    """JSON responses should surface accelerator warnings when provided."""
+def test_single_image_post_includes_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime metadata should be included when warnings are active."""
 
     app = _create_app()
-
-    warning_status = AcceleratorStatus(
-        provider="cpu",
-        provider_options={},
-        available_providers=("CPUExecutionProvider",),
-        gpu_name=None,
-        rtx_50_series=False,
-        warning="Running on CPU due to missing CUDAExecutionProvider.",
-        requested_mode="auto",
-        provider_description="CPUExecutionProvider",
-    )
 
     def fake_remove_bg_file(input_path, output_path, **_: object) -> RemovalResult:  # type: ignore[override]
         destination = Path(output_path)
         destination.write_bytes(b"png")
-        return RemovalResult(Path(input_path), destination, True, None, 5.2)
+        return RemovalResult(Path(input_path), destination, True, None, 5.0)
 
-    monkeypatch.setattr(image_converter, "get_accelerator_status", lambda: warning_status)
     monkeypatch.setattr(image_converter, "remove_bg_file", fake_remove_bg_file)
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(
+        image_converter,
+        "get_runtime_payload",
+        lambda: {"runtime": "cpu", "gpu_name": "Fallback GPU", "warning": "Running on CPU"},
+    )
 
     client = app.test_client()
-    data = {
-        "image_file": (BytesIO(b"fake image"), "sample.jpg"),
-        "output_format": "png",
-    }
     response = client.post(
         "/image/remove-bg?json=1",
-        data=data,
+        data={"image_file": (BytesIO(b"fake"), "photo.jpg"), "output_format": "png"},
         content_type="multipart/form-data",
     )
 
+    assert response.status_code == 200
     payload = response.get_json()
-    assert payload["accelerator"]["warning"] == warning_status.warning
+    assert payload["runtime"] == "cpu"
+    assert payload["gpu_name"] == "Fallback GPU"
+    assert payload["warning"] == "Running on CPU"
 
 
 def test_accelerator_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The accelerator health endpoint should expose provider metadata."""
+    """The accelerator health endpoint should surface diagnostic data."""
 
     app = _create_app()
 
-    status = AcceleratorStatus(
-        provider="cuda",
-        provider_options={"device_id": 0},
-        available_providers=("CUDAExecutionProvider", "CPUExecutionProvider"),
-        gpu_name="NVIDIA GeForce RTX 5090",
-        rtx_50_series=True,
-        warning=None,
-        requested_mode="auto",
-        provider_description="CUDAExecutionProvider (device 0)",
+    monkeypatch.setattr(image_converter, "ensure_global_session", lambda config=None: None)
+    monkeypatch.setattr(
+        image_converter,
+        "get_accelerator_status",
+        lambda: {
+            "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            "selected": "cuda",
+            "gpu_name": "RTX 5090",
+            "rtx_50_series": True,
+        },
     )
-
-    monkeypatch.setattr(image_converter, "get_accelerator_status", lambda: status)
 
     client = app.test_client()
     response = client.get("/health/accelerator")
+
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["selected"] == "cuda"
-    assert payload["rtx_50_series"] is True
-    assert payload["gpu_name"] == status.gpu_name
+    assert payload == {
+        "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        "selected": "cuda",
+        "gpu_name": "RTX 5090",
+        "rtx_50_series": True,
+    }

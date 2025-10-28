@@ -1,2 +1,1 @@
-# Default to the CPU dependency set. Install requirements-gpu.txt instead when CUDA is available.
 -r requirements-cpu.txt

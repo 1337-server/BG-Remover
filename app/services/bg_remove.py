@@ -32,14 +32,7 @@ try:  # pragma: no cover - optional dependency when Eventlet is unavailable
 except ModuleNotFoundError:  # pragma: no cover - Eventlet not installed in some environments
     import threading as cooperative_threading  # type: ignore
 
-from app.services import runtime_compat
-from app.services.accelerator import (
-    detect_gpu_name,
-    describe_selected_provider,
-    is_rtx_50xx,
-    onnx_providers_available,
-    pick_execution_provider,
-)
+from app.services import accelerator, runtime_compat
 
 
 LOGGER = logging.getLogger(__name__)
@@ -51,33 +44,6 @@ PreviewCallback = Callable[[Image.Image, str], None]
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 MAX_WORK_DIMENSION = 8000
-
-
-@dataclass(frozen=True)
-class AcceleratorStatus:
-    """Describe the currently selected execution provider and GPU metadata."""
-
-    provider: str
-    provider_options: Mapping[str, Any]
-    available_providers: tuple[str, ...]
-    gpu_name: Optional[str]
-    rtx_50_series: bool
-    warning: Optional[str]
-    requested_mode: str
-    provider_description: str
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Return a JSON-serialisable representation of the accelerator status."""
-
-        return {
-            "providers": list(self.available_providers),
-            "selected": self.provider,
-            "gpu_name": self.gpu_name,
-            "rtx_50_series": self.rtx_50_series,
-            "warning": self.warning,
-            "mode": self.requested_mode,
-            "provider_description": self.provider_description,
-        }
 
 
 @dataclass(frozen=True)
@@ -225,22 +191,35 @@ def _looks_like_directory(original: str | Path, resolved: Path) -> bool:
     text = str(original)
     return text.endswith(("/", "\\"))
 
-_SESSION_SINGLETON: Optional[Session] = None
-_SESSION_LOCK = cooperative_threading.Lock()
-_SESSION_CONFIG: Dict[str, Any] = {}
+@dataclass
+class SessionContext:
+    """Container describing the active rembg session and accelerator state."""
 
-_DEFAULT_ACCELERATOR_STATUS = AcceleratorStatus(
-    provider="cpu",
-    provider_options={},
-    available_providers=("CPUExecutionProvider",),
-    gpu_name=None,
-    rtx_50_series=False,
-    warning=None,
-    requested_mode="auto",
-    provider_description="CPUExecutionProvider",
-)
-_ACCELERATOR_STATUS = _DEFAULT_ACCELERATOR_STATUS
-_CPU_WARNING_EMITTED = False
+    session: Session
+    runtime: str
+    provider: str
+    provider_options: Mapping[str, Any]
+    providers_available: List[str]
+    gpu_name: str | None
+    rtx_50_series: bool
+    warning: str | None
+    device_id: int
+
+    def runtime_payload(self) -> Dict[str, Any]:
+        """Return a serialisable snapshot of the accelerator runtime."""
+
+        return {
+            "runtime": self.runtime,
+            "gpu_name": self.gpu_name,
+            "warning": self.warning,
+        }
+
+
+_SESSION_CONTEXT: Optional[SessionContext] = None
+_SESSION_CONFIG_SIGNATURE: Optional[tuple[str, int, bool]] = None
+_SESSION_LOCK = cooperative_threading.Lock()
+_CPU_WARNING_LOGGED = False
+_CUDA_HINT_LOGGED = False
 
 
 @dataclass
@@ -265,166 +244,165 @@ class RemovalResult:
         }
 
 
-def _normalise_accelerator_config(config: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Return a normalised accelerator configuration dictionary."""
+def _normalise_mode(value: Any) -> str:
+    """Return a valid accelerator mode string."""
 
-    config = dict(config or {})
-    mode = str(config.get("BG_ACCELERATOR", "auto") or "auto").strip().lower()
+    if value is None:
+        return "auto"
+    text = str(value).strip().lower()
+    if text not in {"auto", "cuda", "cpu"}:
+        return "auto"
+    return text
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Return ``value`` as an integer or ``default`` on failure."""
+
     try:
-        device_id = int(config.get("BG_CUDA_DEVICE_ID", 0))
+        return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        device_id = 0
-
-    raw_warn = config.get("BG_WARN_ON_CPU", True)
-    if isinstance(raw_warn, str):
-        warn_on_cpu = raw_warn.strip().lower() in {"1", "true", "yes", "on"}
-    else:
-        warn_on_cpu = bool(raw_warn)
-
-    return {
-        "BG_ACCELERATOR": mode or "auto",
-        "BG_CUDA_DEVICE_ID": device_id,
-        "BG_WARN_ON_CPU": warn_on_cpu,
-    }
+        return default
 
 
-def _should_warn_on_cpu(mode: str, warn_on_cpu: bool) -> bool:
-    """Return ``True`` when a CPU warning should be emitted."""
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """Return ``value`` as a boolean with sensible string handling."""
 
-    return warn_on_cpu and mode in {"auto", "cuda"}
-
-
-def _emit_cpu_warning_once(message: Optional[str], providers: tuple[str, ...], gpu_name: Optional[str]) -> None:
-    """Log ``message`` only once per process to avoid noisy warnings."""
-
-    global _CPU_WARNING_EMITTED
-    if not message or _CPU_WARNING_EMITTED:
-        return
-
-    LOGGER.warning(message)
-
-    if gpu_name and "CUDAExecutionProvider" not in providers:
-        LOGGER.warning(
-            "Detected %s but CUDAExecutionProvider is unavailable. Install onnxruntime-gpu>=1.18.1, "
-            "enable the NVIDIA Container Toolkit, and launch with --gpus all when using Docker.",
-            gpu_name,
-        )
-    elif gpu_name:
-        LOGGER.warning("Detected GPU %s but running on CPU; performance will be slower.", gpu_name)
-    else:
-        LOGGER.warning("No compatible NVIDIA GPU detected; continuing with CPU execution.")
-
-    _CPU_WARNING_EMITTED = True
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    try:
+        return bool(int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
-def _update_accelerator_status(status: AcceleratorStatus) -> None:
-    """Store ``status`` as the global accelerator status snapshot."""
+def _extract_session_config(config: Mapping[str, Any] | None) -> tuple[str, int, bool]:
+    """Return normalised accelerator configuration values."""
 
-    global _ACCELERATOR_STATUS
-    _ACCELERATOR_STATUS = status
+    source = config or {}
+    mode = _normalise_mode(source.get("BG_ACCELERATOR"))
+    device_id = _coerce_int(source.get("BG_CUDA_DEVICE_ID", 0), 0)
+    warn_on_cpu = _coerce_bool(source.get("BG_WARN_ON_CPU", True), True)
+    if runtime_compat.is_force_cpu_enabled():
+        mode = "cpu"
+    return mode, device_id, warn_on_cpu
 
 
-def get_accelerator_status() -> AcceleratorStatus:
-    """Return the most recently observed accelerator status."""
+def _signature_for_config(config: Mapping[str, Any] | None) -> tuple[str, int, bool]:
+    """Return a cache signature for accelerator-related configuration."""
 
-    return _ACCELERATOR_STATUS
+    mode, device_id, warn_on_cpu = _extract_session_config(config)
+    return mode, device_id, warn_on_cpu
 
 
-def create_session(model_name: str = "u2net", config: Optional[Mapping[str, Any]] = None) -> Session:
-    """Create a new ``rembg`` session with safe GPU/CPU configuration."""
+def create_session(
+    model_name: str = "u2net", config: Mapping[str, Any] | None = None
+) -> SessionContext:
+    """Create a new ``rembg`` session with optional GPU acceleration."""
 
     if _rembg_new_session is None:
         raise RuntimeError("rembg is required to create a background removal session.") from _REMBG_IMPORT_ERROR
 
+    requested_mode, device_id, warn_on_cpu = _extract_session_config(config)
     runtime_compat.ensure_runtime_ready()
 
-    normalised_config = _normalise_accelerator_config(config)
-    mode = normalised_config["BG_ACCELERATOR"]
-    device_id = normalised_config["BG_CUDA_DEVICE_ID"]
-    warn_on_cpu = bool(normalised_config["BG_WARN_ON_CPU"])
-
-    available_providers = tuple(onnx_providers_available())
-    providers_label = ", ".join(available_providers) if available_providers else "<none>"
-    LOGGER.info("Available ONNXRuntime providers: %s", providers_label)
-
-    provider, provider_options = pick_execution_provider(mode, device_id)
-    provider_description = describe_selected_provider(provider, provider_options)
-
-    gpu_name = detect_gpu_name()
-    if gpu_name:
-        flair = " (RTX 50-series)" if is_rtx_50xx(gpu_name) else ""
-        LOGGER.info("Detected NVIDIA GPU: %s%s", gpu_name, flair)
+    providers_available = accelerator.onnx_providers_available()
+    provider_key, provider_options = accelerator.pick_execution_provider(requested_mode, device_id)
+    runtime = "cuda" if provider_key == "cuda" else "cpu"
+    provider_name = "CUDAExecutionProvider" if runtime == "cuda" else "CPUExecutionProvider"
+    providers_argument: List[Any]
+    if runtime == "cuda":
+        providers_argument = [("CUDAExecutionProvider", dict(provider_options or {})), "CPUExecutionProvider"]
     else:
-        LOGGER.info("No NVIDIA GPU detected via NVML/torch probes")
+        providers_argument = ["CPUExecutionProvider"]
+
+    gpu_name = accelerator.detect_gpu_name()
+    rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
+
+    LOGGER.info("Available ONNX Runtime providers: %s", ", ".join(providers_available) or "none")
+    if gpu_name:
+        suffix = " (RTX 50-series detected)" if rtx_50_series else ""
+        LOGGER.info("Detected GPU: %s%s", gpu_name, suffix)
+    else:
+        LOGGER.info("No NVIDIA GPU detected")
+    LOGGER.info("Accelerator preference: %s", requested_mode)
 
     warning_message: Optional[str] = None
-    providers_config: List[Any]
-
-    if provider == "cuda":
-        providers_config = [
-            ("CUDAExecutionProvider", dict(provider_options)),
-            "CPUExecutionProvider",
-        ]
-    else:
-        providers_config = ["CPUExecutionProvider"]
-        if gpu_name and "CUDAExecutionProvider" not in available_providers:
-            log_fn = LOGGER.warning if warn_on_cpu else LOGGER.info
-            log_fn(
-                "Detected %s but CUDAExecutionProvider was not reported by ONNXRuntime.",
-                gpu_name,
-            )
-        if _should_warn_on_cpu(mode, warn_on_cpu):
-            if gpu_name:
-                warning_message = "Running on CPU because CUDAExecutionProvider is unavailable. Performance will be slower."
-            else:
-                warning_message = "Running on CPU because no compatible GPU was detected. Performance will be slower."
-
-    LOGGER.info("Selected execution provider: %s", provider_description)
+    session_obj: Optional[Session] = None
 
     try:
-        session = _rembg_new_session(model_name, providers=providers_config)
+        session_obj = _rembg_new_session(model_name, providers=providers_argument)
     except Exception as exc:
-        LOGGER.exception("Failed to initialise %s: %s", provider_description, exc)
-        providers_config = ["CPUExecutionProvider"]
-        provider = "cpu"
-        provider_options = {}
-        provider_description = "CPUExecutionProvider"
-        if _should_warn_on_cpu(mode, warn_on_cpu):
-            warning_message = (
-                "Falling back to CPU because GPU session initialisation failed. Performance will be slower."
+        if runtime == "cuda":
+            LOGGER.exception(
+                "Falling back to CPU background removal after CUDA initialisation failure: %s",
+                exc,
             )
-        session = _rembg_new_session(model_name, providers=providers_config)
+            runtime = "cpu"
+            provider_name = "CPUExecutionProvider"
+            providers_argument = ["CPUExecutionProvider"]
+            warning_message = "Running on CPU, performance will be slower."
+            session_obj = _rembg_new_session(model_name, providers=providers_argument)
+        else:
+            raise
 
-    rtx_flair = bool(gpu_name and is_rtx_50xx(gpu_name))
-    status = AcceleratorStatus(
-        provider=provider,
-        provider_options=dict(provider_options),
-        available_providers=available_providers,
+    if session_obj is None:
+        session_obj = _rembg_new_session(model_name, providers=providers_argument)
+
+    LOGGER.info("Selected execution provider: %s", provider_name)
+
+    if gpu_name and "CUDAExecutionProvider" not in providers_available:
+        global _CUDA_HINT_LOGGED
+        if not _CUDA_HINT_LOGGED:
+            LOGGER.warning(
+                "Detected GPU %s but CUDAExecutionProvider is unavailable. Install "
+                "onnxruntime-gpu that matches your CUDA runtime, configure nvidia-container-toolkit "
+                "for Docker, and run containers with --gpus all.",
+                gpu_name,
+            )
+            _CUDA_HINT_LOGGED = True
+
+    should_warn = warn_on_cpu and runtime == "cpu" and requested_mode != "cpu"
+    if should_warn:
+        warning_message = warning_message or "Running on CPU, performance will be slower."
+        global _CPU_WARNING_LOGGED
+        if not _CPU_WARNING_LOGGED:
+            LOGGER.warning(warning_message)
+            _CPU_WARNING_LOGGED = True
+
+    return SessionContext(
+        session=session_obj,
+        runtime=runtime,
+        provider=provider_name,
+        provider_options=dict(provider_options or {}),
+        providers_available=providers_available,
         gpu_name=gpu_name,
-        rtx_50_series=rtx_flair,
-        warning=warning_message,
-        requested_mode=mode,
-        provider_description=provider_description,
+        rtx_50_series=rtx_50_series,
+        warning=warning_message if should_warn else None,
+        device_id=device_id,
     )
-    _update_accelerator_status(status)
-    _emit_cpu_warning_once(warning_message, available_providers, gpu_name)
-
-    return session
 
 
 def ensure_global_session(
-    model_name: str = "u2net", config: Optional[Mapping[str, Any]] = None
+    model_name: str = "u2net", config: Mapping[str, Any] | None = None
 ) -> Session:
     """Initialise and cache a global ``rembg`` session."""
 
-    global _SESSION_SINGLETON, _SESSION_CONFIG
-    normalised_config = _normalise_accelerator_config(config)
+    global _SESSION_CONTEXT, _SESSION_CONFIG_SIGNATURE
+    signature = _signature_for_config(config)
     with _SESSION_LOCK:
-        if _SESSION_SINGLETON is None or _SESSION_CONFIG != normalised_config:
-            _SESSION_SINGLETON = create_session(model_name, normalised_config)
-            _SESSION_CONFIG = normalised_config
-    assert _SESSION_SINGLETON is not None
-    return _SESSION_SINGLETON
+        if _SESSION_CONTEXT is None or _SESSION_CONFIG_SIGNATURE != signature:
+            _SESSION_CONTEXT = create_session(model_name=model_name, config=config)
+            _SESSION_CONFIG_SIGNATURE = signature
+    assert _SESSION_CONTEXT is not None
+    return _SESSION_CONTEXT.session
 
 
 def _get_session(session: Optional[Session] = None) -> Session:
@@ -432,7 +410,47 @@ def _get_session(session: Optional[Session] = None) -> Session:
 
     if session is not None:
         return session
-    return ensure_global_session()
+    context = _SESSION_CONTEXT
+    if context is None:
+        return ensure_global_session()
+    return context.session
+
+
+def get_session_context() -> Optional[SessionContext]:
+    """Return the cached :class:`SessionContext`, if initialised."""
+
+    return _SESSION_CONTEXT
+
+
+def get_runtime_payload() -> Dict[str, Any]:
+    """Return runtime metadata for embedding in API responses."""
+
+    context = _SESSION_CONTEXT
+    if context is None:
+        return {"runtime": "cpu", "gpu_name": None, "warning": None}
+    return context.runtime_payload()
+
+
+def get_accelerator_status() -> Dict[str, Any]:
+    """Return diagnostic accelerator details for health checks."""
+
+    context = _SESSION_CONTEXT
+    if context is None:
+        providers = accelerator.onnx_providers_available()
+        gpu_name = accelerator.detect_gpu_name()
+        runtime = "cpu"
+        rtx = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name)) if gpu_name else False
+    else:
+        providers = context.providers_available
+        gpu_name = context.gpu_name
+        runtime = context.runtime
+        rtx = context.rtx_50_series
+    return {
+        "providers": providers,
+        "selected": "cuda" if runtime == "cuda" else "cpu",
+        "gpu_name": gpu_name,
+        "rtx_50_series": rtx,
+    }
 
 
 def build_colorkey_mask(image: Image.Image, tolerance: int = 14) -> Optional[np.ndarray]:

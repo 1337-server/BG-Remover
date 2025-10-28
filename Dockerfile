@@ -6,21 +6,23 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        git \
-        libgomp1 \
+        ffmpeg \
         libgl1 \
         libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements-cpu.txt /app/requirements-cpu.txt
+COPY requirements*.txt /app/
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements-cpu.txt
+    pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
 EXPOSE 5000
 
-CMD ["python", "-m", "app"]
+ENTRYPOINT ["python", "-m", "app"]

@@ -17,6 +17,7 @@ from flask import (
     Response,
     abort,
     after_this_request,
+    current_app,
     jsonify,
     render_template,
     request,
@@ -26,14 +27,16 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from app.services.bg_remove import (
+    OUTPUT_FORMATS,
     RemovalResult,
     encode_result_image,
+    ensure_global_session,
     get_accelerator_status,
     get_mime_type_for_path,
     get_output_format_spec,
+    get_runtime_payload,
     remove_bg_file,
     remove_bg_folder,
-    OUTPUT_FORMATS,
 )
 
 image_converter_bp = Blueprint("image_converter", __name__)
@@ -71,21 +74,6 @@ DEFAULT_CHECKBOX_OPTIONS: Dict[str, bool] = {
     "recursive": False,
     "zip": False,
 }
-
-
-def _build_accelerator_payload() -> Dict[str, Any]:
-    """Return accelerator status suitable for JSON and template contexts."""
-
-    status = get_accelerator_status()
-    runtime = "cuda" if status.provider == "cuda" else "cpu"
-    payload = status.to_dict()
-    payload.update(
-        runtime=runtime,
-        gpu_name=status.gpu_name,
-        warning=status.warning,
-        provider_description=status.provider_description,
-    )
-    return payload
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -131,12 +119,15 @@ def remove_bg_view() -> Response:
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
     defaults.update(DEFAULT_CHECKBOX_OPTIONS)
 
+    ensure_global_session(config=current_app.config if current_app else None)
+    runtime_info = get_runtime_payload()
+
     if request.method == "GET":
         return render_template(
             "image_remove_bg.html",
             defaults=defaults,
             format_options=FORMAT_OPTIONS,
-            accelerator_status=_build_accelerator_payload(),
+            accelerator_runtime=runtime_info,
         )
 
     form = request.form
@@ -173,9 +164,10 @@ def remove_bg_view() -> Response:
         except Exception as exc:  # pragma: no cover - depends on runtime environment
             return _bad_request(str(exc))
 
+        runtime_info = get_runtime_payload()
         payload = _serialise_results(results)
         payload["selected_format"] = format_spec.key
-        payload["accelerator"] = _build_accelerator_payload()
+        payload.update(runtime_info)
 
         if request.args.get("zip") == "1":
             try:
@@ -216,14 +208,15 @@ def remove_bg_view() -> Response:
     if json_requested:
         final_path = result.path_out or output_path
         encoded = encode_result_image(final_path)
+        runtime_info = get_runtime_payload()
         response_data = {
             "result": result.to_dict(),
             "image_base64": encoded,
             "mime_type": format_spec.mime_type,
             "download_name": download_name,
             "format": format_spec.key,
-            "accelerator": _build_accelerator_payload(),
         }
+        response_data.update(runtime_info)
         shutil.rmtree(temp_dir, ignore_errors=True)
         return jsonify(response_data)
 
@@ -239,23 +232,6 @@ def remove_bg_view() -> Response:
     )
     response.headers["X-Removal-Result"] = json.dumps(result.to_dict())
     return response
-
-
-@image_converter_bp.route("/health/accelerator", methods=["GET"])
-def accelerator_health() -> Response:
-    """Return diagnostics about the currently selected accelerator."""
-
-    status = get_accelerator_status()
-    runtime = "cuda" if status.provider == "cuda" else "cpu"
-    payload = {
-        "providers": list(status.available_providers),
-        "selected": runtime,
-        "gpu_name": status.gpu_name,
-        "rtx_50_series": status.rtx_50_series,
-        "warning": status.warning,
-        "provider_description": status.provider_description,
-    }
-    return jsonify(payload)
 
 def _register_registry_item(
     registry: Dict[str, RegistryItem],
@@ -341,6 +317,14 @@ def preview_file(token: str) -> Response:
     return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
 
 
+@image_converter_bp.route("/health/accelerator", methods=["GET"])
+def accelerator_health() -> Response:
+    """Return diagnostic accelerator information for health checks."""
+
+    ensure_global_session(config=current_app.config if current_app else None)
+    return jsonify(get_accelerator_status())
+
+
 def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
     """Convert ``RemovalResult`` objects to JSON-compatible data."""
 
@@ -411,5 +395,6 @@ def _create_zip(results: List[RemovalResult]) -> tuple[str, str]:
 def _bad_request(message: str) -> Response:
     """Return a consistent JSON error payload."""
 
-    payload = {"error": message, "accelerator": _build_accelerator_payload()}
+    payload = {"error": message}
+    payload.update(get_runtime_payload())
     return jsonify(payload), 400

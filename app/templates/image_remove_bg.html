@@ -1,40 +1,28 @@
 {% extends "base.html" %}
 {% block title %}Remove Background{% endblock %}
 {% block content %}
+{% set runtime = accelerator_runtime or {} %}
+<div class="mb-3">
+  <div class="d-flex flex-wrap gap-2 align-items-center" id="accelerator-status">
+    <span class="badge bg-secondary" id="accelerator-runtime-badge">
+      Runtime: {{ (runtime.runtime or 'cpu') | upper }}
+    </span>
+    <span class="badge bg-info text-dark" id="accelerator-gpu-badge">
+      GPU: {{ runtime.gpu_name or 'Not detected' }}
+    </span>
+  </div>
+  <div class="alert alert-warning mt-2 {% if not runtime.warning %}d-none{% endif %}" id="accelerator-alert" role="alert">
+    <div class="d-flex justify-content-between align-items-start gap-2">
+      <div id="accelerator-alert-text">{{ runtime.warning }}</div>
+      <button class="btn-close" type="button" aria-label="Dismiss warning" id="accelerator-alert-dismiss"></button>
+    </div>
+  </div>
+</div>
 <div class="card shadow-sm">
   <div class="card-header">
     <h1 class="h4 mb-0">Remove Background</h1>
   </div>
   <div class="card-body">
-    <div
-      class="alert alert-warning{% if not accelerator_status.warning %} d-none{% endif %}"
-      id="accelerator-warning"
-      role="alert"
-    >
-      {% if accelerator_status.warning %}
-        {{ accelerator_status.warning }}
-      {% endif %}
-    </div>
-    <div
-      class="alert alert-info d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between gap-2{% if accelerator_status.warning %} border border-warning-subtle{% endif %}"
-      id="accelerator-info"
-      role="note"
-    >
-      <div>
-        <span class="fw-semibold">Runtime:</span>
-        <span id="accelerator-runtime-label">{{ accelerator_status.runtime | upper }}</span>
-        <span class="ms-2 text-muted" id="accelerator-gpu-label">
-          {% if accelerator_status.gpu_name %}
-            GPU: {{ accelerator_status.gpu_name }}
-          {% else %}
-            GPU: not detected
-          {% endif %}
-        </span>
-      </div>
-      <div class="small text-muted" id="accelerator-provider-label">
-        {{ accelerator_status.provider_description }}
-      </div>
-    </div>
     <ul class="nav nav-tabs" id="modeTabs" role="tablist">
       <li class="nav-item" role="presentation">
         <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single" type="button" role="tab" aria-controls="single" aria-selected="true">Single Image</button>
@@ -217,15 +205,56 @@
 {% endblock %}
 {% block extra_scripts %}
 <script>
-  window.initialAcceleratorStatus = {{ accelerator_status | tojson }};
-</script>
-<script>
   document.addEventListener('DOMContentLoaded', () => {
-    const acceleratorWarning = document.getElementById('accelerator-warning');
-    const acceleratorInfo = document.getElementById('accelerator-info');
-    const acceleratorRuntimeLabel = document.getElementById('accelerator-runtime-label');
-    const acceleratorGpuLabel = document.getElementById('accelerator-gpu-label');
-    const acceleratorProviderLabel = document.getElementById('accelerator-provider-label');
+    const acceleratorInitialState = {{ accelerator_runtime|tojson }} || {};
+    const acceleratorRuntimeBadge = document.getElementById('accelerator-runtime-badge');
+    const acceleratorGpuBadge = document.getElementById('accelerator-gpu-badge');
+    const acceleratorAlert = document.getElementById('accelerator-alert');
+    const acceleratorAlertText = document.getElementById('accelerator-alert-text');
+    const acceleratorAlertDismiss = document.getElementById('accelerator-alert-dismiss');
+    let acceleratorWarningDismissed = false;
+
+    if (acceleratorAlertDismiss) {
+      acceleratorAlertDismiss.addEventListener('click', () => {
+        acceleratorWarningDismissed = true;
+        if (acceleratorAlert) {
+          acceleratorAlert.classList.add('d-none');
+        }
+      });
+    }
+
+    const updateAcceleratorUi = (state = {}) => {
+      const runtimeValue = (state.runtime || 'cpu').toString();
+      if (acceleratorRuntimeBadge) {
+        acceleratorRuntimeBadge.textContent = `Runtime: ${runtimeValue.toUpperCase()}`;
+      }
+      if (acceleratorGpuBadge) {
+        const gpuName = state.gpu_name ? state.gpu_name.toString() : '';
+        if (gpuName) {
+          acceleratorGpuBadge.textContent = `GPU: ${gpuName}`;
+        } else {
+          acceleratorGpuBadge.textContent = 'GPU: Not detected';
+        }
+      }
+      if (acceleratorAlert && acceleratorAlertText) {
+        const warningText = state.warning ? state.warning.toString() : '';
+        if (warningText) {
+          if (acceleratorAlertText.textContent !== warningText) {
+            acceleratorWarningDismissed = false;
+          }
+          acceleratorAlertText.textContent = warningText;
+          if (!acceleratorWarningDismissed) {
+            acceleratorAlert.classList.remove('d-none');
+          }
+        } else {
+          acceleratorAlert.classList.add('d-none');
+          acceleratorAlertText.textContent = '';
+          acceleratorWarningDismissed = false;
+        }
+      }
+    };
+
+    updateAcceleratorUi(acceleratorInitialState);
 
     const singleFormatSelect = document.getElementById('single-format');
 
@@ -383,40 +412,6 @@
       singleDownload.textContent = formatDownloadLabel(null, defaultFormat, null);
     };
 
-    const applyAcceleratorStatus = (status) => {
-      if (!status) {
-        return;
-      }
-
-      if (acceleratorRuntimeLabel) {
-        const runtimeLabel = (status.runtime || status.selected || 'cpu').toString().toUpperCase();
-        acceleratorRuntimeLabel.textContent = runtimeLabel;
-      }
-
-      if (acceleratorGpuLabel) {
-        const labelText = status.gpu_name ? `GPU: ${status.gpu_name}` : 'GPU: not detected';
-        acceleratorGpuLabel.textContent = labelText;
-      }
-
-      if (acceleratorProviderLabel) {
-        acceleratorProviderLabel.textContent = status.provider_description || '';
-      }
-
-      if (acceleratorWarning) {
-        const hasWarning = Boolean(status.warning);
-        acceleratorWarning.classList.toggle('d-none', !hasWarning);
-        acceleratorWarning.textContent = hasWarning ? status.warning : '';
-      }
-
-      if (acceleratorInfo) {
-        const showWarning = Boolean(status.warning);
-        acceleratorInfo.classList.toggle('border', showWarning);
-        acceleratorInfo.classList.toggle('border-warning-subtle', showWarning);
-      }
-    };
-
-    applyAcceleratorStatus(window.initialAcceleratorStatus || null);
-
     clearDownloadLink();
 
     if (singleFormatSelect && singleDownload) {
@@ -478,13 +473,12 @@
           });
 
           const payload = await response.json().catch(() => null);
-          if (payload?.accelerator) {
-            applyAcceleratorStatus(payload.accelerator);
-          }
           if (!response.ok || !payload) {
             const message = payload?.error || 'Background removal failed.';
             throw new Error(message);
           }
+
+          updateAcceleratorUi(payload);
 
           const mimeType = payload.mime_type || 'image/png';
           if (payload.image_base64 && singlePreview) {
@@ -575,12 +569,11 @@
             body: formData,
           });
           const data = await response.json();
-          if (data?.accelerator) {
-            applyAcceleratorStatus(data.accelerator);
-          }
           if (!response.ok) {
             throw new Error(data.error || 'Folder processing failed.');
           }
+
+          updateAcceleratorUi(data);
 
           folderResult.hidden = false;
           folderSummary.classList.remove('d-none');

@@ -1,3 +1,5 @@
+import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -5,6 +7,18 @@ import numpy as np
 import pytest
 
 from app.services import model_registry
+
+INTEGRATION_WEIGHTS_ENV = "BR_INTEGRATION_WEIGHTS_DIR"
+
+
+def _integration_weights_dir() -> Path | None:
+    """Return the integration weights directory when configured."""
+
+    raw = os.getenv(INTEGRATION_WEIGHTS_ENV)
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.exists() else None
 
 
 class _FakeSession:
@@ -131,3 +145,48 @@ def test_preload_models_is_cached(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
 
     assert call_count == 1
     assert first["u2net"] is second["u2net"]
+
+
+def test_provider_priority_prefers_tensorrt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RTX 50-series GPUs should prioritise TensorRT when CUDA 12.9 is available."""
+
+    monkeypatch.setattr(model_registry.accelerator, "onnx_providers_available", lambda: [
+        "TensorrtExecutionProvider",
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
+    ])
+    monkeypatch.setattr(model_registry.accelerator, "detect_gpu_name", lambda: "NVIDIA RTX 5090")
+    monkeypatch.setattr(model_registry.accelerator, "is_rtx_50xx", lambda name: True)
+    monkeypatch.setattr(model_registry.runtime_compat, "supports_tensorrt_cuda_129", lambda: True)
+
+    providers, options = model_registry._provider_priority("cuda", 0)
+
+    assert providers[0] == "TensorrtExecutionProvider"
+    assert options[0]["device_id"] == 0
+
+
+@pytest.mark.integration
+def test_preload_models_real_weights_latency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real ONNX weights should load and provide measurable latency."""
+
+    weights_dir = _integration_weights_dir()
+    if weights_dir is None:
+        pytest.skip(f"Set {INTEGRATION_WEIGHTS_ENV} to enable integration tests")
+    if model_registry.ort is None:
+        pytest.skip("onnxruntime is not installed")
+
+    try:
+        model_registry.runtime_compat.ensure_runtime_ready()
+    except RuntimeError as exc:
+        pytest.skip(f"Runtime compatibility check failed: {exc}")
+
+    start = time.perf_counter()
+    sessions = model_registry.preload_models(
+        model_dir=weights_dir,
+        model_names=["u2net"],
+        warm=True,
+    )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    assert "u2net" in sessions
+    assert elapsed_ms > 0

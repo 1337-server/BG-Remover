@@ -83,8 +83,24 @@ def _provider_priority(mode: str, device_id: int) -> tuple[list[str], list[Mutab
     provider_options: list[MutableMapping[str, int]] = []
 
     gpu_requested = mode != "cpu"
+    prefer_tensorrt = False
+    if gpu_requested and "TensorrtExecutionProvider" in available:
+        gpu_name = accelerator.detect_gpu_name()
+        if gpu_name and accelerator.is_rtx_50xx(gpu_name):
+            prefer_tensorrt = runtime_compat.supports_tensorrt_cuda_129()
+            if prefer_tensorrt:
+                LOGGER.info(
+                    "TensorRT execution provider enabled for RTX 50-series GPU", extra={"gpu_name": gpu_name}
+                )
+            else:
+                LOGGER.debug("TensorRT provider available but CUDA 12.9 support not detected")
+
+    provider_candidates = list(PROVIDERS_PRIORITY[:-1])
+    if prefer_tensorrt:
+        provider_candidates = ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+
     if gpu_requested:
-        for provider in PROVIDERS_PRIORITY[:-1]:
+        for provider in provider_candidates:
             if provider in available:
                 options: MutableMapping[str, int] = {"device_id": int(device_id)}
                 providers.append(provider)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -411,16 +412,19 @@ def _warm_up_session(context: SessionContext) -> None:
         start = time.perf_counter()
         _run_inference(dummy_image, context.session, context.model_name, log_timing=False)
         elapsed_ms = (time.perf_counter() - start) * 1000
-        LOGGER.info(
-            "Warm-up inference for %s completed in %.2f ms (%s)",
-            context.model_name,
-            elapsed_ms,
-            context.provider,
+        _log_json(
+            logging.INFO,
+            "warmup_complete",
+            model=context.model_name,
+            provider=context.provider,
+            elapsed_ms=round(elapsed_ms, 2),
         )
     except Exception:
-        LOGGER.warning(
-            "Warm-up inference for %s failed; continuing without GPU priming",
-            context.model_name,
+        _log_json(
+            logging.WARNING,
+            "warmup_failed",
+            model=context.model_name,
+            provider=context.provider,
             exc_info=True,
         )
 
@@ -448,26 +452,27 @@ def _initialise_session_context(
 
     gpu_name = accelerator.detect_gpu_name()
     rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
-    print(provider_name, gpu_name, rtx_50_series)
     runtime = "cuda" if provider_name in {"CUDAExecutionProvider", "TensorrtExecutionProvider"} else "cpu"
     gpu_available = runtime == "cuda"
 
     if log_diagnostics:
-        LOGGER.info("Available ONNX Runtime providers: %s", ", ".join(providers_available) or "none")
-        LOGGER.info("Selected execution provider: %s", provider_name)
-        if gpu_name:
-            suffix = " (RTX 50-series detected)" if rtx_50_series else ""
-            LOGGER.info("Detected GPU: %s%s", gpu_name, suffix)
-        else:
-            LOGGER.info("No NVIDIA GPU detected")
-        LOGGER.info("Accelerator preference: %s", requested_mode)
+        _log_json(
+            logging.INFO,
+            "accelerator_diagnostics",
+            providers=providers_available,
+            provider=provider_name,
+            gpu_name=gpu_name,
+            rtx_50_series=rtx_50_series,
+            requested_mode=requested_mode,
+        )
 
     global _CUDA_HINT_LOGGED
     if gpu_name and "CUDAExecutionProvider" not in providers_available and not _CUDA_HINT_LOGGED:
-        LOGGER.warning(
-            "Detected GPU %s but CUDAExecutionProvider is unavailable. Install a matching "
-            "onnxruntime-gpu wheel.",
-            gpu_name,
+        _log_json(
+            logging.WARNING,
+            "cuda_provider_missing",
+            gpu_name=gpu_name,
+            requested_mode=requested_mode,
         )
         _CUDA_HINT_LOGGED = True
 
@@ -475,11 +480,9 @@ def _initialise_session_context(
     warning_message: str | None
     if requested_mode in {"cuda", "auto"} and gpu_available:
         accelerator_message = f"Using GPU ({provider_name})"
-        print(accelerator_message)
         warning_message = None
     elif requested_mode in {"cuda", "auto"} and warn_on_cpu:
         accelerator_message = "GPU requested but unavailable — falling back to CPU"
-        print(accelerator_message)
         warning_message = accelerator_message
     else:
         accelerator_message = f"Using CPU ({provider_name})"
@@ -487,8 +490,11 @@ def _initialise_session_context(
 
     global _CPU_WARNING_LOGGED
     if warning_message and not _CPU_WARNING_LOGGED:
-        LOGGER.warning(
-            "GPU acceleration requested but unavailable; verify that onnxruntime-gpu >= 1.20.1 is installed",
+        _log_json(
+            logging.WARNING,
+            "cpu_fallback",
+            provider=provider_name,
+            requested_mode=requested_mode,
         )
         _CPU_WARNING_LOGGED = True
 
@@ -510,11 +516,16 @@ def _initialise_session_context(
     )
     _register_session_context(context)
     _warm_up_session(context)
-    LOGGER.info(
-        "Model '%s' initialised using provider %s (runtime=%s)",
-        model_name,
-        provider_name,
-        runtime,
+    _log_json(
+        logging.INFO,
+        "session_initialised",
+        model=model_name,
+        provider=provider_name,
+        runtime=runtime,
+        gpu_name=gpu_name,
+        device_id=device_id,
+        rtx_50_series=rtx_50_series,
+        warning=warning_message,
     )
     return context
 
@@ -969,3 +980,28 @@ def encode_result_image(path: Path) -> str:
     with path.open("rb") as file_obj:
         data = file_obj.read()
     return base64.b64encode(data).decode("ascii")
+
+
+def _log_json(
+    level: int,
+    event: str,
+    *,
+    exc_info: BaseException | tuple[object, ...] | bool | None = None,
+    **fields: object,
+) -> None:
+    """Emit a structured JSON log entry with ``event`` metadata."""
+
+    payload = {"event": event, **fields}
+
+    def _default(value: object) -> object:
+        if isinstance(value, Path):
+            return str(value)
+        return str(value)
+
+    try:
+        message = json.dumps(payload, default=_default, sort_keys=True)
+    except TypeError:
+        serialised = {key: _default(value) for key, value in payload.items()}
+        message = json.dumps(serialised, sort_keys=True)
+    LOGGER.log(level, message, exc_info=exc_info)
+

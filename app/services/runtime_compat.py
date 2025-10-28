@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import Iterable
 from types import ModuleType, SimpleNamespace
+from typing import Final
 
 try:  # pragma: no cover - optional dependency when Eventlet is unavailable
     from eventlet.green import threading as cooperative_threading  # type: ignore
@@ -30,6 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - handled by runtime checks
 
 _RUNTIME_LOCK = cooperative_threading.Lock()
 _CACHED_ONNXRUNTIME: ModuleType | None = None
+_CUDA_ENV_KEYS: Final[tuple[str, ...]] = ("CUDA_VERSION", "NVIDIA_CUDA_VERSION")
 
 
 def _read_numpy_version() -> str | None:
@@ -120,6 +122,101 @@ def _import_onnxruntime(distribution: str) -> ModuleType:
         ", ".join(providers) if providers else "unknown",
     )
     return module
+
+
+def _parse_version_string(version: str | None) -> tuple[int, int, int] | None:
+    """Return the semantic version tuple extracted from ``version``."""
+
+    if not version:
+        return None
+    components = version.split(".")
+    parsed: list[int] = []
+    for token in components[:3]:
+        try:
+            parsed.append(int(token))
+        except ValueError:
+            break
+    if not parsed:
+        return None
+    while len(parsed) < 3:
+        parsed.append(0)
+    return tuple(parsed)  # type: ignore[return-value]
+
+
+def _read_env_cuda_version() -> tuple[int, int] | None:
+    """Return the CUDA version declared by environment variables, if present."""
+
+    for key in _CUDA_ENV_KEYS:
+        raw_value = os.getenv(key, "").strip()
+        if not raw_value:
+            continue
+        cleaned = raw_value.replace("CUDA", "").strip()
+        tokens = cleaned.split(".")
+        try:
+            major = int(tokens[0])
+            minor = int(tokens[1]) if len(tokens) > 1 else 0
+        except (ValueError, IndexError):
+            continue
+        return major, minor
+    return None
+
+
+def get_cuda_version() -> tuple[int, int] | None:
+    """Return the CUDA version detected via PyTorch or environment metadata."""
+
+    if _should_skip_runtime_checks():
+        return None
+
+    if _torch is not None:
+        try:
+            version_str = getattr(getattr(_torch, "version", None), "cuda", None)
+        except Exception:  # pragma: no cover - defensive guard
+            version_str = None
+        parsed = _parse_version_string(version_str)
+        if parsed:
+            return parsed[0], parsed[1]
+
+    env_version = _read_env_cuda_version()
+    if env_version:
+        return env_version
+    return None
+
+
+def cuda_version_at_least(major: int, minor: int) -> bool:
+    """Return ``True`` when the detected CUDA version meets the requirement."""
+
+    detected = get_cuda_version()
+    if detected is None:
+        return False
+    detected_major, detected_minor = detected
+    return (detected_major, detected_minor) >= (major, minor)
+
+
+def get_onnxruntime_version() -> tuple[int, int, int] | None:
+    """Return the cached ONNX Runtime version tuple if available."""
+
+    module = _CACHED_ONNXRUNTIME or None
+    if module is None:
+        if _should_skip_runtime_checks():
+            return None
+        try:
+            module = ensure_runtime_ready()
+        except Exception:  # pragma: no cover - propagate to caller on demand
+            return None
+    version_str = getattr(module, "__version__", None)
+    return _parse_version_string(version_str)
+
+
+def supports_tensorrt_cuda_129() -> bool:
+    """Return ``True`` when TensorRT execution is supported with CUDA 12.9."""
+
+    if not cuda_version_at_least(12, 9):
+        return False
+    version = get_onnxruntime_version()
+    if version is None:
+        return False
+    # ONNX Runtime 1.19 and later ship CUDA 12.9-compatible builds.
+    return version >= (1, 19, 0)
 
 
 def _format_dependency_note(version: str | None) -> str:

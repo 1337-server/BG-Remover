@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 from collections.abc import Sequence
@@ -20,6 +21,14 @@ _LOGGER = logging.getLogger(__name__)
 
 _ENV_PORT_KEYS = ("PORT", "FLASK_RUN_PORT")
 _ENV_HOST_KEYS = ("HOST", "FLASK_RUN_HOST")
+
+
+def _log_json(level: int, event: str, **fields: object) -> None:
+    """Emit structured JSON logs for development server events."""
+
+    payload = {"event": event, **fields}
+    message = json.dumps(payload, sort_keys=True)
+    _LOGGER.log(level, message)
 
 
 def _env_int(*keys: str) -> int | None:
@@ -108,12 +117,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         config_overrides["BG_WARN_ON_CPU"] = False
 
     app = create_app(config_overrides=config_overrides or None)
-    if eventlet is None:
-        _LOGGER.info("Starting Flask development server on http://%s:%s (standard threading)", host, port)
-    else:
-        _LOGGER.info("Starting Flask development server on http://%s:%s with eventlet", host, port)
+    _log_json(
+        logging.INFO,
+        "server_start",
+        host=host,
+        port=port,
+        eventlet=bool(eventlet),
+        debug=bool(debug),
+        config_overrides=config_overrides or {},
+    )
     app.run(host=host, port=port, debug=debug)
 
 
 if __name__ == "__main__":
     main()
+

@@ -17,8 +17,21 @@ def test_pick_execution_provider_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(accelerator, "onnx_providers_available", fake_providers)
 
     provider, options = accelerator.pick_execution_provider("auto", 2)
-    assert provider == "cuda"
+    assert provider == "CUDAExecutionProvider"
     assert options == {"device_id": 2}
+
+
+def test_pick_execution_provider_prefers_tensorrt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TensorRT should take precedence over CUDA when available."""
+
+    def fake_providers() -> List[str]:
+        return ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    monkeypatch.setattr(accelerator, "onnx_providers_available", fake_providers)
+
+    provider, options = accelerator.pick_execution_provider("auto", 1)
+    assert provider == "TensorrtExecutionProvider"
+    assert options == {"device_id": 1}
 
 
 def test_pick_execution_provider_cpu_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -27,7 +40,7 @@ def test_pick_execution_provider_cpu_fallback(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(accelerator, "onnx_providers_available", lambda: ["CPUExecutionProvider"])
 
     provider, options = accelerator.pick_execution_provider("auto", 0)
-    assert provider == "cpu"
+    assert provider == "CPUExecutionProvider"
     assert options == {}
 
 

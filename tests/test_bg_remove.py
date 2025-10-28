@@ -9,6 +9,79 @@ from PIL import Image, ImageDraw
 from app.services import bg_remove
 
 
+def _stub_session(providers: list[str]) -> object:
+    """Return a simple stub object that mimics an ONNX session."""
+
+    class _StubSession:
+        def __init__(self, provider_list: list[str]) -> None:
+            self.providers = provider_list
+
+    return _StubSession(providers)
+
+
+def test_create_session_uses_gpu_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GPU providers should be ordered TensorRT → CUDA → CPU."""
+
+    recorded_providers: list = []
+
+    def fake_new_session(model_name: str, providers: list) -> object:
+        recorded_providers[:] = providers
+        first_provider = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
+        return _stub_session([first_provider])
+
+    monkeypatch.setattr(bg_remove, "_rembg_new_session", fake_new_session)
+    monkeypatch.setattr(bg_remove, "_REMBG_IMPORT_ERROR", None)
+    monkeypatch.setattr(bg_remove.runtime_compat, "ensure_runtime_ready", lambda: None)
+    monkeypatch.setattr(
+        bg_remove.accelerator,
+        "onnx_providers_available",
+        lambda: ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    monkeypatch.setattr(bg_remove.accelerator, "detect_gpu_name", lambda: "NVIDIA GeForce RTX 5090")
+    monkeypatch.setattr(bg_remove.accelerator, "is_rtx_50xx", lambda name: True)
+
+    context = bg_remove.create_session(config={})
+
+    assert recorded_providers[0][0] == "TensorrtExecutionProvider"
+    assert recorded_providers[1][0] == "CUDAExecutionProvider"
+    assert recorded_providers[-1] == "CPUExecutionProvider"
+    assert context.runtime == "cuda"
+    assert context.provider == "TensorrtExecutionProvider"
+    assert context.warning is None
+
+
+def test_create_session_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Failures initialising GPU providers should fall back to CPU with a warning."""
+
+    call_sequence: list[list] = []
+
+    def fake_new_session(model_name: str, providers: list) -> object:
+        call_sequence.append(providers)
+        first_provider = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
+        if first_provider in {"TensorrtExecutionProvider", "CUDAExecutionProvider"}:
+            raise RuntimeError("GPU provider failed")
+        return _stub_session([first_provider])
+
+    monkeypatch.setattr(bg_remove, "_rembg_new_session", fake_new_session)
+    monkeypatch.setattr(bg_remove, "_REMBG_IMPORT_ERROR", None)
+    monkeypatch.setattr(bg_remove.runtime_compat, "ensure_runtime_ready", lambda: None)
+    monkeypatch.setattr(
+        bg_remove.accelerator,
+        "onnx_providers_available",
+        lambda: ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    monkeypatch.setattr(bg_remove.accelerator, "detect_gpu_name", lambda: "NVIDIA GeForce RTX 5090")
+    monkeypatch.setattr(bg_remove.accelerator, "is_rtx_50xx", lambda name: True)
+    monkeypatch.setattr(bg_remove, "_CPU_WARNING_LOGGED", False)
+
+    context = bg_remove.create_session(config={})
+
+    assert len(call_sequence) == 3
+    assert context.runtime == "cpu"
+    assert context.provider == "CPUExecutionProvider"
+    assert context.warning is not None
+
+
 def test_build_colorkey_mask_detects_foreground() -> None:
     """Colour-key mask should identify a dark subject on a light background."""
 

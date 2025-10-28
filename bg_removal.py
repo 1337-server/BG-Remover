@@ -535,6 +535,17 @@ def remove_background_bytes(
 
     format_spec = get_output_format_spec(output_format)
     session = ensure_global_session(model_name)
+    model_key = getattr(getattr(session, "spec", None), "key", model_name)
+
+    LOGGER.info(
+        "Starting background removal request",
+        extra={
+            "model": model_key,
+            "output_format": format_spec.key,
+            "alpha_matting": bool(alpha_matting),
+            "feather_radius": int(feather_radius),
+        },
+    )
 
     original = Image.open(io.BytesIO(data))
     processed_input = cast(Image.Image, ImageOps.exif_transpose(original)).convert("RGBA")
@@ -570,6 +581,26 @@ def remove_background_bytes(
     finally:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         processed_input.close()
+
+    if error is None:
+        LOGGER.info(
+            "Background removal completed",
+            extra={
+                "model": model_key,
+                "output_format": format_spec.key,
+                "elapsed_ms": round(elapsed_ms, 2),
+            },
+        )
+    else:
+        LOGGER.error(
+            "Background removal failed",
+            extra={
+                "model": model_key,
+                "output_format": format_spec.key,
+                "elapsed_ms": round(elapsed_ms, 2),
+                "error": error,
+            },
+        )
     return RemovalResult(
         image=output_image,
         format_spec=format_spec,

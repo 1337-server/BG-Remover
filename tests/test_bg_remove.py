@@ -179,6 +179,45 @@ def test_remove_bg_folder_default_output_dir(tmp_path: Path, monkeypatch: pytest
     assert results[0].path_out == expected_destination
 
 
+def test_remove_bg_file_infers_directory_for_pathlike_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-existent ``Path`` output should be treated as a directory target."""
+
+    source = tmp_path / "sample.png"
+    Image.new("RGB", (8, 8), color=(0, 128, 255)).save(source)
+
+    session = _FakeSession(["CPUExecutionProvider"])
+    bg_remove._SESSION_METADATA[id(session)] = {
+        "model": "u2net",
+        "provider": "CPUExecutionProvider",
+        "runtime": "cpu",
+    }
+
+    destination_dir = tmp_path / "results"
+
+    def fake_run_inference(image: Image.Image, *_args, **_kwargs) -> Image.Image:
+        """Return an opaque alpha channel to avoid ONNX runtime dependencies."""
+
+        return Image.new("L", image.size, color=255)
+
+    monkeypatch.setattr(bg_remove, "_run_inference", fake_run_inference)
+
+    result = bg_remove.remove_bg_file(
+        source,
+        output_path=destination_dir,
+        session=session,
+        alpha_matting=False,
+        use_colorkey_fallback=False,
+        feather_radius=0,
+    )
+
+    expected_destination = destination_dir / source.name
+    assert result.success
+    assert result.path_out == expected_destination
+    assert expected_destination.exists()
+
+
 def test_remove_bg_file_sanitises_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Inference results containing NaNs should be clamped before writing the output."""
 

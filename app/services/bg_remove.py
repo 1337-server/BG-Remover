@@ -442,8 +442,17 @@ def _looks_like_directory(original: str | Path, resolved: Path) -> bool:
 
     if resolved.exists():
         return resolved.is_dir()
+
     text = str(original)
-    return text.endswith(("/", "\\"))
+    if text.endswith(("/", "\\")):
+        return True
+
+    candidate = Path(original)
+    # When the caller provides a ``Path`` object (or a string without a suffix)
+    # pointing to a location that does not yet exist we treat it as a directory.
+    # This mirrors common CLI behaviour where ``--output /tmp/results`` should
+    # create ``/tmp/results/<file>`` rather than ``/tmp/results.png``.
+    return candidate.suffix == ""
 
 
 @dataclass

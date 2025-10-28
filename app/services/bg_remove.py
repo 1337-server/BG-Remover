@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -85,6 +86,8 @@ def _primary_provider(session: Session) -> str:
 
 ProgressCallback = Callable[[str, float], None]
 PreviewCallback = Callable[[Image.Image, str], None]
+
+ExcInfoType = tuple[type[BaseException], BaseException, TracebackType | None] | tuple[None, None, None]
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 MAX_WORK_DIMENSION = 8000
@@ -606,16 +609,15 @@ def _prepare_input_tensor(image: Image.Image, model_name: str) -> np.ndarray:
 
     spec = _get_model_spec(model_name)
     resized = image.convert("RGB").resize(spec.input_size, Image.Resampling.LANCZOS)
-    np_image = np.asarray(resized, dtype=np.float32)
-    # Maintain the 0-1 scaling expected by U²Net/ISNet models by dividing by a fixed constant.
-    np_image /= 255.0
+    # Maintain the 0-1 scaling expected by U²Net/ISNet models by dividing by a fixed constant and
+    # vectorise the normalisation so NumPy performs the work in C rather than a Python loop.
+    np_image = np.asarray(resized, dtype=np.float32) / 255.0
+    mean = np.asarray(spec.mean, dtype=np.float32)
+    std = np.asarray(spec.std, dtype=np.float32)
+    normalised = (np_image - mean) / std
 
-    normalised = np.empty_like(np_image, dtype=np.float32)
-    for index in range(3):
-        normalised[:, :, index] = (np_image[:, :, index] - spec.mean[index]) / spec.std[index]
-
-    tensor = normalised.transpose((2, 0, 1))[np.newaxis, ...].astype(np.float32)
-    return tensor
+    tensor = normalised.transpose((2, 0, 1))[np.newaxis, ...]
+    return tensor.astype(np.float32, copy=False)
 
 
 def _run_inference(
@@ -915,7 +917,7 @@ def _log_json(
     level: int,
     event: str,
     *,
-    exc_info: BaseException | tuple[object, ...] | bool | None = None,
+    exc_info: BaseException | ExcInfoType | bool | None = None,
     **fields: object,
 ) -> None:
     """Emit a structured JSON log entry with ``event`` metadata."""

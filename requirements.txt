@@ -1,6 +1,4 @@
 Flask==2.3.3
-Flask-SocketIO==5.3.6
-eventlet==0.35.2
 rembg==2.0.64
 Pillow==10.3.0
 numpy==1.26.4

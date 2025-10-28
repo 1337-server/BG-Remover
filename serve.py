@@ -182,6 +182,22 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _should_run_startup_tasks(debug: bool) -> bool:
+    """Return ``True`` when heavy startup tasks should execute in this process.
+
+    Flask's development reloader executes the module twice: once in the
+    supervisor process that watches for file changes and once in the serving
+    process that handles incoming requests. Loading ONNX models in both
+    processes doubles the startup time and exhausts VRAM unnecessarily. The
+    reloader child process sets the ``WERKZEUG_RUN_MAIN`` environment variable,
+    which we can use to limit heavy initialisation to the real serving process.
+    """
+
+    if not debug:
+        return True
+    return os.getenv("WERKZEUG_RUN_MAIN") == "true"
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Start the Flask development server."""
 
@@ -205,7 +221,13 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     _log_json(logging.INFO, "initialising_models")
     app = create_app(config_overrides=config_overrides or None, run_startup_tasks=False)
-    startup_event = _spawn_startup_thread(app.config)
+
+    startup_event: threading.Event | None = None
+    if _should_run_startup_tasks(debug):
+        startup_event = _spawn_startup_thread(app.config)
+    else:
+        _log_json(logging.INFO, "startup_tasks_deferred", reason="reloader_supervisor")
+
     _log_json(
         logging.INFO,
         "server_start",
@@ -215,7 +237,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         debug=bool(debug),
         config_overrides=config_overrides or {},
         startup_async=True,
-        startup_event_set=startup_event.is_set(),
+        startup_event_set=bool(startup_event and startup_event.is_set()),
     )
     _log_json(logging.INFO, "starting_flask", host=host, port=port)
     app.run(host=host, port=port, debug=debug)

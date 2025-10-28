@@ -191,7 +191,7 @@ def _looks_like_directory(original: str | Path, resolved: Path) -> bool:
     text = str(original)
     return text.endswith(("/", "\\"))
 
-_SESSION_SINGLETON: Optional[Session] = None
+_SESSION_CACHE: Dict[tuple[str, str], Session] = {}
 _SESSION_LOCK = cooperative_threading.Lock()
 
 
@@ -217,14 +217,24 @@ class RemovalResult:
         }
 
 
-def _build_gpu_providers() -> Optional[List[str]]:
-    """Return CUDA providers for ``rembg`` when a compatible GPU is available."""
+def _build_gpu_providers(preference: str = "auto") -> Optional[List[str]]:
+    """Return CUDA providers based on the requested hardware ``preference``."""
+
+    normalized = (preference or "auto").strip().lower()
+    if normalized == "cpu":
+        LOGGER.info("Forcing CPU execution per user request")
+        return None
 
     if runtime_compat.is_force_cpu_enabled():
         LOGGER.info("BR_FORCE_CPU enabled; forcing CPU execution")
         return None
 
+    if normalized not in {"auto", "gpu"}:
+        normalized = "auto"
+
     if not runtime_compat.has_cuda_support():
+        if normalized == "gpu":
+            LOGGER.warning("GPU acceleration requested but no compatible GPU was detected.")
         return None
 
     onnxruntime = runtime_compat.ensure_runtime_ready()
@@ -245,7 +255,7 @@ def _build_gpu_providers() -> Optional[List[str]]:
     return ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
-def create_session(model_name: str = "u2net") -> Session:
+def create_session(model_name: str = "u2net", *, hardware_accelerator: str = "auto") -> Session:
     """Create a new ``rembg`` session with optional GPU acceleration."""
 
     if _rembg_new_session is None:
@@ -253,7 +263,7 @@ def create_session(model_name: str = "u2net") -> Session:
 
     runtime_compat.ensure_runtime_ready()
 
-    providers = _build_gpu_providers()
+    providers = _build_gpu_providers(hardware_accelerator)
     if providers:
         try:
             return _rembg_new_session(model_name, providers=providers)
@@ -267,23 +277,32 @@ def create_session(model_name: str = "u2net") -> Session:
     return _rembg_new_session(model_name)
 
 
-def ensure_global_session(model_name: str = "u2net") -> Session:
-    """Initialise and cache a global ``rembg`` session."""
+def ensure_global_session(
+    model_name: str = "u2net", *, hardware_accelerator: str = "auto"
+) -> Session:
+    """Initialise and cache a ``rembg`` session for the requested configuration."""
 
-    global _SESSION_SINGLETON
+    normalized_hardware = (hardware_accelerator or "auto").strip().lower()
+    cache_key = (model_name, normalized_hardware)
     with _SESSION_LOCK:
-        if _SESSION_SINGLETON is None:
-            _SESSION_SINGLETON = create_session(model_name)
-    assert _SESSION_SINGLETON is not None
-    return _SESSION_SINGLETON
+        session = _SESSION_CACHE.get(cache_key)
+        if session is None:
+            session = create_session(model_name, hardware_accelerator=normalized_hardware)
+            _SESSION_CACHE[cache_key] = session
+    return session
 
 
-def _get_session(session: Optional[Session] = None) -> Session:
-    """Return the provided session or the cached singleton."""
+def _get_session(
+    session: Optional[Session] = None,
+    *,
+    model_name: str = "u2net",
+    hardware_accelerator: str = "auto",
+) -> Session:
+    """Return the provided session or a cached session for the configuration."""
 
     if session is not None:
         return session
-    return ensure_global_session()
+    return ensure_global_session(model_name, hardware_accelerator=hardware_accelerator)
 
 
 def build_colorkey_mask(image: Image.Image, tolerance: int = 14) -> Optional[np.ndarray]:
@@ -385,6 +404,8 @@ def remove_bg_file(
     output_path: Optional[str | Path] = None,
     *,
     session: Optional[Session] = None,
+    model_name: str = "u2net",
+    hardware_accelerator: str = "auto",
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -398,7 +419,7 @@ def remove_bg_file(
 ) -> RemovalResult:
     """Remove the background from ``input_path`` and export the chosen format."""
 
-    session = _get_session(session)
+    session = _get_session(session, model_name=model_name, hardware_accelerator=hardware_accelerator)
     source = Path(input_path)
     format_spec = get_output_format_spec(output_format)
     if output_path is None:
@@ -523,6 +544,8 @@ def remove_bg_folder(
     output_format: Optional[str] = None,
     *,
     session: Optional[Session] = None,
+    model_name: str = "u2net",
+    hardware_accelerator: str = "auto",
     recursive: bool = False,
     alpha_matting: bool = False,
     am_foreground: int = 240,
@@ -534,7 +557,7 @@ def remove_bg_folder(
 ) -> List[RemovalResult]:
     """Process every supported image in ``input_dir`` sequentially."""
 
-    session = _get_session(session)
+    session = _get_session(session, model_name=model_name, hardware_accelerator=hardware_accelerator)
     input_path = Path(input_dir)
     if not input_path.is_dir():
         raise NotADirectoryError(f"Input directory does not exist: {input_path}")
@@ -552,6 +575,8 @@ def remove_bg_folder(
             source,
             destination,
             session=session,
+            model_name=model_name,
+            hardware_accelerator=hardware_accelerator,
             alpha_matting=alpha_matting,
             am_foreground=am_foreground,
             am_background=am_background,

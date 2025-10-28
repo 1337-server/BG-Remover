@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from app.services.bg_remove import (
+from bg_removal import (
     DEFAULT_MODEL_NAME,
     RemovalResult,
     ensure_global_session,

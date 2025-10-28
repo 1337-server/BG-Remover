@@ -1,7 +1,9 @@
-"""Flask blueprint implementing the interactive background removal interface."""
+"""Flask application, routes, and dev-server helpers for the background removal UI."""
 from __future__ import annotations
 
+import argparse
 import json
+import logging
 import shutil
 import tempfile
 import uuid
@@ -12,6 +14,7 @@ from typing import Any
 
 from flask import (
     Blueprint,
+    Flask,
     Response,
     abort,
     after_this_request,
@@ -24,7 +27,7 @@ from flask import (
 from flask.typing import ResponseReturnValue
 from werkzeug.utils import secure_filename
 
-from app.services.bg_remove import (
+from bg_removal import (
     DEFAULT_OUTPUT_FORMAT,
     OUTPUT_FORMATS,
     RemovalResult,
@@ -38,10 +41,12 @@ from app.services.bg_remove import (
     remove_bg_folder,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 image_converter_bp = Blueprint("image_converter", __name__)
 
 
-@dataclass
+@dataclass(slots=True)
 class RegistryItem:
     """Metadata describing an entry stored in a download registry."""
 
@@ -85,6 +90,40 @@ DEFAULT_CHECKBOX_OPTIONS: dict[str, bool] = {
 }
 
 
+def create_app(
+    config_overrides: Mapping[str, object] | None = None,
+    *,
+    run_startup_tasks: bool = True,
+) -> Flask:
+    """Create and configure the Flask application instance."""
+
+    app = Flask(__name__, template_folder="templates", static_folder="static")
+    if config_overrides:
+        app.config.update(config_overrides)
+
+    if run_startup_tasks:
+        ensure_global_session()
+
+    register_routes(app)
+
+    @app.after_request
+    def add_static_cache_headers(response: Response) -> Response:
+        """Add caching headers for static assets to improve load performance."""
+
+        if request.path.startswith("/static/"):
+            response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        return response
+
+    LOGGER.info("Background removal application initialised.")
+    return app
+
+
+def register_routes(app: Flask) -> None:
+    """Attach UI routes to ``app``."""
+
+    app.register_blueprint(image_converter_bp)
+
+
 def _parse_int(value: str | None, default: int) -> int:
     """Safely parse integers from incoming form values."""
 
@@ -104,18 +143,16 @@ def _is_truthy(value: str | None) -> bool:
     return value.strip().lower() in {"1", "true", "on", "yes"}
 
 
-def _collect_single_options(form: Mapping[str, str], defaults: dict[str, int]) -> dict[str, Any]:
+def _collect_single_options(form: Mapping[str, str], defaults: Mapping[str, Any]) -> dict[str, Any]:
     """Extract reusable single-image processing options from the request."""
 
     return {
         "alpha_matting": _is_truthy(form.get("alpha_matting")),
-        "am_foreground": _parse_int(form.get("am_foreground"), defaults["am_foreground"]),
-        "am_background": _parse_int(form.get("am_background"), defaults["am_background"]),
-        "am_erode": _parse_int(form.get("am_erode"), defaults["am_erode"]),
-        "colorkey_tolerance": _parse_int(
-            form.get("colorkey_tolerance"), defaults["colorkey_tolerance"]
-        ),
-        "feather_radius": _parse_int(form.get("feather_radius"), defaults["feather_radius"]),
+        "am_foreground": _parse_int(form.get("am_foreground"), int(defaults["am_foreground"])),
+        "am_background": _parse_int(form.get("am_background"), int(defaults["am_background"])),
+        "am_erode": _parse_int(form.get("am_erode"), int(defaults["am_erode"])),
+        "colorkey_tolerance": _parse_int(form.get("colorkey_tolerance"), int(defaults["colorkey_tolerance"])),
+        "feather_radius": _parse_int(form.get("feather_radius"), int(defaults["feather_radius"])),
     }
 
 
@@ -124,7 +161,7 @@ def _collect_single_options(form: Mapping[str, str], defaults: dict[str, int]) -
 def remove_background_view() -> ResponseReturnValue:
     """Render the UI or process incoming form submissions."""
 
-    defaults = DEFAULT_SINGLE_OPTIONS.copy()
+    defaults = dict(DEFAULT_SINGLE_OPTIONS)
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
     defaults.update(DEFAULT_CHECKBOX_OPTIONS)
 
@@ -153,7 +190,7 @@ def remove_background_view() -> ResponseReturnValue:
     model_name = _REMOVAL_MODEL_LOOKUP.get(
         removal_model_key, _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY]
     )
-    preview_size = None
+    preview_size: int | None = None
     preview_size_raw = form.get("preview_size")
     if preview_size_raw:
         try:
@@ -200,14 +237,25 @@ def remove_background_view() -> ResponseReturnValue:
             "preview_size": preview_size,
         }
 
-        if request.args.get("zip") == "1":
+        if _is_truthy(form.get("zip")):
             try:
                 token, download_url = _create_zip(results)
                 payload["zip_download_url"] = download_url
                 payload["zip_token"] = token
             except Exception as exc:  # pragma: no cover - filesystem edge cases
                 payload["zip_error"] = str(exc)
-        return jsonify(payload)
+
+        if json_requested:
+            return jsonify(payload)
+
+        return render_template(
+            "image_remove_bg.html",
+            defaults=defaults,
+            format_options=FORMAT_OPTIONS,
+            accelerator_runtime=runtime_info,
+            removal_model_options=REMOVAL_MODEL_OPTIONS,
+            results=payload,
+        )
 
     file_storage = request.files.get("image_file")
     if not file_storage or file_storage.filename == "":
@@ -306,9 +354,7 @@ def _register_registry_item(
     return token, entry
 
 
-def _serve_registry_item(
-    registry: dict[str, RegistryItem], token: str, *, as_attachment: bool
-) -> Response:
+def _serve_registry_item(registry: dict[str, RegistryItem], token: str, *, as_attachment: bool) -> Response:
     """Return the file referenced by ``token`` from ``registry``."""
 
     entry = registry.pop(token, None)
@@ -452,3 +498,25 @@ def _bad_request(message: str) -> ResponseReturnValue:
     response = jsonify(payload)
     response.status_code = 400
     return response
+
+
+def parse_server_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Return parsed command line arguments for the dev server."""
+
+    parser = argparse.ArgumentParser(description="Run the background removal web UI.")
+    parser.add_argument("--host", default="0.0.0.0", help="Interface to bind")
+    parser.add_argument("--port", type=int, default=5000, help="Port to bind")
+    parser.add_argument("--debug", action="store_true", help="Enable Flask debug mode")
+    return parser.parse_args(argv)
+
+
+def run_dev_server(argv: list[str] | None = None) -> None:
+    """Start the Flask development server using parsed CLI arguments."""
+
+    args = parse_server_args(argv)
+    app = create_app()
+    app.run(host=args.host, port=args.port, debug=args.debug)
+
+
+if __name__ == "__main__":  # pragma: no cover - convenience entry point
+    run_dev_server()

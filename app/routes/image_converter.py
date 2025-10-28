@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import json
-import threading
 import shutil
 import tempfile
+import threading
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Tuple
-
-from app.services import runtime_compat
+from typing import Any
 
 from flask import (
     Blueprint,
@@ -24,6 +23,7 @@ from flask import (
     send_file,
     url_for,
 )
+from flask.typing import ResponseReturnValue
 from werkzeug.utils import secure_filename
 
 from app.services.bg_remove import (
@@ -43,7 +43,7 @@ from app.services.bg_remove import (
 
 image_converter_bp = Blueprint("image_converter", __name__)
 
-_ZIP_REGISTRY: Dict[str, Path] = {}
+_ZIP_REGISTRY: dict[str, Path] = {}
 
 
 @dataclass
@@ -56,9 +56,9 @@ class RegistryItem:
     download_name: str | None = None
 
 
-_FILE_REGISTRY: Dict[str, RegistryItem] = {}
-_PREVIEW_REGISTRY: Dict[str, RegistryItem] = {}
-_SESSION_CACHE: Dict[Tuple[str, str, int], SessionContext] = {}
+_FILE_REGISTRY: dict[str, RegistryItem] = {}
+_PREVIEW_REGISTRY: dict[str, RegistryItem] = {}
+_SESSION_CACHE: dict[tuple[str, str, int], SessionContext] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
@@ -71,7 +71,7 @@ REMOVAL_MODEL_OPTIONS = [
     {"key": "object", "label": "Object Model", "model_name": "u2net"},
     {"key": "anime", "label": "Anime / Illustration Model", "model_name": "isnet-anime"},
 ]
-_REMOVAL_MODEL_LOOKUP: Dict[str, str] = {
+_REMOVAL_MODEL_LOOKUP: dict[str, str] = {
     option["key"]: option["model_name"] for option in REMOVAL_MODEL_OPTIONS
 }
 DEFAULT_REMOVAL_MODEL_KEY = REMOVAL_MODEL_OPTIONS[0]["key"]
@@ -81,7 +81,7 @@ HARDWARE_ACCELERATOR_OPTIONS = [
     {"key": "cpu", "label": "CPU"},
 ]
 DEFAULT_HARDWARE_ACCELERATOR_KEY = HARDWARE_ACCELERATOR_OPTIONS[0]["key"]
-DEFAULT_SINGLE_OPTIONS: Dict[str, Any] = {
+DEFAULT_SINGLE_OPTIONS: dict[str, Any] = {
     "am_foreground": 240,
     "am_background": 10,
     "am_erode": 10,
@@ -90,7 +90,7 @@ DEFAULT_SINGLE_OPTIONS: Dict[str, Any] = {
     "removal_model": DEFAULT_REMOVAL_MODEL_KEY,
     "hardware_accelerator": DEFAULT_HARDWARE_ACCELERATOR_KEY,
 }
-DEFAULT_CHECKBOX_OPTIONS: Dict[str, bool] = {
+DEFAULT_CHECKBOX_OPTIONS: dict[str, bool] = {
     # UI toggles that have sensible disabled defaults.
     "alpha_matting": False,
     "recursive": False,
@@ -117,7 +117,7 @@ def _is_truthy(value: str | None) -> bool:
     return value.strip().lower() in {"1", "true", "on", "yes"}
 
 
-def _collect_single_options(form: Mapping[str, str], defaults: Dict[str, int]) -> Dict[str, Any]:
+def _collect_single_options(form: Mapping[str, str], defaults: dict[str, int]) -> dict[str, Any]:
     """Extract reusable single-image processing options from the request."""
 
     return {
@@ -132,7 +132,7 @@ def _collect_single_options(form: Mapping[str, str], defaults: Dict[str, int]) -
     }
 
 
-def _get_session_context(model_name: str, config: Mapping[str, Any]) -> "SessionContext":
+def _get_session_context(model_name: str, config: Mapping[str, Any]) -> SessionContext:
     """Return a cached background removal session for ``model_name``."""
 
     accelerator_mode = str(config.get("BG_ACCELERATOR", "auto")).strip().lower()
@@ -149,7 +149,7 @@ def _get_session_context(model_name: str, config: Mapping[str, Any]) -> "Session
 
 @image_converter_bp.route("/", methods=["GET", "POST"])
 @image_converter_bp.route("/image/remove-bg", methods=["GET", "POST"])
-def remove_bg_view() -> Response:
+def remove_bg_view() -> ResponseReturnValue:
     """Render the UI or process incoming form submissions."""
 
     defaults = DEFAULT_SINGLE_OPTIONS.copy()
@@ -179,9 +179,14 @@ def remove_bg_view() -> Response:
         return _bad_request(str(exc))
 
     removal_model_key = (form.get("removal_model") or DEFAULT_REMOVAL_MODEL_KEY).strip().lower()
-    model_name = _REMOVAL_MODEL_LOOKUP.get(removal_model_key, _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY])
-    hardware_accelerator = (form.get("hardware_accelerator") or DEFAULT_HARDWARE_ACCELERATOR_KEY).strip().lower()
-    if hardware_accelerator not in {option["key"] for option in HARDWARE_ACCELERATOR_OPTIONS}:
+    model_name = _REMOVAL_MODEL_LOOKUP.get(
+        removal_model_key, _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY]
+    )
+    hardware_accelerator = (
+        form.get("hardware_accelerator") or DEFAULT_HARDWARE_ACCELERATOR_KEY
+    ).strip().lower()
+    valid_accelerators = {option["key"] for option in HARDWARE_ACCELERATOR_OPTIONS}
+    if hardware_accelerator not in valid_accelerators:
         hardware_accelerator = DEFAULT_HARDWARE_ACCELERATOR_KEY
 
     preview_size = None
@@ -192,7 +197,7 @@ def remove_bg_view() -> Response:
         except (TypeError, ValueError):
             preview_size = None
 
-    session_config: Dict[str, Any] = {}
+    session_config: dict[str, Any] = {}
     if current_app:
         session_config.update(current_app.config)
 
@@ -333,7 +338,7 @@ def remove_bg_view() -> Response:
     return response
 
 def _register_registry_item(
-    registry: Dict[str, RegistryItem],
+    registry: dict[str, RegistryItem],
     *,
     path: Path,
     mimetype: str | None = None,
@@ -354,7 +359,7 @@ def _register_registry_item(
 
 
 def _serve_registry_item(
-    registry: Dict[str, RegistryItem], token: str, *, as_attachment: bool
+    registry: dict[str, RegistryItem], token: str, *, as_attachment: bool
 ) -> Response:
     """Return the file referenced by ``token`` from ``registry``."""
 
@@ -424,12 +429,12 @@ def accelerator_health() -> Response:
     return jsonify(get_accelerator_status())
 
 
-def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
+def _serialise_results(results: list[RemovalResult]) -> dict[str, Any]:
     """Convert ``RemovalResult`` objects to JSON-compatible data."""
 
-    serialised: List[Dict[str, Any]] = []
-    successes: List[RemovalResult] = []
-    failures: List[RemovalResult] = []
+    serialised: list[dict[str, Any]] = []
+    successes: list[RemovalResult] = []
+    failures: list[RemovalResult] = []
 
     for result in results:
         data = result.to_dict()
@@ -467,7 +472,7 @@ def _serialise_results(results: List[RemovalResult]) -> Dict[str, Any]:
     }
 
 
-def _create_zip(results: List[RemovalResult]) -> tuple[str, str]:
+def _create_zip(results: list[RemovalResult]) -> tuple[str, str]:
     """Bundle successful outputs into a temporary ZIP archive."""
 
     successful = [result for result in results if result.success and result.path_out]
@@ -491,9 +496,11 @@ def _create_zip(results: List[RemovalResult]) -> tuple[str, str]:
     return token, download_url
 
 
-def _bad_request(message: str) -> Response:
+def _bad_request(message: str) -> ResponseReturnValue:
     """Return a consistent JSON error payload."""
 
     payload = {"error": message}
     payload.update(get_runtime_payload())
-    return jsonify(payload), 400
+    response = jsonify(payload)
+    response.status_code = 400
+    return response

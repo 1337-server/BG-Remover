@@ -1,0 +1,22 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Dockerfile.gpu" type="docker-deploy" factoryName="dockerfile" server-name="homeserver">
+    <deployment type="dockerfile">
+      <settings>
+        <option name="imageTag" value="bg-remover" />
+        <option name="buildOnly" value="true" />
+        <option name="containerName" value="bgremover" />
+        <option name="portBindings">
+          <list>
+            <DockerPortBindingImpl>
+              <option name="containerPort" value="5000" />
+              <option name="hostPort" value="7844" />
+            </DockerPortBindingImpl>
+          </list>
+        </option>
+        <option name="commandLineOptions" value="--restart always" />
+        <option name="sourceFilePath" value="Dockerfile.gpu" />
+      </settings>
+    </deployment>
+    <method v="2" />
+  </configuration>
+</component>

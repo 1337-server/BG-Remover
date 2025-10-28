@@ -917,12 +917,14 @@
 
     const hardwareSelect = document.getElementById('single-hardware');
     const hardwareWarning = document.getElementById('single-hardware-warning');
+    console.log(singleForm?.dataset)
     const gpuAvailable = (singleForm?.dataset?.gpuAvailable || '').toLowerCase() === 'true';
 
     const updateHardwareWarning = () => {
       if (!hardwareSelect || !hardwareWarning) {
         return;
       }
+      console.log(gpuAvailable)
       const shouldWarn = !gpuAvailable && hardwareSelect.value === 'gpu';
       hardwareWarning.classList.toggle('d-none', !shouldWarn);
     };

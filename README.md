@@ -20,81 +20,51 @@ PNG output with transparency preserved.
 ### 📦 Installation
 
 1. Clone this repository.
-2. (Optional) Create and activate a virtual environment:
+2. Create and activate a virtual environment (PowerShell shown below):
 
-   ```bash
+   ```powershell
    python -m venv .venv
-   source .venv/bin/activate   # macOS/Linux
-   .venv\Scripts\activate      # Windows
-   ```
-3. Install runtime dependencies (force-reinstall if upgrading from an older environment):
-
-   ```bash
-   # CPU-only installation (default)
-   pip install --upgrade --force-reinstall -r requirements-cpu.txt
-
-   # CUDA 12.x GPU installation
-   pip install --upgrade --force-reinstall -r requirements-gpu.txt
-
-   # Compatibility wrapper that defers to the CPU set
-   pip install --upgrade --force-reinstall -r requirements.txt
+   .\.venv\Scripts\activate
    ```
 
-The first run of either the CLI or web service initialises a single rembg session and caches the U²-Net
-weights automatically.
+   > Tip: run `scripts\clean_venv.ps1` to recreate the environment from scratch.
+
+3. Install the pinned dependency set (includes CUDA-enabled ONNX Runtime and PyTorch wheels):
+
+   ```powershell
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+The first run of either the CLI or web service initialises a single ONNX Runtime session and caches the
+U²-Net weights automatically.
 
 ---
 
 ### 🚦 Quick start
 
-Follow these steps to try the background remover in a few minutes:
+The commands below assume Windows PowerShell, but the same steps work on other platforms with minor
+syntax tweaks.
 
-1. **Prepare the environment**
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
+scripts\verify_gpu.ps1
+python serve.py
+```
 
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate   # macOS/Linux
-   .venv\Scripts\activate      # Windows
-   # Choose one of the dependency sets
-   pip install -r requirements-cpu.txt          # CPU only
-   # pip install -r requirements-gpu.txt        # CUDA-enabled GPU
-   ```
+The verification script prints the ONNX Runtime provider list and Torch CUDA status so you can confirm
+that the `CUDAExecutionProvider` is active. If CUDA is unavailable the app automatically falls back to
+the CPU and logs a single warning explaining how to install a compatible GPU wheel.
 
-2. **Run the CLI for a single image**
+Troubleshooting tips:
 
-   ```bash
-   python main.py --input ./samples/cat.jpg
-   ```
-
-   The processed image is saved to `./output/cat.png`. Add `--output` to customise the destination
-   directory.
-
-3. **Batch-convert an entire folder**
-
-   ```bash
-   python main.py --input ./photos --recursive --output ./photos_cutout
-   ```
-
-   Nested folders are preserved when `--recursive` is provided.
-
-4. **Launch the Flask web interface**
-
-   ```bash
-   python serve.py
-   ```
-
-   Open http://127.0.0.1:5000/image/remove-bg to upload a file or process a server-side folder from
-   your browser.
-
-5. **Optional: run everything in Docker**
-
-   ```bash
-   docker compose up --build                 # CPU-only image
-   # docker compose --profile gpu up --build  # CUDA-enabled image (requires --gpus all)
-   ```
-
-   The service exposes port `5000`. The GPU profile assumes `nvidia-container-toolkit` is installed and
-   the container is launched with GPU access enabled.
+* Clear conflicting CUDA settings by unsetting `CUDA_PATH` before installing the requirements.
+* Delete stale virtual environments with `scripts\clean_venv.ps1` when upgrading dependencies.
+* If the CUDA provider still refuses to load, run `onnxruntime.get_available_providers()` inside a
+  Python shell to confirm the wheel matches your driver; a CPU-only wheel continues to work.
 
 ---
 
@@ -161,7 +131,7 @@ Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 * **Folder Processing** tab – supply a server-side folder, optional output directory, recursive mode,
   alpha-matting settings, and request a ZIP bundle of the processed results.
 
-The Flask app initialises a single rembg session on startup so repeated requests remain fast. Set
+The Flask app initialises a single ONNX Runtime session on startup so repeated requests remain fast. Set
 `BR_FORCE_CPU=1` to disable CUDA when troubleshooting GPU driver mismatches. The UI header always
 shows the selected accelerator and GPU name, and displays a dismissible warning if the app is running
 on the CPU because CUDA providers are missing.
@@ -182,12 +152,20 @@ You can also sanity-check the project compiles with:
 python -m compileall main.py app tests
 ```
 
+Static analysis helpers are included:
+
+```bash
+ruff check .
+mypy app
+```
+
 ---
 
 ### 📂 Project layout
 
 * `main.py` – CLI entrypoint.
-* `app/services/bg_remove.py` – rembg session management and folder/file helpers.
+* `app/services/model_registry.py` – shared ONNX Runtime session preloading and warm-up utilities.
+* `app/services/bg_remove.py` – background removal helpers built on preloaded ONNX Runtime sessions.
 * `app/routes/image_converter.py` – Flask blueprint exposing the UI + JSON endpoints.
 * `templates/` – Base template + background removal form.
 * `tests/` – Pytest-based regression tests for the service utilities.

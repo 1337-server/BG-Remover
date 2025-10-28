@@ -1,13 +1,13 @@
-"""Utilities for removing image backgrounds using ``rembg`` sessions."""
+"""Utilities for removing image backgrounds using ONNX Runtime sessions."""
 from __future__ import annotations
 
 import base64
-import io
 import logging
 import time
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
@@ -17,27 +17,24 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     cv2 = None  # type: ignore
 
-try:  # pragma: no cover - optional dependency during testing
-    from rembg import new_session as _rembg_new_session
-    from rembg import remove as _rembg_remove
-except ModuleNotFoundError as exc:  # pragma: no cover - propagated at runtime
-    _rembg_remove = None
-    _rembg_new_session = None
-    _REMBG_IMPORT_ERROR = exc
-else:
-    _REMBG_IMPORT_ERROR = None
-
 try:  # pragma: no cover - optional dependency when Eventlet is unavailable
     from eventlet.green import threading as cooperative_threading  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - Eventlet not installed in some environments
     import threading as cooperative_threading  # type: ignore
 
-from app.services import accelerator, runtime_compat
+try:  # pragma: no cover - optional dependency during tests
+    import onnxruntime as ort
+except ModuleNotFoundError:  # pragma: no cover - resolved by runtime checks
+    ort = None  # type: ignore[assignment]
 
+if TYPE_CHECKING:  # pragma: no cover - typing assistance only
+    from onnxruntime import InferenceSession as Session
+else:
+    Session = Any  # type: ignore[assignment]
+
+from app.services import accelerator, model_registry, runtime_compat
 
 LOGGER = logging.getLogger(__name__)
-
-Session = Any
 
 ProgressCallback = Callable[[str, float], None]
 PreviewCallback = Callable[[Image.Image, str], None]
@@ -45,15 +42,48 @@ PreviewCallback = Callable[[Image.Image, str], None]
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 MAX_WORK_DIMENSION = 8000
 
-# The background-removal service supports a curated list of rembg models. These
-# names mirror the defaults exposed by the command-line interface and cover the
-# most common use-cases (general photography, portraits, and anime artwork).
+# The background-removal service supports a curated list of ONNX models. These
+# names mirror the defaults exposed by the rembg command-line interface and
+# cover common use-cases (general photography, portraits, and anime artwork).
 _PRELOAD_MODEL_NAMES: tuple[str, ...] = (
     "u2net",
     "u2netp",
     "isnet-general-use",
     "isnet-anime",
 )
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """Describes normalisation parameters for a supported ONNX model."""
+
+    input_size: tuple[int, int]
+    mean: tuple[float, float, float]
+    std: tuple[float, float, float]
+
+
+_MODEL_SPECS: dict[str, ModelSpec] = {
+    "u2net": ModelSpec((320, 320), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    "u2netp": ModelSpec((320, 320), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    "u2net_human_seg": ModelSpec((320, 320), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    "isnet-general-use": ModelSpec((1024, 1024), (0.5, 0.5, 0.5), (1.0, 1.0, 1.0)),
+    "isnet-anime": ModelSpec((1024, 1024), (0.485, 0.456, 0.406), (1.0, 1.0, 1.0)),
+}
+
+_DEFAULT_MODEL_SPEC = ModelSpec((320, 320), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+
+
+def _get_model_spec(model_name: str) -> ModelSpec:
+    """Return the normalisation parameters for ``model_name``."""
+
+    return _MODEL_SPECS.get(model_name, _DEFAULT_MODEL_SPEC)
+
+
+def sanitize_mask(values: np.ndarray) -> np.ndarray:
+    """Clamp the network output to the valid probability range."""
+
+    sanitised = np.nan_to_num(values, nan=0.0, posinf=1.0, neginf=0.0)
+    return np.clip(sanitised, 0.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -125,7 +155,7 @@ OUTPUT_FORMATS: tuple[OutputFormat, ...] = (
     ),
 )
 
-_OUTPUT_FORMAT_LOOKUP: Dict[str, OutputFormat] = {}
+_OUTPUT_FORMAT_LOOKUP: dict[str, OutputFormat] = {}
 for _format in OUTPUT_FORMATS:
     _OUTPUT_FORMAT_LOOKUP[_format.key] = _format
     _OUTPUT_FORMAT_LOOKUP[_format.key.lower()] = _format
@@ -156,7 +186,7 @@ def get_output_format_spec(value: str | None) -> OutputFormat:
     return spec
 
 
-def list_output_format_choices() -> List[str]:
+def list_output_format_choices() -> list[str]:
     """Return the canonical keys for supported export formats."""
 
     return sorted({format_spec.key for format_spec in OUTPUT_FORMATS})
@@ -172,7 +202,7 @@ def get_mime_type_for_path(path: Path) -> str:
     return spec.mime_type
 
 
-def _resolve_output_directory(output_dir: Optional[str | Path]) -> Path:
+def _resolve_output_directory(output_dir: str | Path | None) -> Path:
     """Return an absolute output directory, defaulting to ``cwd / 'output'``."""
 
     if output_dir is None:
@@ -201,24 +231,25 @@ def _looks_like_directory(original: str | Path, resolved: Path) -> bool:
     text = str(original)
     return text.endswith(("/", "\\"))
 
+
 @dataclass
 class SessionContext:
-    """Container describing the active rembg session and accelerator state."""
+    """Container describing the active ONNX Runtime session and accelerator state."""
 
     model_name: str
     session: Session
     runtime: str
     provider: str
     provider_options: Mapping[str, Any]
-    providers_available: List[str]
+    providers_available: list[str]
     gpu_name: str | None
     rtx_50_series: bool
     warning: str | None
     device_id: int
     gpu_available: bool
-    accelerator_message: Optional[str]
+    accelerator_message: str | None
 
-    def runtime_payload(self) -> Dict[str, Any]:
+    def runtime_payload(self) -> dict[str, Any]:
         """Return a serialisable snapshot of the accelerator runtime."""
 
         return {
@@ -232,15 +263,15 @@ class SessionContext:
         }
 
 
-_SESSION_CONTEXT: Optional[SessionContext] = None
-_SESSION_CONFIG_SIGNATURE: Optional[tuple[str, int, bool]] = None
+_SESSION_CONTEXT: SessionContext | None = None
+_SESSION_CONFIG_SIGNATURE: tuple[str, int, bool] | None = None
 _SESSION_LOCK = cooperative_threading.Lock()
 # Guard access to the preloaded session pools to ensure thread-safety when the
 # Flask application serves concurrent requests.
 _POOL_LOCK = cooperative_threading.Lock()
 # Cache of ``SessionContext`` objects grouped by accelerator configuration
-# signature. Each entry stores model-name keys mapped to active rembg sessions.
-_SESSION_POOLS: Dict[tuple[str, int, bool], Dict[str, SessionContext]] = {}
+# signature. Each entry stores model-name keys mapped to active ONNX sessions.
+_SESSION_POOLS: dict[tuple[str, int, bool], dict[str, SessionContext]] = {}
 # Track which accelerator signatures have already been preloaded to avoid
 # re-running the expensive warm-up pipeline.
 _PRELOADED_SIGNATURES: set[tuple[str, int, bool]] = set()
@@ -250,7 +281,7 @@ _PRELOADED_SIGNATURES: set[tuple[str, int, bool]] = set()
 _STARTUP_LOGGED_SIGNATURES: set[tuple[str, int, bool]] = set()
 # Map ``id(session)`` to lightweight metadata so runtime logs can reference the
 # active model and provider when reporting inference durations.
-_SESSION_METADATA: Dict[int, Dict[str, str]] = {}
+_SESSION_METADATA: dict[int, dict[str, str]] = {}
 _CPU_WARNING_LOGGED = False
 _CUDA_HINT_LOGGED = False
 
@@ -260,9 +291,9 @@ class RemovalResult:
     """Represents the outcome of processing a single file."""
 
     path_in: Path
-    path_out: Optional[Path]
+    path_out: Path | None
     success: bool
-    error: Optional[str]
+    error: str | None
     timing_ms: float
 
     def to_dict(self) -> dict:
@@ -315,6 +346,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     except (TypeError, ValueError):
         return default
 
+
 def _extract_session_config(config: Mapping[str, Any] | None) -> tuple[str, int, bool]:
     """Return normalised accelerator configuration values."""
 
@@ -358,25 +390,26 @@ def _describe_session(session: Session) -> str:
     return f"{model} via {provider}"
 
 
+def _session_model_name(session: Session) -> str:
+    """Return the model name associated with ``session``."""
+
+    metadata = _SESSION_METADATA.get(id(session))
+    return metadata.get("model", "u2net") if metadata else "u2net"
+
+
 def _warm_up_session(context: SessionContext) -> None:
     """Execute a one-time warm-up inference for ``context`` to prime CUDA kernels."""
 
-    if _rembg_remove is None:
-        LOGGER.debug(
-            "Skipping warm-up for %s because rembg.remove is unavailable",
-            context.model_name,
-        )
+    if ort is None:
+        LOGGER.debug("Skipping warm-up because onnxruntime is unavailable")
         return
 
-    dummy_image = Image.new("RGB", (16, 16), color=(0, 0, 0))
-    buffer = io.BytesIO()
-    dummy_image.save(buffer, format="PNG")
-    payload = buffer.getvalue()
-    buffer.close()
+    dummy_size = _get_model_spec(context.model_name).input_size
+    dummy_image = Image.new("RGB", dummy_size, color=(0, 0, 0))
 
     try:
         start = time.perf_counter()
-        _rembg_remove(payload, session=context.session)
+        _run_inference(dummy_image, context.session, context.model_name, log_timing=False)
         elapsed_ms = (time.perf_counter() - start) * 1000
         LOGGER.info(
             "Warm-up inference for %s completed in %.2f ms (%s)",
@@ -384,7 +417,7 @@ def _warm_up_session(context: SessionContext) -> None:
             elapsed_ms,
             context.provider,
         )
-    except Exception:  # pragma: no cover - depends on runtime availability
+    except Exception:
         LOGGER.warning(
             "Warm-up inference for %s failed; continuing without GPU priming",
             context.model_name,
@@ -393,57 +426,35 @@ def _warm_up_session(context: SessionContext) -> None:
 
 
 def _initialise_session_context(
-    model_name: str,
-    *,
-    requested_mode: str,
-    device_id: int,
-    warn_on_cpu: bool,
-    log_diagnostics: bool,
+        model_name: str,
+        *,
+        requested_mode: str,
+        device_id: int,
+        warn_on_cpu: bool,
+        log_diagnostics: bool,
 ) -> SessionContext:
     """Return a ready-to-use :class:`SessionContext` for ``model_name``."""
 
-    providers_available = accelerator.onnx_providers_available()
-    preferred_provider_name, _ = accelerator.pick_execution_provider(
-        requested_mode, device_id
-    )
+    model_registry.preload_models(config={"BG_ACCELERATOR": requested_mode, "BG_CUDA_DEVICE_ID": device_id})
+    session_obj = model_registry.get_session(model_name)
+    if session_obj is None:
+        raise FileNotFoundError(
+            f"Model '{model_name}' is not available. Download weights into {Path.home() / '.u2net'}."
+        )
+
+    providers_available = model_registry.get_available_providers() or accelerator.onnx_providers_available()
+    resolved_providers = list(getattr(session_obj, "get_providers", lambda: [])())  # type: ignore[call-arg]
+    provider_name = resolved_providers[0] if resolved_providers else "CPUExecutionProvider"
 
     gpu_name = accelerator.detect_gpu_name()
     rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
-
-    gpu_providers = ["CUDAExecutionProvider", "TensorrtExecutionProvider"]
-    ordered_gpu_providers = list(gpu_providers)
-    if rtx_50_series:
-        # TensorRT may provide additional performance on RTX 50 hardware when
-        # available, so test it before CUDA while still keeping CUDA close by
-        # as a compatible fallback option.
-        ordered_gpu_providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
-    provider_options_map: Dict[str, Mapping[str, Any]] = {
-        name: {"device_id": int(device_id)} for name in gpu_providers
-    }
-    provider_options_map["CPUExecutionProvider"] = {}
-
-    provider_chain: List[tuple[str, Any]] = []
-    gpu_requested = requested_mode != "cpu"
-    if gpu_requested:
-        for candidate in ordered_gpu_providers:
-            if candidate in providers_available:
-                options = dict(provider_options_map.get(candidate, {}))
-                provider_chain.append((candidate, (candidate, options)))
-
-    provider_chain.append(("CPUExecutionProvider", "CPUExecutionProvider"))
-    attempted_gpu = gpu_requested and any(
-        name in gpu_providers for name, _ in provider_chain[:-1]
-    )
+    print(provider_name, gpu_name, rtx_50_series)
+    runtime = "cuda" if provider_name in {"CUDAExecutionProvider", "TensorrtExecutionProvider"} else "cpu"
+    gpu_available = runtime == "cuda"
 
     if log_diagnostics:
-        chain_description = " -> ".join(name for name, _ in provider_chain)
-        LOGGER.info("Execution provider priority: %s", chain_description)
-
-    if log_diagnostics:
-        LOGGER.info(
-            "Available ONNX Runtime providers: %s",
-            ", ".join(providers_available) or "none",
-        )
+        LOGGER.info("Available ONNX Runtime providers: %s", ", ".join(providers_available) or "none")
+        LOGGER.info("Selected execution provider: %s", provider_name)
         if gpu_name:
             suffix = " (RTX 50-series detected)" if rtx_50_series else ""
             LOGGER.info("Detected GPU: %s%s", gpu_name, suffix)
@@ -451,96 +462,50 @@ def _initialise_session_context(
             LOGGER.info("No NVIDIA GPU detected")
         LOGGER.info("Accelerator preference: %s", requested_mode)
 
-    warning_message: Optional[str] = None
-    accelerator_message: Optional[str] = None
-    session_obj: Optional[Session] = None
-    active_provider_name = "CPUExecutionProvider"
-    active_chain: List[tuple[str, Any]] = list(provider_chain)
-    last_error: Optional[BaseException] = None
-
-    while active_chain:
-        current_argument = [entry for _, entry in active_chain]
-        current_provider = active_chain[0][0]
-        try:
-            session_obj = _rembg_new_session(model_name, providers=current_argument)
-        except Exception as exc:  # pragma: no cover - depends on runtime state
-            last_error = exc
-            LOGGER.exception(
-                "Failed to initialise %s provider; attempting next fallback",
-                current_provider,
-            )
-            active_chain.pop(0)
-            continue
-        else:
-            active_provider_name = current_provider
-            break
-
-    if session_obj is None:
-        assert last_error is not None
-        raise last_error
-
-    resolved_providers: List[str] = []
-    try:
-        resolved_providers = list(getattr(session_obj, "providers", []))
-    except Exception:  # pragma: no cover - provider introspection best effort
-        LOGGER.debug("Unable to introspect session providers", exc_info=True)
-
-    provider_name = active_provider_name
-    if provider_name in gpu_providers and preferred_provider_name in gpu_providers:
-        provider_name = preferred_provider_name
-    elif resolved_providers:
-        provider_name = resolved_providers[0]
-
-    runtime = "cuda" if provider_name in gpu_providers else "cpu"
-    if log_diagnostics:
-        LOGGER.info("Selected execution provider: %s", provider_name)
-
-    if gpu_name and "CUDAExecutionProvider" not in providers_available:
-        global _CUDA_HINT_LOGGED
-        if not _CUDA_HINT_LOGGED:
-            LOGGER.warning(
-                "Detected GPU %s but CUDAExecutionProvider is unavailable. Install "
-                "onnxruntime-gpu that matches your CUDA runtime, configure nvidia-container-toolkit "
-                "for Docker, and run containers with --gpus all.",
-                gpu_name,
-            )
-            _CUDA_HINT_LOGGED = True
-
-    gpu_active = runtime == "cuda"
-    gpu_requested_for_message = requested_mode in {"cuda", "auto"}
-
-    if gpu_requested_for_message and gpu_active:
-        accelerator_message = f"Using GPU ({provider_name})"
-        LOGGER.info(accelerator_message)
-    elif gpu_requested_for_message and not gpu_active:
-        accelerator_message = "GPU requested but unavailable — falling back to CPU"
-        LOGGER.warning(accelerator_message)
-
-    cpu_fallback = runtime == "cpu" and attempted_gpu
-    if cpu_fallback and warning_message is None:
-        warning_message = (
-            "GPU acceleration was unavailable. Running on CPU; performance will be slower."
+    global _CUDA_HINT_LOGGED
+    if gpu_name and "CUDAExecutionProvider" not in providers_available and not _CUDA_HINT_LOGGED:
+        LOGGER.warning(
+            "Detected GPU %s but CUDAExecutionProvider is unavailable. Install a matching "
+            "onnxruntime-gpu wheel.",
+            gpu_name,
         )
+        _CUDA_HINT_LOGGED = True
 
-    should_warn = warn_on_cpu and runtime == "cpu" and requested_mode != "cpu"
-    if should_warn and warning_message:
-        global _CPU_WARNING_LOGGED
-        if not _CPU_WARNING_LOGGED:
-            LOGGER.warning(warning_message)
-            _CPU_WARNING_LOGGED = True
+    accelerator_message: str | None
+    warning_message: str | None
+    if requested_mode in {"cuda", "auto"} and gpu_available:
+        accelerator_message = f"Using GPU ({provider_name})"
+        print(accelerator_message)
+        warning_message = None
+    elif requested_mode in {"cuda", "auto"} and warn_on_cpu:
+        accelerator_message = "GPU requested but unavailable — falling back to CPU"
+        print(accelerator_message)
+        warning_message = accelerator_message
+    else:
+        accelerator_message = f"Using CPU ({provider_name})"
+        warning_message = None
+
+    global _CPU_WARNING_LOGGED
+    if warning_message and not _CPU_WARNING_LOGGED:
+        LOGGER.warning(
+            "GPU acceleration requested but unavailable; verify that onnxruntime-gpu >= 1.20.1 is installed",
+        )
+        _CPU_WARNING_LOGGED = True
+
+    provider_options: dict[str, Any] = {"device_id": int(device_id)} if gpu_available else {}
 
     context = SessionContext(
         model_name=model_name,
         session=session_obj,
         runtime=runtime,
         provider=provider_name,
-        provider_options=dict(provider_options_map.get(provider_name, {})),
+        provider_options=provider_options,
         providers_available=providers_available,
         gpu_name=gpu_name,
         rtx_50_series=rtx_50_series,
-        warning=warning_message if should_warn or cpu_fallback else None,
+        warning=warning_message,
         device_id=device_id,
-        gpu_available=gpu_active,
+        gpu_available=gpu_available,
         accelerator_message=accelerator_message,
     )
     _register_session_context(context)
@@ -555,14 +520,18 @@ def _initialise_session_context(
 
 
 def _preload_default_models(
-    signature: tuple[str, int, bool],
-    *,
-    requested_mode: str,
-    device_id: int,
-    warn_on_cpu: bool,
+        signature: tuple[str, int, bool],
+        *,
+        requested_mode: str,
+        device_id: int,
+        warn_on_cpu: bool,
 ) -> None:
     """Preload the curated list of models for the provided accelerator signature."""
 
+    model_registry.preload_models(
+        config={"BG_ACCELERATOR": requested_mode, "BG_CUDA_DEVICE_ID": device_id},
+        model_names=_PRELOAD_MODEL_NAMES,
+    )
     pool = _SESSION_POOLS.setdefault(signature, {})
     logged = signature in _STARTUP_LOGGED_SIGNATURES
     for model_name in _PRELOAD_MODEL_NAMES:
@@ -580,13 +549,11 @@ def _preload_default_models(
             _STARTUP_LOGGED_SIGNATURES.add(signature)
             logged = True
 
-def create_session(
-    model_name: str = "u2net", config: Mapping[str, Any] | None = None
-) -> SessionContext:
-    """Create a new ``rembg`` session with optional GPU acceleration."""
 
-    if _rembg_new_session is None:
-        raise RuntimeError("rembg is required to create a background removal session.") from _REMBG_IMPORT_ERROR
+def create_session(
+        model_name: str = "u2net", config: Mapping[str, Any] | None = None
+) -> SessionContext:
+    """Create a new background removal session with optional GPU acceleration."""
 
     requested_mode, device_id, warn_on_cpu = _extract_session_config(config)
     runtime_compat.ensure_runtime_ready()
@@ -621,9 +588,9 @@ def create_session(
 
 
 def ensure_global_session(
-    model_name: str = "u2net", config: Mapping[str, Any] | None = None
+        model_name: str = "u2net", config: Mapping[str, Any] | None = None
 ) -> Session:
-    """Initialise and cache a global ``rembg`` session."""
+    """Initialise and cache a global background removal session."""
 
     global _SESSION_CONTEXT, _SESSION_CONFIG_SIGNATURE
     signature = _signature_for_config(config)
@@ -635,7 +602,7 @@ def ensure_global_session(
     return _SESSION_CONTEXT.session
 
 
-def _get_session(session: Optional[Session] = None) -> Session:
+def _get_session(session: Session | None = None) -> Session:
     """Return the provided session or the cached singleton."""
 
     if session is not None:
@@ -646,13 +613,13 @@ def _get_session(session: Optional[Session] = None) -> Session:
     return context.session
 
 
-def get_session_context() -> Optional[SessionContext]:
+def get_session_context() -> SessionContext | None:
     """Return the cached :class:`SessionContext`, if initialised."""
 
     return _SESSION_CONTEXT
 
 
-def get_runtime_payload() -> Dict[str, Any]:
+def get_runtime_payload() -> dict[str, Any]:
     """Return runtime metadata for embedding in API responses."""
 
     context = _SESSION_CONTEXT
@@ -670,7 +637,7 @@ def get_runtime_payload() -> Dict[str, Any]:
     return context.runtime_payload()
 
 
-def get_accelerator_status() -> Dict[str, Any]:
+def get_accelerator_status() -> dict[str, Any]:
     """Return diagnostic accelerator details for health checks."""
 
     context = _SESSION_CONTEXT
@@ -695,7 +662,7 @@ def get_accelerator_status() -> Dict[str, Any]:
     }
 
 
-def build_colorkey_mask(image: Image.Image, tolerance: int = 14) -> Optional[np.ndarray]:
+def build_colorkey_mask(image: Image.Image, tolerance: int = 14) -> np.ndarray | None:
     """Return a colour-key alpha mask when a near-solid background is detected."""
 
     if tolerance <= 0:
@@ -711,9 +678,9 @@ def build_colorkey_mask(image: Image.Image, tolerance: int = 14) -> Optional[np.
 
     corners = [
         np_image[0:patch, 0:patch],
-        np_image[0:patch, width - patch : width],
-        np_image[height - patch : height, 0:patch],
-        np_image[height - patch : height, width - patch : width],
+        np_image[0:patch, width - patch: width],
+        np_image[height - patch: height, 0:patch],
+        np_image[height - patch: height, width - patch: width],
     ]
     corner_means = np.array([corner.reshape(-1, 3).mean(axis=0) for corner in corners])
     background_colour = corner_means.mean(axis=0)
@@ -739,31 +706,48 @@ def _feather_alpha(alpha: np.ndarray, radius: int) -> np.ndarray:
     return blurred.astype(np.uint8)
 
 
-def _run_rembg(image: Image.Image, session: Session) -> Image.Image:
-    """Execute ``rembg.remove`` and return an RGBA mask image."""
+def _run_inference(
+        image: Image.Image,
+        session: Session,
+        model_name: str,
+        *,
+        log_timing: bool = True,
+) -> Image.Image:
+    """Execute ONNX Runtime inference and return an alpha mask image."""
 
-    if _rembg_remove is None:
-        raise RuntimeError("rembg is required to process images.") from _REMBG_IMPORT_ERROR
+    spec = _get_model_spec(model_name)
+    resized = image.convert("RGB").resize(spec.input_size, Image.Resampling.LANCZOS)
+    np_image = np.asarray(resized, dtype=np.float32)
+    max_value = float(np.max(np_image)) or 1.0
+    np_image /= max_value
 
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    buffer.seek(0)
+    normalised = np.empty_like(np_image, dtype=np.float32)
+    for index in range(3):
+        normalised[:, :, index] = (np_image[:, :, index] - spec.mean[index]) / spec.std[index]
+
+    tensor = normalised.transpose((2, 0, 1))[np.newaxis, ...].astype(np.float32)
+    input_name = session.get_inputs()[0].name
+    feed = {input_name: tensor}
+
     start = time.perf_counter()
-    result_bytes = _rembg_remove(buffer.read(), session=session)
+    outputs = session.run(None, feed)
     elapsed_ms = (time.perf_counter() - start) * 1000
-    LOGGER.info("%s inference completed in %.2f ms", _describe_session(session), elapsed_ms)
-    result_stream = io.BytesIO(result_bytes)
-    result_image = Image.open(result_stream).convert("RGBA")
-    result_image.load()
-    return result_image
+    if log_timing:
+        LOGGER.info("%s inference completed in %.2f ms", _describe_session(session), elapsed_ms)
+
+    pred = sanitize_mask(outputs[0][:, 0, :, :])
+    pred = np.squeeze(pred)
+    mask = Image.fromarray((pred * 255).astype(np.uint8), mode="L")
+    mask = mask.resize(image.size, Image.Resampling.LANCZOS)
+    return mask
 
 
 def _apply_alpha_matting(
-    alpha: np.ndarray,
-    *,
-    foreground_threshold: int,
-    background_threshold: int,
-    erode_size: int,
+        alpha: np.ndarray,
+        *,
+        foreground_threshold: int,
+        background_threshold: int,
+        erode_size: int,
 ) -> np.ndarray:
     """Apply basic alpha refinement inspired by legacy rembg settings."""
 
@@ -781,7 +765,7 @@ def _apply_alpha_matting(
     if erode_size > 0:
         if cv2 is not None:
             kernel = np.ones((erode_size, erode_size), dtype=np.uint8)
-            refined = cv2.erode(refined, kernel, iterations=1)
+            refined = np.asarray(cv2.erode(refined, kernel, iterations=1), dtype=np.uint8)
         else:
             filter_size = max(3, (erode_size // 2) * 2 + 1)
             mask_image = Image.fromarray(refined)
@@ -793,24 +777,25 @@ def _apply_alpha_matting(
 
 
 def remove_bg_file(
-    input_path: str | Path,
-    output_path: Optional[str | Path] = None,
-    *,
-    session: Optional[Session] = None,
-    alpha_matting: bool = False,
-    am_foreground: int = 240,
-    am_background: int = 10,
-    am_erode: int = 10,
-    use_colorkey_fallback: bool = True,
-    colorkey_tolerance: int = 14,
-    feather_radius: int = 3,
-    progress_callback: Optional[ProgressCallback] = None,
-    preview_callback: Optional[PreviewCallback] = None,
-    output_format: Optional[str] = None,
+        input_path: str | Path,
+        output_path: str | Path | None = None,
+        *,
+        session: Session | None = None,
+        alpha_matting: bool = False,
+        am_foreground: int = 240,
+        am_background: int = 10,
+        am_erode: int = 10,
+        use_colorkey_fallback: bool = True,
+        colorkey_tolerance: int = 14,
+        feather_radius: int = 3,
+        progress_callback: ProgressCallback | None = None,
+        preview_callback: PreviewCallback | None = None,
+        output_format: str | None = None,
 ) -> RemovalResult:
     """Remove the background from ``input_path`` and export the chosen format."""
 
     session = _get_session(session)
+    model_name = _session_model_name(session)
     source = Path(input_path)
     format_spec = get_output_format_spec(output_format)
     if output_path is None:
@@ -825,7 +810,7 @@ def remove_bg_file(
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     start = time.perf_counter()
-    error: Optional[str] = None
+    error: str | None = None
 
     def emit_progress(stage: str, percent: float) -> None:
         """Forward progress updates to the optional callback."""
@@ -839,6 +824,8 @@ def remove_bg_file(
         emit_progress("load", 5.0)
         with Image.open(source) as raw_image:
             oriented = ImageOps.exif_transpose(raw_image)
+            if oriented is None:
+                oriented = raw_image.copy()
             rgba_source = oriented.convert("RGBA")
             work_image = rgba_source.convert("RGB")
 
@@ -859,13 +846,12 @@ def remove_bg_file(
                 resized = work_image.copy()
                 resized.thumbnail((MAX_WORK_DIMENSION, MAX_WORK_DIMENSION), Image.Resampling.LANCZOS)
                 emit_progress("resize", 15.0)
-                mask_image = _run_rembg(resized, session)
-                alpha_channel = mask_image.split()[-1]
-                alpha_channel = alpha_channel.resize(rgba_source.size, Image.Resampling.LANCZOS)
+                mask_image = _run_inference(resized, session, model_name)
+                alpha_channel = mask_image.resize(rgba_source.size, Image.Resampling.LANCZOS)
                 emit_progress("remove_background", 40.0)
             else:
-                mask_image = _run_rembg(work_image, session)
-                alpha_channel = mask_image.split()[-1]
+                mask_image = _run_inference(work_image, session, model_name)
+                alpha_channel = mask_image
                 emit_progress("remove_background", 40.0)
 
             alpha_np = np.asarray(alpha_channel, dtype=np.uint8)
@@ -930,20 +916,20 @@ def _iter_input_files(input_dir: Path, recursive: bool) -> Iterable[Path]:
 
 
 def remove_bg_folder(
-    input_dir: str | Path,
-    output_dir: Optional[str | Path] = None,
-    output_format: Optional[str] = None,
-    *,
-    session: Optional[Session] = None,
-    recursive: bool = False,
-    alpha_matting: bool = False,
-    am_foreground: int = 240,
-    am_background: int = 10,
-    am_erode: int = 10,
-    use_colorkey_fallback: bool = True,
-    colorkey_tolerance: int = 14,
-    feather_radius: int = 3,
-) -> List[RemovalResult]:
+        input_dir: str | Path,
+        output_dir: str | Path | None = None,
+        output_format: str | None = None,
+        *,
+        session: Session | None = None,
+        recursive: bool = False,
+        alpha_matting: bool = False,
+        am_foreground: int = 240,
+        am_background: int = 10,
+        am_erode: int = 10,
+        use_colorkey_fallback: bool = True,
+        colorkey_tolerance: int = 14,
+        feather_radius: int = 3,
+) -> list[RemovalResult]:
     """Process every supported image in ``input_dir`` sequentially."""
 
     session = _get_session(session)
@@ -955,7 +941,7 @@ def remove_bg_folder(
     output_path.mkdir(parents=True, exist_ok=True)
     format_spec = get_output_format_spec(output_format)
 
-    results: List[RemovalResult] = []
+    results: list[RemovalResult] = []
     for source in _iter_input_files(input_path, recursive):
         relative = source.relative_to(input_path) if recursive else Path(source.name)
         destination = format_spec.normalise_filename(output_path / relative)

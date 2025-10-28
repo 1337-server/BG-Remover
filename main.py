@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from app.services import runtime_compat
 from app.services.bg_remove import (
@@ -124,7 +124,7 @@ def main() -> None:
     input_path = Path(args.input).expanduser() if args.input else Path.cwd()
     runtime_compat.ensure_runtime_ready()
 
-    config_overrides: Dict[str, Any] = {}
+    config_overrides: dict[str, Any] = {}
     if args.accelerator:
         config_overrides["BG_ACCELERATOR"] = args.accelerator
     if args.cuda_device_id is not None:

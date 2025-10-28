@@ -1,3 +1,0 @@
--r requirements-base.txt
-onnxruntime-gpu==1.18.1 # or 1.20.1
-pynvml==11.5.0

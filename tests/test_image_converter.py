@@ -119,6 +119,9 @@ def test_single_image_post_requires_file() -> None:
     app = _create_app()
     client = app.test_client()
 
+    image_converter.ensure_global_session = lambda config=None: None  # type: ignore[assignment]
+    image_converter.get_runtime_payload = lambda: {"runtime": "cpu", "warning": None}  # type: ignore[assignment]
+
     response = client.post(
         "/image/remove-bg?json=1",
         data={"output_format": "png"},

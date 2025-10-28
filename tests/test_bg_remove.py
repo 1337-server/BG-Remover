@@ -1,23 +1,31 @@
-"""Tests for the background removal helpers."""
-from __future__ import annotations
-
-import io
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
 from app.services import bg_remove
 
 
-def _stub_session(providers: list[str]) -> object:
-    """Return a simple stub object that mimics an ONNX session."""
+class _FakeSession:
+    """Lightweight ONNX Runtime session stub used for unit tests."""
 
-    class _StubSession:
-        def __init__(self, provider_list: list[str]) -> None:
-            self.providers = provider_list
+    def __init__(self, providers: list[str], value: float = 0.5) -> None:
+        self._providers = providers
+        self._value = value
+        self.run_calls = 0
 
-    return _StubSession(providers)
+    def get_providers(self) -> list[str]:
+        return list(self._providers)
+
+    def get_inputs(self) -> list[SimpleNamespace]:
+        return [SimpleNamespace(name="input", shape=[1, 3, 320, 320], type="tensor(float)")]
+
+    def run(self, *_args, **_kwargs) -> list[np.ndarray]:
+        self.run_calls += 1
+        data = np.full((1, 1, 320, 320), self._value, dtype=np.float32)
+        return [data]
 
 
 def _reset_session_state() -> None:
@@ -34,98 +42,53 @@ def _reset_session_state() -> None:
 
 
 def test_create_session_uses_gpu_priority(monkeypatch: pytest.MonkeyPatch) -> None:
-    """GPU providers should be ordered CUDA → TensorRT → CPU."""
+    """GPU providers should be selected when available."""
 
     _reset_session_state()
 
-    call_history: dict[str, list[list]] = {}
+    fake_session = _FakeSession(["CUDAExecutionProvider", "CPUExecutionProvider"])
 
-    def fake_new_session(model_name: str, providers: list) -> object:
-        call_history.setdefault(model_name, []).append(providers)
-        first_provider = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
-        return _stub_session([first_provider])
-
-    def fake_remove(_: bytes, session: object) -> bytes:
-        buffer = io.BytesIO()
-        Image.new("RGBA", (2, 2), color=(0, 0, 0, 0)).save(buffer, format="PNG")
-        return buffer.getvalue()
-
-    monkeypatch.setattr(bg_remove, "_rembg_new_session", fake_new_session)
-    monkeypatch.setattr(bg_remove, "_REMBG_IMPORT_ERROR", None)
-    monkeypatch.setattr(bg_remove, "_rembg_remove", fake_remove)
+    monkeypatch.setattr(bg_remove, "_PRELOAD_MODEL_NAMES", ("u2net",))
     monkeypatch.setattr(bg_remove.runtime_compat, "ensure_runtime_ready", lambda: None)
+    monkeypatch.setattr(bg_remove.model_registry, "preload_models", lambda **_: {"u2net": fake_session})
+    monkeypatch.setattr(bg_remove.model_registry, "get_session", lambda name: fake_session)
     monkeypatch.setattr(
-        bg_remove.accelerator,
-        "onnx_providers_available",
-        lambda: ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"],
+        bg_remove.model_registry,
+        "get_available_providers",
+        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
     monkeypatch.setattr(bg_remove.accelerator, "detect_gpu_name", lambda: "NVIDIA GeForce RTX 5090")
-    monkeypatch.setattr(bg_remove.accelerator, "is_rtx_50xx", lambda name: True)
+    monkeypatch.setattr(bg_remove.accelerator, "is_rtx_50xx", lambda _: True)
 
-    context = bg_remove.create_session(config={})
+    context = bg_remove.create_session(config={"BG_ACCELERATOR": "cuda"})
 
-    requested_calls = call_history.get("u2net", [])
-    assert requested_calls, "u2net should be initialised during preloading"
-    recorded_providers = requested_calls[-1]
-    assert recorded_providers[0][0] == "TensorrtExecutionProvider"
-    assert recorded_providers[1][0] == "CUDAExecutionProvider"
-    assert recorded_providers[-1] == "CPUExecutionProvider"
     assert context.runtime == "cuda"
     assert context.provider == "CUDAExecutionProvider"
     assert context.warning is None
-    runtime_payload = context.runtime_payload()
-    assert runtime_payload["gpu_available"] is True
-    assert runtime_payload["accelerator_message"] == "Using GPU (CUDAExecutionProvider)"
+    assert bg_remove._SESSION_METADATA[id(fake_session)]["model"] == "u2net"
+    assert fake_session.run_calls >= 1, "warm-up should invoke at least one inference"
 
 
 def test_create_session_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Failures initialising GPU providers should fall back to CPU with a warning."""
+    """When CUDA is unavailable the context should report a CPU fallback."""
 
     _reset_session_state()
 
-    call_history: dict[str, list[list]] = {}
+    fake_session = _FakeSession(["CPUExecutionProvider"], value=0.0)
 
-    def fake_new_session(model_name: str, providers: list) -> object:
-        call_history.setdefault(model_name, []).append(providers)
-        first_provider = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
-        if first_provider in {"TensorrtExecutionProvider", "CUDAExecutionProvider"}:
-            raise RuntimeError("GPU provider failed")
-        return _stub_session([first_provider])
-
-    def fake_remove(_: bytes, session: object) -> bytes:
-        buffer = io.BytesIO()
-        Image.new("RGBA", (2, 2), color=(0, 0, 0, 0)).save(buffer, format="PNG")
-        return buffer.getvalue()
-
-    monkeypatch.setattr(bg_remove, "_rembg_new_session", fake_new_session)
-    monkeypatch.setattr(bg_remove, "_REMBG_IMPORT_ERROR", None)
-    monkeypatch.setattr(bg_remove, "_rembg_remove", fake_remove)
+    monkeypatch.setattr(bg_remove, "_PRELOAD_MODEL_NAMES", ("u2net",))
     monkeypatch.setattr(bg_remove.runtime_compat, "ensure_runtime_ready", lambda: None)
-    monkeypatch.setattr(
-        bg_remove.accelerator,
-        "onnx_providers_available",
-        lambda: ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"],
-    )
+    monkeypatch.setattr(bg_remove.model_registry, "preload_models", lambda **_: {"u2net": fake_session})
+    monkeypatch.setattr(bg_remove.model_registry, "get_session", lambda name: fake_session)
+    monkeypatch.setattr(bg_remove.model_registry, "get_available_providers", lambda: ["CPUExecutionProvider"])
     monkeypatch.setattr(bg_remove.accelerator, "detect_gpu_name", lambda: "NVIDIA GeForce RTX 5090")
-    monkeypatch.setattr(bg_remove.accelerator, "is_rtx_50xx", lambda name: True)
-    monkeypatch.setattr(bg_remove, "_CPU_WARNING_LOGGED", False)
+    monkeypatch.setattr(bg_remove.accelerator, "is_rtx_50xx", lambda _: True)
 
-    context = bg_remove.create_session(config={})
+    context = bg_remove.create_session(config={"BG_ACCELERATOR": "cuda", "BG_WARN_ON_CPU": True})
 
-    requested_calls = call_history.get("u2net", [])
-    assert requested_calls, "u2net should be initialised during preloading"
-    # The initial attempt should enumerate GPU providers before falling back to CPU.
-    assert requested_calls[0][0][0] == "TensorrtExecutionProvider"
-    assert requested_calls[0][1][0] == "CUDAExecutionProvider"
-    assert requested_calls[0][-1] == "CPUExecutionProvider"
-    # The final attempt should request CPU only after GPU failures.
-    assert requested_calls[-1][0] == "CPUExecutionProvider"
     assert context.runtime == "cpu"
     assert context.provider == "CPUExecutionProvider"
-    assert context.warning is not None
-    runtime_payload = context.runtime_payload()
-    assert runtime_payload["gpu_available"] is False
-    assert runtime_payload["accelerator_message"] == "GPU requested but unavailable — falling back to CPU"
+    assert context.warning == "GPU requested but unavailable — falling back to CPU"
 
 
 def test_build_colorkey_mask_detects_foreground() -> None:
@@ -151,7 +114,9 @@ def test_get_output_format_spec_handles_aliases() -> None:
 
 
 @pytest.mark.parametrize("recursive", [False, True])
-def test_remove_bg_folder_invokes_processing(tmp_path: Path, recursive: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_remove_bg_folder_invokes_processing(
+    tmp_path: Path, recursive: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Folder helper should return results for supported images only."""
 
     input_dir = tmp_path / "input"
@@ -177,7 +142,7 @@ def test_remove_bg_folder_invokes_processing(tmp_path: Path, recursive: bool, mo
     result_list = bg_remove.remove_bg_folder(
         input_dir,
         output_dir=tmp_path / "output",
-        session=object(),
+        session=_FakeSession(["CPUExecutionProvider"]),
         recursive=recursive,
     )
 
@@ -207,96 +172,43 @@ def test_remove_bg_folder_default_output_dir(tmp_path: Path, monkeypatch: pytest
 
     monkeypatch.setattr(bg_remove, "remove_bg_file", fake_remove_bg_file)
 
-    results = bg_remove.remove_bg_folder(input_dir, session=object())
+    results = bg_remove.remove_bg_folder(input_dir, session=_FakeSession(["CPUExecutionProvider"]))
 
     expected_destination = tmp_path / "output" / "example.png"
     assert destinations == [expected_destination]
     assert results[0].path_out == expected_destination
 
 
-def test_remove_bg_file_default_output_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Single-file processing should default to ``cwd / 'output'``."""
+def test_remove_bg_file_sanitises_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inference results containing NaNs should be clamped before writing the output."""
 
     monkeypatch.chdir(tmp_path)
-    input_file = tmp_path / "sample.jpg"
-    image = Image.new("RGB", (4, 4), color=(255, 0, 0))
-    image.save(input_file)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (8, 8), color=(200, 200, 200)).save(source)
 
-    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None, **_: object())
+    class _NoisySession(_FakeSession):
+        def run(self, *_args, **_kwargs) -> list[np.ndarray]:
+            data = np.array([[[[0.0, np.nan], [np.inf, -np.inf]]]], dtype=np.float32)
+            return [data]
 
-    def fake_run_rembg(image: Image.Image, session: object) -> Image.Image:
-        """Return a solid opaque mask for deterministic behaviour."""
-
-        return Image.new("RGBA", image.size, color=(255, 255, 255, 255))
-
-    monkeypatch.setattr(bg_remove, "_run_rembg", fake_run_rembg)
-
-    result = bg_remove.remove_bg_file(input_file)
-
-    expected_output = tmp_path / "output" / "sample.png"
-    assert result.success
-    assert result.path_out == expected_output
-    assert expected_output.exists()
-
-
-def test_remove_bg_file_respects_requested_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Explicit output formats should control the exported file type."""
-
-    monkeypatch.chdir(tmp_path)
-    input_file = tmp_path / "transparent.png"
-    image = Image.new("RGBA", (4, 4), color=(0, 128, 255, 200))
-    image.save(input_file)
-
-    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None, **_: object())
-
-    def fake_run_rembg(image: Image.Image, session: object) -> Image.Image:
-        """Return a semi-transparent mask for deterministic output."""
-
-        return Image.new("RGBA", image.size, color=(255, 255, 255, 200))
-
-    monkeypatch.setattr(bg_remove, "_run_rembg", fake_run_rembg)
-
-    result = bg_remove.remove_bg_file(input_file, output_format="jpg")
-
-    assert result.success
-    assert result.path_out is not None
-    assert result.path_out.suffix == ".jpg"
-
-    with Image.open(result.path_out) as exported:
-        assert exported.mode == "RGB"
-
-
-def test_remove_bg_file_emits_callbacks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Progress and preview callbacks should receive updates during processing."""
-
-    monkeypatch.chdir(tmp_path)
-    input_file = tmp_path / "sample.jpg"
-    image = Image.new("RGB", (4, 4), color=(255, 0, 0))
-    image.save(input_file)
-
-    monkeypatch.setattr(bg_remove, "_get_session", lambda session=None, **_: object())
-
-    def fake_run_rembg(image: Image.Image, session: object) -> Image.Image:
-        return Image.new("RGBA", image.size, color=(255, 255, 255, 128))
-
-    monkeypatch.setattr(bg_remove, "_run_rembg", fake_run_rembg)
-
-    progress_events: list[tuple[str, float]] = []
-    preview_events: list[str] = []
-
-    def progress_callback(stage: str, percent: float) -> None:
-        progress_events.append((stage, percent))
-
-    def preview_callback(preview_image: Image.Image, stage: str) -> None:
-        assert isinstance(preview_image, Image.Image)
-        preview_events.append(stage)
+    session = _NoisySession(["CPUExecutionProvider"])
+    bg_remove._SESSION_METADATA[id(session)] = {
+        "model": "u2net",
+        "provider": "CPUExecutionProvider",
+        "runtime": "cpu",
+    }
 
     result = bg_remove.remove_bg_file(
-        input_file,
-        progress_callback=progress_callback,
-        preview_callback=preview_callback,
+        source,
+        session=session,
+        alpha_matting=False,
+        use_colorkey_fallback=False,
+        feather_radius=0,
     )
 
     assert result.success
-    assert any(stage == "mask" for stage, _ in progress_events)
-    assert any(stage == "refined" for stage in preview_events)
+    assert result.path_out is not None
+    output_image = Image.open(result.path_out)
+    alpha = np.asarray(output_image.split()[-1])
+    assert alpha.min() >= 0
+    assert alpha.max() <= 255

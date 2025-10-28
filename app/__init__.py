@@ -3,19 +3,14 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Mapping, MutableMapping
+from collections.abc import Mapping, MutableMapping
+from typing import TYPE_CHECKING, Any
 
-from app.services import runtime_compat
-from app.services.model_preload import preload_all_models
+from app.services import model_registry, runtime_compat
 from app.services.bg_remove import ensure_global_session
 
-try:  # pragma: no cover - optional during testing
-    from flask import Flask, request
-except ModuleNotFoundError as exc:  # pragma: no cover - guard for test imports
-    Flask = None  # type: ignore
-    _FLASK_IMPORT_ERROR = exc
-else:
-    _FLASK_IMPORT_ERROR = None
+if TYPE_CHECKING:  # pragma: no cover - typing assistance only
+    from flask import Flask
 
 
 LOGGER = logging.getLogger(__name__)
@@ -84,11 +79,14 @@ def _build_config(overrides: Mapping[str, Any] | None) -> MutableMapping[str, An
     return config
 
 
-def create_app(config_overrides: Mapping[str, Any] | None = None) -> "Flask":
+def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     """Create and configure the Flask application."""
 
-    if Flask is None:  # pragma: no cover - executed only when Flask missing
-        raise RuntimeError("Flask is required to create the web application.") from _FLASK_IMPORT_ERROR
+    try:  # pragma: no cover - executed only when Flask missing
+        from flask import Flask
+        from flask import request as flask_request
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Flask is required to create the web application.") from exc
 
     app = Flask(__name__)
     app.config.from_mapping(_build_config(config_overrides))
@@ -97,7 +95,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> "Flask":
     # ensures NumPy/ONNXRuntime compatibility issues are surfaced early.
     runtime_compat.ensure_runtime_ready()
     # Warm up ONNX models to avoid cold-start latency before requests arrive.
-    preload_all_models(config=app.config)
+    model_registry.preload_models(config=app.config)
     # Initialise the global background removal session once at startup.
     ensure_global_session(config=app.config)
 
@@ -109,7 +107,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> "Flask":
     def add_static_cache_headers(response):
         """Add caching headers to static asset responses to improve load performance."""
 
-        if request.path.startswith("/static/"):
+        if flask_request.path.startswith("/static/"):
             response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
         return response
 

@@ -80,7 +80,13 @@ def test_single_image_post_returns_json(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(
         image_converter,
         "get_runtime_payload",
-        lambda: {"runtime": "cuda", "gpu_name": "Test GPU", "warning": None},
+        lambda: {
+            "runtime": "cuda",
+            "gpu_name": "Test GPU",
+            "warning": None,
+            "gpu_available": True,
+            "status_message": "Using GPU (CUDAExecutionProvider)",
+        },
     )
     monkeypatch.setattr(image_converter, "remove_bg_file", fake_remove_bg_file)
 
@@ -147,7 +153,13 @@ def test_single_image_post_includes_warning(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         image_converter,
         "get_runtime_payload",
-        lambda: {"runtime": "cpu", "gpu_name": "Fallback GPU", "warning": "Running on CPU"},
+        lambda: {
+            "runtime": "cpu",
+            "gpu_name": "Fallback GPU",
+            "warning": "Running on CPU",
+            "gpu_available": False,
+            "status_message": "Running on CPU",
+        },
     )
 
     client = app.test_client()

@@ -204,6 +204,8 @@ class SessionContext:
     rtx_50_series: bool
     warning: str | None
     device_id: int
+    gpu_available: bool
+    status_message: str
 
     def runtime_payload(self) -> Dict[str, Any]:
         """Return a serialisable snapshot of the accelerator runtime."""
@@ -212,6 +214,8 @@ class SessionContext:
             "runtime": self.runtime,
             "gpu_name": self.gpu_name,
             "warning": self.warning,
+            "gpu_available": self.gpu_available,
+            "status_message": self.status_message,
         }
 
 
@@ -282,13 +286,6 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     except (TypeError, ValueError):
         return default
 
-    if "CUDAExecutionProvider" not in providers:
-        LOGGER.warning(
-            "CUDA detected but the CUDAExecutionProvider is unavailable. Install "
-            "onnxruntime-gpu>=1.18.0 to enable GPU acceleration."
-        )
-        return None
-
 def _extract_session_config(config: Mapping[str, Any] | None) -> tuple[str, int, bool]:
     """Return normalised accelerator configuration values."""
 
@@ -324,10 +321,25 @@ def create_session(
     runtime = "cuda" if provider_key == "cuda" else "cpu"
     provider_name = "CUDAExecutionProvider" if runtime == "cuda" else "CPUExecutionProvider"
     providers_argument: List[Any]
+    gpu_requested = requested_mode != "cpu"
+    status_message = "Running on CPU"
+    gpu_available_flag = False
     if runtime == "cuda":
-        providers_argument = [("CUDAExecutionProvider", dict(provider_options or {})), "CPUExecutionProvider"]
+        cuda_options = dict(provider_options or {})
+        cuda_provider: Any = "CUDAExecutionProvider"
+        if cuda_options:
+            cuda_provider = ("CUDAExecutionProvider", cuda_options)
+        providers_argument = [
+            cuda_provider,
+            "TensorrtExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        status_message = "Using GPU (CUDAExecutionProvider)"
+        gpu_available_flag = True
     else:
         providers_argument = ["CPUExecutionProvider"]
+        if gpu_requested:
+            status_message = "GPU requested but unavailable — falling back to CPU"
 
     gpu_name = accelerator.detect_gpu_name()
     rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
@@ -355,12 +367,19 @@ def create_session(
             provider_name = "CPUExecutionProvider"
             providers_argument = ["CPUExecutionProvider"]
             warning_message = "Running on CPU, performance will be slower."
+            status_message = "GPU requested but unavailable — falling back to CPU"
+            gpu_available_flag = False
             session_obj = _rembg_new_session(model_name, providers=providers_argument)
         else:
             raise
 
     if session_obj is None:
         session_obj = _rembg_new_session(model_name, providers=providers_argument)
+
+    if gpu_available_flag:
+        LOGGER.info(status_message)
+    elif gpu_requested:
+        LOGGER.info(status_message)
 
     LOGGER.info("Selected execution provider: %s", provider_name)
 
@@ -393,6 +412,8 @@ def create_session(
         rtx_50_series=rtx_50_series,
         warning=warning_message if should_warn else None,
         device_id=device_id,
+        gpu_available=gpu_available_flag,
+        status_message=status_message,
     )
 
 
@@ -433,7 +454,13 @@ def get_runtime_payload() -> Dict[str, Any]:
 
     context = _SESSION_CONTEXT
     if context is None:
-        return {"runtime": "cpu", "gpu_name": None, "warning": None}
+        return {
+            "runtime": "cpu",
+            "gpu_name": None,
+            "warning": None,
+            "gpu_available": False,
+            "status_message": "Running on CPU",
+        }
     return context.runtime_payload()
 
 

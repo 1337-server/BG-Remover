@@ -8,12 +8,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Tuple
-
-from app.services import runtime_compat
-
-if TYPE_CHECKING:  # pragma: no cover - hints only
-    from flask import Flask
+from typing import Any, Dict, List, Mapping, Tuple
 
 from flask import (
     Blueprint,
@@ -32,6 +27,7 @@ from werkzeug.utils import secure_filename
 from app.services.bg_remove import (
     OUTPUT_FORMATS,
     RemovalResult,
+    SessionContext,
     create_session,
     encode_result_image,
     ensure_global_session,
@@ -41,7 +37,6 @@ from app.services.bg_remove import (
     get_runtime_payload,
     remove_bg_file,
     remove_bg_folder,
-    OUTPUT_FORMATS,
 )
 
 image_converter_bp = Blueprint("image_converter", __name__)
@@ -61,7 +56,7 @@ class RegistryItem:
 
 _FILE_REGISTRY: Dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: Dict[str, RegistryItem] = {}
-_SESSION_CACHE: Dict[Tuple[str, str, int], "SessionContext"] = {}
+_SESSION_CACHE: Dict[Tuple[str, str, int], SessionContext] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
@@ -135,7 +130,7 @@ def _collect_single_options(form: Mapping[str, str], defaults: Dict[str, int]) -
     }
 
 
-def _get_session_context(model_name: str, config: Mapping[str, Any]) -> "SessionContext":
+def _get_session_context(model_name: str, config: Mapping[str, Any]) -> SessionContext:
     """Return a cached background removal session for ``model_name``."""
 
     accelerator_mode = str(config.get("BG_ACCELERATOR", "auto")).strip().lower()
@@ -208,12 +203,12 @@ def remove_bg_view() -> Response:
     if current_app and current_app.config.get("TESTING"):
         session = None
         runtime_info = get_runtime_payload()
-        gpu_available = bool(runtime_compat.has_cuda_support() or runtime_info.get("gpu_name"))
+        gpu_available = bool(runtime_info.get("gpu_available"))
     else:
         session_context = _get_session_context(model_name, session_config)
         session = session_context.session
         runtime_info = session_context.runtime_payload()
-        gpu_available = bool(session_context.gpu_name or runtime_compat.has_cuda_support())
+        gpu_available = session_context.gpu_available
 
     json_requested = request.args.get("json") == "1"
 

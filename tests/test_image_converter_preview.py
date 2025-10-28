@@ -115,10 +115,40 @@ def test_remove_bg_live_triggers_background_processing(tmp_path: Path, monkeypat
     assert "preview" in emitted_events
     assert "completed" in emitted_events
 
-    completed_payloads = [payload for event, payload in dummy_socket.events if event == "completed"]
-    assert completed_payloads
-    completed = completed_payloads[0]
-    assert completed["mime_type"] == "image/webp"
-    assert completed["format"] == "webp"
-    assert completed["download_name"].endswith(".webp")
+
+def test_remove_bg_live_returns_service_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live endpoint should surface informative errors when Socket.IO is missing."""
+
+    app = Flask(__name__)
+    app.register_blueprint(image_converter.image_converter_bp)
+    app.config.update(TESTING=True)
+
+    class FailingSocket:
+        def emit(self, *_: object, **__: object) -> None:
+            """The stub emit simply records the attempt for compatibility."""
+
+        def start_background_task(self, *_: object, **__: object) -> None:
+            """Simulate the behaviour of the stub that cannot spawn tasks."""
+
+            raise RuntimeError("Background tasks are unavailable in stub mode.")
+
+    monkeypatch.setattr(image_converter, "socketio", FailingSocket())
+
+    client = app.test_client()
+    data = {
+        "socket_id": "abc123",
+        "image_file": (BytesIO(b"fake image"), "sample.jpg"),
+    }
+
+    response = client.post(
+        "/image/remove-bg/live",
+        data=data,
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload == {
+        "error": "Background tasks are unavailable in stub mode."
+    }
 

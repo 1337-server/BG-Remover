@@ -1,11 +1,26 @@
-"""Simplified background removal helpers using rembg sessions."""
+"""Background removal helpers powered by ONNX Runtime sessions.
+
+The original implementation proxied the :mod:`rembg` package. Recent
+versions of :mod:`rembg` pull in :mod:`pymatting`, which depends on
+``numba`` features that are not yet available on Python 3.12. Importing
+``rembg`` therefore raised ``NotImplementedError`` while attempting to
+compile those extensions, leaving the application stuck before it could
+run inference. To keep the project lightweight and reliable we now drive
+the ONNX models directly through :mod:`onnxruntime`, reproducing the
+minimal pre/post-processing steps required by the original sessions.
+"""
 from __future__ import annotations
 
 import base64
+import contextlib
+import hashlib
 import io
 import logging
+import os
+import shutil
 import threading
 import time
+import urllib.request
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -13,17 +28,19 @@ from pathlib import Path
 from typing import IO, Any, cast
 
 import numpy as np
+import onnxruntime as ort
+from PIL import Image, ImageFilter, ImageOps
 
 try:  # pragma: no cover - optional dependency during certain deployments
     import cv2  # type: ignore
 except Exception:  # pragma: no cover - gracefully handle missing OpenCV
     cv2 = None  # type: ignore
 
-from PIL import Image, ImageFilter, ImageOps
-
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MODEL_NAME = "isnet-general-use"
+MODEL_DOWNLOAD_ROOT = Path.home() / ".u2net"
+MODEL_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)
@@ -86,11 +103,59 @@ DEFAULT_OUTPUT_FORMAT = OUTPUT_FORMATS[0].key
 
 
 @dataclass(frozen=True)
+class ModelSpec:
+    """Descriptor describing an ONNX segmentation model."""
+
+    key: str
+    url: str
+    checksum_md5: str
+    input_size: tuple[int, int]
+    mean: tuple[float, float, float]
+    std: tuple[float, float, float]
+
+
+MODEL_SPECS: dict[str, ModelSpec] = {
+    "isnet-general-use": ModelSpec(
+        key="isnet-general-use",
+        url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
+        checksum_md5="fc16ebd8b0c10d971d3513d564d01e29",
+        input_size=(1024, 1024),
+        mean=(0.5, 0.5, 0.5),
+        std=(1.0, 1.0, 1.0),
+    ),
+    "u2net": ModelSpec(
+        key="u2net",
+        url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx",
+        checksum_md5="60024c5c889badc19c04ad937298a77b",
+        input_size=(320, 320),
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+    ),
+    "u2net_human_seg": ModelSpec(
+        key="u2net_human_seg",
+        url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net_human_seg.onnx",
+        checksum_md5="c09ddc2e0104f800e3e1bb4652583d1f",
+        input_size=(320, 320),
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+    ),
+    "isnet-anime": ModelSpec(
+        key="isnet-anime",
+        url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-anime.onnx",
+        checksum_md5="6f184e756bb3bd901c8849220a83e38e",
+        input_size=(1024, 1024),
+        mean=(0.485, 0.456, 0.406),
+        std=(1.0, 1.0, 1.0),
+    ),
+}
+
+
+@dataclass(frozen=True)
 class SessionContext:
-    """Container representing a rembg session and provider metadata."""
+    """Container representing an ONNX session and provider metadata."""
 
     model_name: str
-    session: Any
+    session: BackgroundRemovalSession
     provider: str
     providers_available: tuple[str, ...]
 
@@ -175,36 +240,126 @@ _GLOBAL_SESSION: SessionContext | None = None
 _GLOBAL_SESSION_LOCK = threading.Lock()
 
 
+def _normalise_image(image: Image.Image, spec: ModelSpec) -> np.ndarray:
+    """Return a model-ready tensor for ``image`` according to ``spec``."""
+
+    rgb_image = image.convert("RGB").resize(spec.input_size, Image.Resampling.LANCZOS)
+    rgb_array = np.asarray(rgb_image, dtype=np.float32)
+    max_value = float(np.max(rgb_array))
+    if max_value <= 0:
+        max_value = 1.0
+    rgb_array /= max_value
+    normalised = np.zeros_like(rgb_array, dtype=np.float32)
+    for index in range(3):
+        normalised[:, :, index] = (rgb_array[:, :, index] - spec.mean[index]) / spec.std[index]
+    normalised = normalised.transpose((2, 0, 1))
+    return np.expand_dims(normalised, 0).astype(np.float32)
+
+
+def _compute_mask(array: np.ndarray, original_size: tuple[int, int]) -> Image.Image:
+    """Convert an ONNX output ``array`` into a resized mask image."""
+
+    mask = array
+    while mask.ndim > 2:
+        mask = mask[0]
+    max_value = float(mask.max())
+    min_value = float(mask.min())
+    if max_value - min_value > 1e-5:
+        mask = (mask - min_value) / (max_value - min_value)
+    else:
+        mask = np.zeros_like(mask)
+    mask = (mask * 255).clip(0, 255).astype("uint8")
+    image = Image.fromarray(mask, mode="L")
+    if image.size != original_size:
+        image = image.resize(original_size, Image.Resampling.LANCZOS)
+    return image
+
+
+def _verify_md5(path: Path, expected: str) -> bool:
+    """Return ``True`` when the file at ``path`` matches ``expected``."""
+
+    if not path.exists():
+        return False
+    checksum = hashlib.md5()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            checksum.update(chunk)
+    return checksum.hexdigest() == expected.lower()
+
+
+def _download_model(spec: ModelSpec) -> Path:
+    """Download the ONNX model defined by ``spec`` when needed."""
+
+    destination = MODEL_DOWNLOAD_ROOT / f"{spec.key}.onnx"
+    if _verify_md5(destination, spec.checksum_md5):
+        LOGGER.debug("Model %s already present at %s", spec.key, destination)
+        return destination
+    LOGGER.info("Fetching model %s from %s", spec.key, spec.url)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.ExitStack() as stack:
+        response = stack.enter_context(urllib.request.urlopen(spec.url))
+        tmp_path = destination.with_suffix(".tmp")
+        with stack.enter_context(tmp_path.open("wb")) as buffer:
+            shutil.copyfileobj(response, buffer)
+    if not _verify_md5(tmp_path, spec.checksum_md5):
+        tmp_path.unlink(missing_ok=True)
+        raise ValueError(f"Checksum mismatch for model {spec.key}")
+    tmp_path.replace(destination)
+    LOGGER.info("Model %s stored at %s", spec.key, destination)
+    return destination
+
+
+class BackgroundRemovalSession:
+    """Small wrapper around an :class:`onnxruntime.InferenceSession`."""
+
+    def __init__(self, spec: ModelSpec):
+        self.spec = spec
+        model_path = _download_model(spec)
+        session_options = ort.SessionOptions()
+        if "OMP_NUM_THREADS" in os.environ:  # type: ignore[name-defined]
+            threads = int(os.environ["OMP_NUM_THREADS"])  # type: ignore[name-defined]
+            session_options.inter_op_num_threads = threads
+            session_options.intra_op_num_threads = threads
+        self.inner = ort.InferenceSession(
+            str(model_path),
+            sess_options=session_options,
+            providers=["CPUExecutionProvider"],
+        )
+        self.input_name = self.inner.get_inputs()[0].name
+        providers = self.inner.get_providers()
+        self.providers_available = tuple(providers)
+        self.primary_provider = providers[0] if providers else "CPUExecutionProvider"
+
+    def predict_mask(self, image: Image.Image) -> Image.Image:
+        """Return the segmentation mask predicted for ``image``."""
+
+        tensor = _normalise_image(image, self.spec)
+        LOGGER.debug(
+            "Running ONNX inference", extra={"input_size": self.spec.input_size, "model": self.spec.key}
+        )
+        outputs = self.inner.run(None, {self.input_name: tensor})
+        return _compute_mask(outputs[0], image.size)
+
+
 @lru_cache(maxsize=4)
 def _load_session(model_name: str) -> Any:
-    """Return a cached rembg session for ``model_name``."""
+    """Return a cached ONNX runtime session for ``model_name``."""
 
-    from rembg import new_session
+    spec = MODEL_SPECS.get(model_name)
+    if spec is None:
+        LOGGER.warning("Unknown model %s requested; using default %s", model_name, DEFAULT_MODEL_NAME)
+        spec = MODEL_SPECS[DEFAULT_MODEL_NAME]
+    LOGGER.info("Initialising ONNX session for model: %s", spec.key)
+    return BackgroundRemovalSession(spec)
 
-    LOGGER.info("Creating rembg session for model: %s", model_name)
-    return new_session(model_name=model_name)
 
-
-def _resolve_providers(session: Any) -> tuple[str, ...]:
+def _resolve_providers(session: BackgroundRemovalSession) -> tuple[str, ...]:
     """Extract provider information from ``session`` where possible."""
 
-    candidates: list[str] = []
-    for attr in ("providers", "get_providers"):
-        provider_info = getattr(session, attr, None)
-        if callable(provider_info):
-            try:
-                resolved = list(provider_info())  # type: ignore[call-arg]
-            except Exception:  # pragma: no cover - best effort diagnostics
-                LOGGER.debug("Failed to query providers via %s", attr, exc_info=True)
-                continue
-        elif provider_info:
-            resolved = list(provider_info)
-        else:
-            continue
-        candidates.extend(str(item) for item in resolved if item)
-    if not candidates:
-        candidates.append("CPUExecutionProvider")
-    return tuple(dict.fromkeys(candidates))
+    providers = session.providers_available
+    if not providers:
+        return ("CPUExecutionProvider",)
+    return providers
 
 
 def create_session(model_name: str = DEFAULT_MODEL_NAME) -> SessionContext:
@@ -229,7 +384,7 @@ def create_session(model_name: str = DEFAULT_MODEL_NAME) -> SessionContext:
 
 
 def ensure_global_session(model_name: str = DEFAULT_MODEL_NAME) -> Any:
-    """Ensure a global rembg session exists and return it."""
+    """Ensure a global ONNX runtime session exists and return it."""
 
     global _GLOBAL_SESSION
     context = _GLOBAL_SESSION
@@ -295,20 +450,10 @@ def _prepare_for_format(image: Image.Image, format_spec: OutputFormat) -> Image.
     return background
 
 
-def _image_to_bytes(image: Image.Image) -> bytes:
-    """Return ``image`` encoded as PNG bytes for rembg input."""
+def _predict_mask(image: Image.Image, session: BackgroundRemovalSession) -> Image.Image:
+    """Return the segmentation mask predicted for ``image``."""
 
-    buffer = io.BytesIO()
-    image.save(buffer, "PNG")
-    return buffer.getvalue()
-
-
-def _rembg_remove(data: bytes, session: Any, **options: Any) -> bytes:
-    """Execute ``rembg.remove`` with ``data`` and ``session``."""
-
-    from rembg import remove
-
-    return remove(data, session=session, **options)
+    return session.predict_mask(image)
 
 
 def build_colorkey_mask(image: Image.Image, tolerance: int = 14) -> np.ndarray | None:
@@ -401,24 +546,14 @@ def remove_background_bytes(
     colorkey_tolerance = max(0, min(255, int(colorkey_tolerance)))
     feather_radius = max(0, min(MAX_FEATHER_RADIUS, int(feather_radius)))
 
-    options = {
-        "alpha_matting": bool(alpha_matting),
-        "alpha_matting_foreground_threshold": am_foreground,
-        "alpha_matting_background_threshold": am_background,
-        "alpha_matting_erode_size": am_erode,
-        "only_mask": True,
-    }
-
     start_time = time.perf_counter()
     error: str | None = None
     output_image: Image.Image | None = None
     try:
-        encoded_input = _image_to_bytes(processed_input)
-        mask_bytes = _rembg_remove(encoded_input, session, **options)
-        mask_image = Image.open(io.BytesIO(mask_bytes))
-        with mask_image:
-            mask_l = cast(Image.Image, ImageOps.exif_transpose(mask_image)).convert("L")
-            mask_l.load()
+        mask_image = _predict_mask(processed_input, session)
+        mask_l = cast(Image.Image, ImageOps.exif_transpose(mask_image)).convert("L")
+        mask_image.close()
+        mask_l.load()
         alpha_np = np.asarray(mask_l, dtype=np.uint8)
         mask_l.close()
         if use_colorkey_fallback:

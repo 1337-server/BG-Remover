@@ -44,7 +44,7 @@ _RUNTIME_LOGGING_CONFIGURED = False
 
 
 def _configure_runtime_logging() -> None:
-    """Ensure ONNX Runtime and TensorRT logs do not spam the console."""
+    """Ensure ONNX Runtime logs do not spam the console."""
 
     global _RUNTIME_LOGGING_CONFIGURED
     if _RUNTIME_LOGGING_CONFIGURED or ort is None:
@@ -82,173 +82,6 @@ def _primary_provider(session: Session) -> str:
     return providers[0] if providers else "CPUExecutionProvider"
 
 
-def _run_with_provider_fallback(
-    session: Session,
-    model_name: str,
-    feed_factory: Callable[[Session], Mapping[str, np.ndarray]],
-    *,
-    output_names: Sequence[str] | None = None,
-    log_event: str = "onnx_inference",
-) -> tuple[list[Any], Session]:
-    """Run inference while retrying on CUDA when TensorRT yields empty outputs."""
-
-    def _log_attempt(provider: str, *, fallback: bool) -> None:
-        _log_json(
-            logging.INFO,
-            f"{log_event}_attempt",
-            model=model_name,
-            provider=provider,
-            fallback=fallback,
-        )
-
-    def _log_success(provider: str, *, fallback: bool) -> None:
-        _log_json(
-            logging.INFO,
-            f"{log_event}_success",
-            model=model_name,
-            provider=provider,
-            fallback=fallback,
-        )
-
-    current_session = session
-    provider_name = _primary_provider(current_session)
-    _log_attempt(provider_name, fallback=False)
-    outputs = _run_session_in_thread(current_session, output_names, feed_factory(current_session))
-    if outputs:
-        _log_success(provider_name, fallback=False)
-        return outputs, current_session
-
-    if provider_name != "TensorrtExecutionProvider":
-        _log_json(
-            logging.ERROR,
-            f"{log_event}_empty_outputs",
-            model=model_name,
-            provider=provider_name,
-            fallback=False,
-        )
-        raise RuntimeError("ONNX Runtime session returned no outputs during inference")
-
-    LOGGER.warning(
-        "TensorRT returned no outputs for %s; attempting CUDAExecutionProvider fallback",
-        _describe_session(current_session),
-    )
-    _log_json(
-        logging.WARNING,
-        f"{log_event}_fallback",
-        model=model_name,
-        provider=provider_name,
-        fallback=True,
-        reason="empty_outputs",
-    )
-
-    fallback_session = _reload_session_with_cuda(current_session, model_name)
-    fallback_provider = _primary_provider(fallback_session)
-    _log_attempt(fallback_provider, fallback=True)
-    outputs = _run_session_in_thread(fallback_session, output_names, feed_factory(fallback_session))
-    if outputs:
-        _log_success(fallback_provider, fallback=True)
-        return outputs, fallback_session
-
-    _log_json(
-        logging.ERROR,
-        f"{log_event}_failed",
-        model=model_name,
-        provider=fallback_provider,
-        fallback=True,
-    )
-    raise RuntimeError(
-        "ONNX Runtime session returned no outputs even after falling back to the CUDA provider"
-    )
-
-
-def _locate_session_context(
-    target: Session,
-) -> tuple[SessionContext | None, tuple[str, int, bool] | None, str | None]:
-    """Return cached context information for ``target`` if it belongs to a session pool."""
-
-    if _SESSION_CONTEXT is not None and _SESSION_CONTEXT.session is target:
-        return _SESSION_CONTEXT, _SESSION_CONFIG_SIGNATURE, _SESSION_CONTEXT.model_name
-
-    for signature, pool in _SESSION_POOLS.items():
-        for model_name, context in pool.items():
-            if context.session is target:
-                return context, signature, model_name
-
-    return None, None, None
-
-
-def _reload_session_with_cuda(session: Session, model_name: str) -> Session:
-    """Reload ``session`` with a CUDA provider when inference outputs are empty."""
-
-    context, _unused_signature, cached_name = _locate_session_context(session)
-    resolved_model = cached_name or model_name
-    device_id = context.device_id if context is not None else 0
-    previous_provider = context.provider if context is not None else None
-
-    _log_json(
-        logging.WARNING,
-        "onnx_provider_fallback",
-        model=resolved_model,
-        previous_provider=previous_provider,
-        action="reload_cuda",
-    )
-
-    try:
-        model_registry.preload_models(
-            config={"BG_ACCELERATOR": "cuda", "BG_CUDA_DEVICE_ID": device_id},
-            model_names=(resolved_model,),
-            warm=False,
-        )
-    except Exception as exc:  # pragma: no cover - dependent on runtime environment
-        _log_json(
-            logging.ERROR,
-            "onnx_provider_fallback_failed",
-            model=resolved_model,
-            previous_provider=previous_provider,
-            error=str(exc),
-        )
-        raise
-
-    new_session = model_registry.get_session(resolved_model)
-    if new_session is None:
-        raise RuntimeError("Unable to obtain a CUDA-enabled ONNX Runtime session during fallback")
-
-    providers = list(getattr(new_session, "get_providers", lambda: [])())
-    provider_name = providers[0] if providers else "CPUExecutionProvider"
-    runtime = "cuda" if provider_name in {"CUDAExecutionProvider", "TensorrtExecutionProvider"} else "cpu"
-    available_providers = model_registry.get_available_providers()
-
-    old_identifier = id(session)
-    _SESSION_METADATA.pop(old_identifier, None)
-
-    if context is not None:
-        with _POOL_LOCK:
-            context.session = new_session
-            context.provider = provider_name
-            context.runtime = runtime
-            context.providers_available = available_providers or context.providers_available
-            context.gpu_available = runtime == "cuda"
-            if runtime == "cuda":
-                context.warning = None
-                context.accelerator_message = None
-        _register_session_context(context)
-    else:
-        _SESSION_METADATA[id(new_session)] = {
-            "model": resolved_model,
-            "provider": provider_name,
-            "runtime": runtime,
-        }
-
-    _log_json(
-        logging.INFO,
-        "onnx_provider_fallback_complete",
-        model=resolved_model,
-        provider=provider_name,
-        runtime=runtime,
-        providers_available=available_providers,
-    )
-
-    return new_session
 
 ProgressCallback = Callable[[str, float], None]
 PreviewCallback = Callable[[Image.Image, str], None]
@@ -457,56 +290,126 @@ def _looks_like_directory(original: str | Path, resolved: Path) -> bool:
 
 @dataclass
 class SessionContext:
-    """Container describing the active ONNX Runtime session and accelerator state."""
+    """Container describing the active ONNX Runtime session."""
 
     model_name: str
     session: Session
-    runtime: str
     provider: str
-    provider_options: Mapping[str, Any]
     providers_available: list[str]
-    gpu_name: str | None
-    rtx_50_series: bool
-    warning: str | None
-    device_id: int
-    gpu_available: bool
-    accelerator_message: str | None
+    message: str | None = None
 
     def runtime_payload(self) -> dict[str, Any]:
-        """Return a serialisable snapshot of the accelerator runtime."""
+        """Return a serialisable snapshot of the CPU-only runtime."""
 
         return {
-            "runtime": self.runtime,
+            "runtime": "cpu",
             "provider": self.provider,
-            "gpu_name": self.gpu_name,
-            "warning": self.warning,
+            "gpu_name": None,
+            "warning": None,
             "providers_available": self.providers_available,
-            "gpu_available": self.gpu_available,
-            "accelerator_message": self.accelerator_message,
+            "gpu_available": False,
+            "accelerator_message": self.message,
         }
 
 
 _SESSION_CONTEXT: SessionContext | None = None
-_SESSION_CONFIG_SIGNATURE: tuple[str, int, bool] | None = None
 _SESSION_LOCK = cooperative_threading.Lock()
-# Guard access to the preloaded session pools to ensure thread-safety when the
-# Flask application serves concurrent requests.
-_POOL_LOCK = cooperative_threading.Lock()
-# Cache of ``SessionContext`` objects grouped by accelerator configuration
-# signature. Each entry stores model-name keys mapped to active ONNX sessions.
-_SESSION_POOLS: dict[tuple[str, int, bool], dict[str, SessionContext]] = {}
-# Track which accelerator signatures have already been preloaded to avoid
-# re-running the expensive warm-up pipeline.
-_PRELOADED_SIGNATURES: set[tuple[str, int, bool]] = set()
-# Remember whether diagnostic provider logs have been emitted for each
-# accelerator signature to prevent noisy, repeated log messages when multiple
-# models are initialised.
-_STARTUP_LOGGED_SIGNATURES: set[tuple[str, int, bool]] = set()
+# Cache of ``SessionContext`` instances keyed by model name to support reuse
+# across background removal requests.
+_SESSION_CACHE: dict[str, SessionContext] = {}
+# Serialises access to ``_SESSION_CACHE`` when lazily initialising sessions.
+_CACHE_LOCK = cooperative_threading.Lock()
 # Map ``id(session)`` to lightweight metadata so runtime logs can reference the
 # active model and provider when reporting inference durations.
 _SESSION_METADATA: dict[int, dict[str, str]] = {}
-_CPU_WARNING_LOGGED = False
-_CUDA_HINT_LOGGED = False
+
+
+def _register_session_context(context: SessionContext) -> None:
+    """Store ``context`` in module-level caches for later reuse."""
+
+    session_identifier = id(context.session)
+    _SESSION_CACHE[context.model_name] = context
+    _SESSION_METADATA[session_identifier] = {
+        "model": context.model_name,
+        "provider": context.provider,
+        "runtime": "cpu",
+    }
+
+
+def _session_model_name(session: Session) -> str:
+    """Return the model name recorded for ``session`` or ``"unknown"``."""
+
+    metadata = _SESSION_METADATA.get(id(session))
+    if metadata is None:
+        return "unknown"
+    return metadata.get("model", "unknown")
+
+
+def _describe_session(session: Session) -> str:
+    """Return a human-readable label for logging ``session`` activity."""
+
+    metadata = _SESSION_METADATA.get(id(session))
+    if metadata is not None:
+        model_name = metadata.get("model", "unknown")
+        provider_name = metadata.get("provider", "CPUExecutionProvider")
+        return f"{model_name} ({provider_name})"
+    provider_name = _primary_provider(session)
+    return f"session[{provider_name}]"
+
+
+def _warm_up_session(context: SessionContext) -> None:
+    """Execute a lightweight inference to prepare the ONNX session."""
+
+    session = context.session
+    try:
+        inputs = session.get_inputs()
+    except Exception:  # pragma: no cover - depends on runtime implementation
+        LOGGER.debug("Unable to inspect session inputs during warm-up", exc_info=True)
+        return
+
+    if not inputs:
+        LOGGER.debug("Skipping warm-up for %s because no inputs were reported", context.model_name)
+        return
+
+    input_meta = inputs[0]
+    shape = getattr(input_meta, "shape", None) or []
+    resolved_shape: list[int] = []
+    for dimension in shape:
+        if isinstance(dimension, int) and dimension > 0:
+            resolved_shape.append(dimension)
+        else:
+            resolved_shape.append(1)
+
+    if not resolved_shape:
+        LOGGER.debug("Skipping warm-up for %s because input shape could not be resolved", context.model_name)
+        return
+
+    feed_array = np.zeros(tuple(resolved_shape), dtype=np.float32)
+    feed = {getattr(input_meta, "name", "input"): feed_array}
+
+    start_time = time.perf_counter()
+    try:
+        _run_session_in_thread(session, None, feed)
+    except Exception as exc:  # pragma: no cover - depends on runtime implementation
+        _log_json(
+            logging.WARNING,
+            "session_warm_up_failed",
+            model=context.model_name,
+            provider=context.provider,
+            runtime="cpu",
+            exc_info=exc,
+        )
+        return
+
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    _log_json(
+        logging.INFO,
+        "session_warm_up_complete",
+        model=context.model_name,
+        provider=context.provider,
+        runtime="cpu",
+        duration_ms=duration_ms,
+    )
 
 
 @dataclass
@@ -531,150 +434,11 @@ class RemovalResult:
         }
 
 
-def _normalise_mode(value: Any) -> str:
-    """Return a valid accelerator mode string."""
-
-    if value is None:
-        return "auto"
-    text = str(value).strip().lower()
-    if text not in {"auto", "cuda", "cpu"}:
-        return "auto"
-    return text
-
-
-def _coerce_int(value: Any, default: int) -> int:
-    """Return ``value`` as an integer or ``default`` on failure."""
-
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    """Return ``value`` as a boolean with sensible string handling."""
-
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    try:
-        return bool(int(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-
-
-def _extract_session_config(config: Mapping[str, Any] | None) -> tuple[str, int, bool]:
-    """Return normalised accelerator configuration values."""
-
-    source = config or {}
-    mode = _normalise_mode(source.get("BG_ACCELERATOR"))
-    device_id = _coerce_int(source.get("BG_CUDA_DEVICE_ID", 0), 0)
-    warn_on_cpu = _coerce_bool(source.get("BG_WARN_ON_CPU", True), True)
-    if runtime_compat.is_force_cpu_enabled():
-        mode = "cpu"
-    return mode, device_id, warn_on_cpu
-
-
-def _signature_for_config(config: Mapping[str, Any] | None) -> tuple[str, int, bool]:
-    """Return a cache signature for accelerator-related configuration."""
-
-    mode, device_id, warn_on_cpu = _extract_session_config(config)
-    return mode, device_id, warn_on_cpu
-
-
-def _register_session_context(context: SessionContext) -> None:
-    """Store metadata describing ``context`` for diagnostic logging."""
-
-    _SESSION_METADATA[id(context.session)] = {
-        "model": context.model_name,
-        "provider": context.provider,
-        "runtime": context.runtime,
-    }
-
-
-def _describe_session(session: Session) -> str:
-    """Return a short description of the ONNX session for logging."""
-
-    metadata = _SESSION_METADATA.get(id(session))
-    if not metadata:
-        return "background removal session"
-    model = metadata.get("model", "unknown model")
-    provider = metadata.get("provider", "unknown provider")
-    runtime = metadata.get("runtime")
-    if runtime:
-        return f"{model} via {provider} ({runtime})"
-    return f"{model} via {provider}"
-
-
-def _session_model_name(session: Session) -> str:
-    """Return the model name associated with ``session``."""
-
-    metadata = _SESSION_METADATA.get(id(session))
-    return metadata.get("model", "u2net") if metadata else "u2net"
-
-
-def _warm_up_session(context: SessionContext) -> None:
-    """Execute a one-time warm-up inference for ``context`` to prime CUDA kernels."""
-
-    if ort is None:
-        LOGGER.debug("Skipping warm-up because onnxruntime is unavailable")
-        return
-
-    dummy_size = _get_model_spec(context.model_name).input_size
-    dummy_image = Image.new("RGB", dummy_size, color=(0, 0, 0))
-
-    try:
-        start = time.perf_counter()
-        tensor = _prepare_input_tensor(dummy_image, context.model_name)
-
-        def _build_feed(target_session: Session) -> Mapping[str, np.ndarray]:
-            input_name = target_session.get_inputs()[0].name
-            return {input_name: tensor}
-
-        _unused_outputs, resolved_session = _run_with_provider_fallback(
-            context.session,
-            context.model_name,
-            _build_feed,
-            log_event="onnx_warmup",
-        )
-        context.session = resolved_session
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        _log_json(
-            logging.INFO,
-            "warmup_complete",
-            model=context.model_name,
-            provider=context.provider,
-            elapsed_ms=round(elapsed_ms, 2),
-        )
-    except Exception:
-        _log_json(
-            logging.WARNING,
-            "warmup_failed",
-            model=context.model_name,
-            provider=context.provider,
-            exc_info=True,
-        )
-
-
-def _initialise_session_context(
-        model_name: str,
-        *,
-        requested_mode: str,
-        device_id: int,
-        warn_on_cpu: bool,
-        log_diagnostics: bool,
-) -> SessionContext:
+def _initialise_session_context(model_name: str) -> SessionContext:
     """Return a ready-to-use :class:`SessionContext` for ``model_name``."""
 
     _configure_runtime_logging()
-    model_registry.preload_models(config={"BG_ACCELERATOR": requested_mode, "BG_CUDA_DEVICE_ID": device_id})
+    model_registry.preload_models(model_names=(model_name,))
     session_obj = model_registry.get_session(model_name)
     if session_obj is None:
         raise FileNotFoundError(
@@ -684,70 +448,14 @@ def _initialise_session_context(
     providers_available = model_registry.get_available_providers() or accelerator.onnx_providers_available()
     resolved_providers = list(getattr(session_obj, "get_providers", lambda: [])())  # type: ignore[call-arg]
     provider_name = resolved_providers[0] if resolved_providers else "CPUExecutionProvider"
-
-    gpu_name = accelerator.detect_gpu_name()
-    rtx_50_series = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name))
-    runtime = "cuda" if provider_name in {"CUDAExecutionProvider", "TensorrtExecutionProvider"} else "cpu"
-    gpu_available = runtime == "cuda"
-
-    if log_diagnostics:
-        _log_json(
-            logging.INFO,
-            "accelerator_diagnostics",
-            providers=providers_available,
-            provider=provider_name,
-            gpu_name=gpu_name,
-            rtx_50_series=rtx_50_series,
-            requested_mode=requested_mode,
-        )
-
-    global _CUDA_HINT_LOGGED
-    if gpu_name and "CUDAExecutionProvider" not in providers_available and not _CUDA_HINT_LOGGED:
-        _log_json(
-            logging.WARNING,
-            "cuda_provider_missing",
-            gpu_name=gpu_name,
-            requested_mode=requested_mode,
-        )
-        _CUDA_HINT_LOGGED = True
-
-    accelerator_message: str | None
-    warning_message: str | None
-    if requested_mode in {"cuda", "auto"} and gpu_available:
-        accelerator_message = f"Using GPU ({provider_name})"
-        warning_message = None
-    elif requested_mode in {"cuda", "auto"} and warn_on_cpu:
-        accelerator_message = "GPU requested but unavailable — falling back to CPU"
-        warning_message = accelerator_message
-    else:
-        accelerator_message = f"Using CPU ({provider_name})"
-        warning_message = None
-
-    global _CPU_WARNING_LOGGED
-    if warning_message and not _CPU_WARNING_LOGGED:
-        _log_json(
-            logging.WARNING,
-            "cpu_fallback",
-            provider=provider_name,
-            requested_mode=requested_mode,
-        )
-        _CPU_WARNING_LOGGED = True
-
-    provider_options: dict[str, Any] = {"device_id": int(device_id)} if gpu_available else {}
+    message = f"Using CPU ({provider_name})"
 
     context = SessionContext(
         model_name=model_name,
         session=session_obj,
-        runtime=runtime,
         provider=provider_name,
-        provider_options=provider_options,
         providers_available=providers_available,
-        gpu_name=gpu_name,
-        rtx_50_series=rtx_50_series,
-        warning=warning_message,
-        device_id=device_id,
-        gpu_available=gpu_available,
-        accelerator_message=accelerator_message,
+        message=message,
     )
     _register_session_context(context)
     _warm_up_session(context)
@@ -756,94 +464,41 @@ def _initialise_session_context(
         "session_initialised",
         model=model_name,
         provider=provider_name,
-        runtime=runtime,
-        gpu_name=gpu_name,
-        device_id=device_id,
-        rtx_50_series=rtx_50_series,
-        warning=warning_message,
+        runtime="cpu",
     )
     return context
-
-
-def _preload_default_models(
-        signature: tuple[str, int, bool],
-        *,
-        requested_mode: str,
-        device_id: int,
-        warn_on_cpu: bool,
-) -> None:
-    """Preload the curated list of models for the provided accelerator signature."""
-
-    model_registry.preload_models(
-        config={"BG_ACCELERATOR": requested_mode, "BG_CUDA_DEVICE_ID": device_id},
-        model_names=_PRELOAD_MODEL_NAMES,
-    )
-    pool = _SESSION_POOLS.setdefault(signature, {})
-    logged = signature in _STARTUP_LOGGED_SIGNATURES
-    for model_name in _PRELOAD_MODEL_NAMES:
-        if model_name in pool:
-            continue
-        context = _initialise_session_context(
-            model_name,
-            requested_mode=requested_mode,
-            device_id=device_id,
-            warn_on_cpu=warn_on_cpu,
-            log_diagnostics=not logged,
-        )
-        pool[model_name] = context
-        if not logged:
-            _STARTUP_LOGGED_SIGNATURES.add(signature)
-            logged = True
 
 
 def create_session(
-        model_name: str = "u2net", config: Mapping[str, Any] | None = None
+    model_name: str = "u2net", config: Mapping[str, Any] | None = None
 ) -> SessionContext:
-    """Create a new background removal session with optional GPU acceleration."""
+    """Create or return a cached CPU-only background removal session."""
 
-    requested_mode, device_id, warn_on_cpu = _extract_session_config(config)
+    del config  # Legacy accelerator configuration is ignored in the CPU build.
     runtime_compat.ensure_runtime_ready()
 
-    signature = (requested_mode, device_id, warn_on_cpu)
-    with _POOL_LOCK:
-        pool = _SESSION_POOLS.setdefault(signature, {})
-        if signature not in _PRELOADED_SIGNATURES:
-            _preload_default_models(
-                signature,
-                requested_mode=requested_mode,
-                device_id=device_id,
-                warn_on_cpu=warn_on_cpu,
-            )
-            _PRELOADED_SIGNATURES.add(signature)
+    cached = _SESSION_CACHE.get(model_name)
+    if cached is not None:
+        return cached
 
-        context = pool.get(model_name)
-        log_required = signature not in _STARTUP_LOGGED_SIGNATURES
-        if context is None:
-            context = _initialise_session_context(
-                model_name,
-                requested_mode=requested_mode,
-                device_id=device_id,
-                warn_on_cpu=warn_on_cpu,
-                log_diagnostics=log_required,
-            )
-            pool[model_name] = context
-        if log_required:
-            _STARTUP_LOGGED_SIGNATURES.add(signature)
-
-    return context
+    with _CACHE_LOCK:
+        cached = _SESSION_CACHE.get(model_name)
+        if cached is not None:
+            return cached
+        context = _initialise_session_context(model_name)
+        return context
 
 
 def ensure_global_session(
-        model_name: str = "u2net", config: Mapping[str, Any] | None = None
+    model_name: str = "u2net", config: Mapping[str, Any] | None = None
 ) -> Session:
     """Initialise and cache a global background removal session."""
 
-    global _SESSION_CONTEXT, _SESSION_CONFIG_SIGNATURE
-    signature = _signature_for_config(config)
+    del config
+    global _SESSION_CONTEXT
     with _SESSION_LOCK:
-        if _SESSION_CONTEXT is None or _SESSION_CONFIG_SIGNATURE != signature:
-            _SESSION_CONTEXT = create_session(model_name=model_name, config=config)
-            _SESSION_CONFIG_SIGNATURE = signature
+        if _SESSION_CONTEXT is None or _SESSION_CONTEXT.model_name != model_name:
+            _SESSION_CONTEXT = create_session(model_name=model_name)
     assert _SESSION_CONTEXT is not None
     return _SESSION_CONTEXT.session
 
@@ -878,7 +533,7 @@ def get_runtime_payload() -> dict[str, Any]:
             "warning": None,
             "providers_available": providers_available,
             "gpu_available": False,
-            "accelerator_message": None,
+            "accelerator_message": "Using CPU (CPUExecutionProvider)",
         }
     return context.runtime_payload()
 
@@ -889,22 +544,16 @@ def get_accelerator_status() -> dict[str, Any]:
     context = _SESSION_CONTEXT
     if context is None:
         providers = accelerator.onnx_providers_available()
-        gpu_name = accelerator.detect_gpu_name()
-        runtime = "cpu"
-        rtx = bool(gpu_name and accelerator.is_rtx_50xx(gpu_name)) if gpu_name else False
         provider_name = "CPUExecutionProvider"
     else:
         providers = context.providers_available
-        gpu_name = context.gpu_name
-        runtime = context.runtime
-        rtx = context.rtx_50_series
         provider_name = context.provider
     return {
         "providers": providers,
-        "selected": "cuda" if runtime == "cuda" else "cpu",
+        "selected": "cpu",
         "provider": provider_name,
-        "gpu_name": gpu_name,
-        "rtx_50_series": rtx,
+        "gpu_name": None,
+        "rtx_50_series": False,
     }
 
 
@@ -985,13 +634,8 @@ def _run_inference(
         return {input_name: tensor}
 
     start = time.perf_counter()
-    outputs, session = _run_with_provider_fallback(
-        session,
-        model_name,
-        _build_feed,
-        log_event="onnx_inference",
-    )
     feed = _build_feed(session)
+    outputs = _run_session_in_thread(session, None, feed)
     elapsed_ms = (time.perf_counter() - start) * 1000
     if log_timing:
         LOGGER.info("%s inference completed in %.2f ms", _describe_session(session), elapsed_ms)

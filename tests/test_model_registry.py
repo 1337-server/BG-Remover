@@ -53,21 +53,16 @@ def test_preload_models_initialises_sessions(monkeypatch: pytest.MonkeyPatch, tm
 
     session_store: dict[str, _FakeSession] = {}
 
-    def fake_inference_session(path: str, providers, provider_options):  # type: ignore[override]
+    def fake_inference_session(path: str, **kwargs):  # type: ignore[override]
         assert Path(path).exists()
-        provider_names = [entry if isinstance(entry, str) else entry[0] for entry in providers]
-        session = _FakeSession(provider_names)
+        providers = kwargs.get('providers', [])
+        session = _FakeSession(list(providers))
         session_store[path] = session
-        assert provider_options
-        cuda_options = provider_options[0]
-        assert cuda_options.get("arena_extend_strategy") == "kSameAsRequested"
-        assert cuda_options.get("cudnn_conv_algo_search") == "EXHAUSTIVE"
-        assert cuda_options.get("do_copy_in_default_stream") is True
         return session
 
     fake_ort = SimpleNamespace(
         InferenceSession=fake_inference_session,
-        get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        get_available_providers=lambda: ["CPUExecutionProvider"],
     )
 
     monkeypatch.setattr(model_registry, "ort", fake_ort)
@@ -75,7 +70,7 @@ def test_preload_models_initialises_sessions(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.setattr(
         model_registry.accelerator,
         "onnx_providers_available",
-        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        lambda: ["CPUExecutionProvider"],
     )
 
     model_dir = tmp_path
@@ -84,7 +79,7 @@ def test_preload_models_initialises_sessions(monkeypatch: pytest.MonkeyPatch, tm
     sessions = model_registry.preload_models(
         model_dir=model_dir,
         model_names=["u2net"],
-        config={"BG_ACCELERATOR": "cuda"},
+        warm=True,
     )
 
     assert "u2net" in sessions
@@ -124,10 +119,11 @@ def test_preload_models_is_cached(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
 
     call_count = 0
 
-    def fake_inference_session(path: str, providers, provider_options):  # type: ignore[override]
+    def fake_inference_session(path: str, **kwargs):  # type: ignore[override]
         nonlocal call_count
         call_count += 1
-        return _FakeSession(["CPUExecutionProvider"])
+        providers = kwargs.get("providers", ["CPUExecutionProvider"])
+        return _FakeSession(list(providers))
 
     fake_ort = SimpleNamespace(
         InferenceSession=fake_inference_session,
@@ -150,26 +146,6 @@ def test_preload_models_is_cached(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
 
     assert call_count == 1
     assert first["u2net"] is second["u2net"]
-
-
-def test_provider_priority_prefers_tensorrt(monkeypatch: pytest.MonkeyPatch) -> None:
-    """RTX 50-series GPUs should prioritise TensorRT when CUDA 12.9 is available."""
-
-    monkeypatch.setattr(model_registry.accelerator, "onnx_providers_available", lambda: [
-        "TensorrtExecutionProvider",
-        "CUDAExecutionProvider",
-        "CPUExecutionProvider",
-    ])
-    monkeypatch.setattr(model_registry.accelerator, "detect_gpu_name", lambda: "NVIDIA RTX 5090")
-    monkeypatch.setattr(model_registry.accelerator, "is_rtx_50xx", lambda name: True)
-    monkeypatch.setattr(model_registry.runtime_compat, "supports_tensorrt_cuda_129", lambda: True)
-
-    providers, options = model_registry._provider_priority("cuda", 0)
-
-    assert providers[0] == "TensorrtExecutionProvider"
-    assert options[0]["device_id"] == 0
-    assert options[0]["trt_engine_cache_enable"] is True
-    assert options[0]["trt_fp16_enable"] is True
 
 
 @pytest.mark.integration

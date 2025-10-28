@@ -14,7 +14,7 @@ multiple formats (PNG, WebP, JPEG, BMP, TIFF) with transparency preserved whenev
 * ✅ **Single-image CLI** and **folder batch mode** that respect EXIF orientation and reuse one model session.
 * ✅ **Flexible exports** with selectable PNG, WebP, JPEG, BMP, or TIFF output (alpha preserved when supported).
 * ✅ **Web interface** built with Flask featuring upload + server-folder workflows, ZIP downloads, and previews.
-* ✅ Works on CPU or GPU, auto-orients input files, and limits oversized images to keep RAM usage stable.
+* ✅ Runs entirely on CPU, auto-orients input files, and limits oversized images to keep RAM usage stable.
 
 ---
 
@@ -30,7 +30,7 @@ multiple formats (PNG, WebP, JPEG, BMP, TIFF) with transparency preserved whenev
 
    > Tip: run `scripts\clean_venv.ps1` to recreate the environment from scratch.
 
-3. Install the pinned dependency set (includes CUDA-enabled ONNX Runtime and PyTorch wheels):
+3. Install the pinned dependency set (CPU-only ONNX Runtime build):
 
    ```powershell
    pip install --upgrade pip
@@ -52,42 +52,12 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install --upgrade pip
 pip install -r requirements.txt
-scripts\verify_gpu.ps1
 python serve.py
 ```
 
-The verification script prints the ONNX Runtime provider list and Torch CUDA status so you can confirm
-that the `CUDAExecutionProvider` is active. If CUDA is unavailable the app automatically falls back to
-the CPU and logs a single warning explaining how to install a compatible GPU wheel.
-
 Troubleshooting tips:
 
-* Clear conflicting CUDA settings by unsetting `CUDA_PATH` before installing the requirements.
 * Delete stale virtual environments with `scripts\clean_venv.ps1` when upgrading dependencies.
-* If the CUDA provider still refuses to load, run `onnxruntime.get_available_providers()` inside a
-  Python shell to confirm the wheel matches your driver; a CPU-only wheel continues to work.
-
----
-
-### ⚡ Accelerator configuration
-
-Background removal automatically prefers CUDA when the `onnxruntime-gpu` build is installed and
-the ONNX Runtime `CUDAExecutionProvider` is available. You can override or inspect the behaviour
-with the following knobs:
-
-* **Environment variables**
-  * `BG_ACCELERATOR` – `auto` (default), `cuda`, or `cpu` to pin the runtime.
-  * `BG_CUDA_DEVICE_ID` – CUDA device index to bind when using the GPU (default `0`).
-  * `BG_WARN_ON_CPU` – `true` (default) to surface warnings when the app falls back to CPU.
-* **CLI flags**
-  * `python main.py --accelerator cuda --cuda-device-id 1`
-  * `python serve.py --accelerator cpu --no-warn-on-cpu`
-* **Health checks**
-  * `GET /health/accelerator` returns the detected ONNX providers, selected runtime, GPU name, and RTX 50-series flag.
-
-When the app detects that it is running on the CPU despite a compatible GPU, a dismissible banner
-appears in the UI and a single log warning explains how to install `onnxruntime-gpu`, enable
-`nvidia-container-toolkit`, or launch Docker with `--gpus all`.
 
 ---
 
@@ -107,8 +77,6 @@ Key behaviour:
 * Passing a **folder** produces results under `./output` (or the directory from `--output`).
 * Use `--alpha-matting` + thresholds for tricky edges, `--no-colorkey-fallback` to disable the
   solid-colour helper, and `--recursive` to process nested folders.
-* Override accelerator selection with `--accelerator [auto|cuda|cpu]`, `--cuda-device-id`, and
-  `--no-warn-on-cpu` to suppress CLI warnings.
 * Specify `--format [png|webp|jpg|bmp|tiff]` to control the export type; unsupported values raise
   a clear validation error.
 
@@ -135,10 +103,9 @@ Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 * **Folder Processing** tab – supply a server-side folder, optional output directory, recursive mode,
   alpha-matting settings, ZIP bundle downloads, and preview-size controls.
 
-The Flask app initialises a single ONNX Runtime session on startup so repeated requests remain fast. Set
-`BR_FORCE_CPU=1` to disable CUDA when troubleshooting GPU driver mismatches. The UI header always
-shows the selected accelerator and GPU name, and displays a dismissible warning if the app is running
-on the CPU because CUDA providers are missing.
+The Flask app initialises a single ONNX Runtime session on startup so repeated requests remain fast. The
+UI header displays the active CPU execution provider so you can confirm the model is ready before
+processing uploads.
 
 ---
 

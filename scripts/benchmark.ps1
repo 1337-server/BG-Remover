@@ -28,9 +28,9 @@ from app import create_app
 from app.services import model_registry
 from app.services import bg_remove
 
-app = create_app({"BG_ACCELERATOR": "auto"})
-model_registry.preload_models(config=app.config, model_names=[sys.argv[1]])
-session = bg_remove.ensure_global_session(model_name=sys.argv[1], config=app.config)
+app = create_app()
+model_registry.preload_models(model_names=[sys.argv[1]])
+session = bg_remove.ensure_global_session(model_name=sys.argv[1])
 model_name = bg_remove._session_model_name(session)
 
 sample = Image.new("RGB", (512, 512), color=(128, 128, 128))

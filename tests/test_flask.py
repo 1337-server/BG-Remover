@@ -74,8 +74,8 @@ def test_process_images_success(monkeypatch: pytest.MonkeyPatch, client) -> None
     captured = {}
 
     def recorder(array, model_key, **kwargs):
+        captured.update(kwargs)
         captured["model_key"] = model_key
-        captured["feather_radius"] = kwargs.get("feather_radius")
         return np.zeros_like(array)
 
     monkeypatch.setattr(routes, "remove_background", recorder)
@@ -87,6 +87,8 @@ def test_process_images_success(monkeypatch: pytest.MonkeyPatch, client) -> None
         "feather_radius": "5",
         "background_color": "#00ff00",
         "transparent": "false",
+        "alpha_matting": "true",
+        "mask_blur": "7",
         "output_format": "PNG",
     }
     response = client.post("/process", data=data, content_type="multipart/form-data")
@@ -96,7 +98,13 @@ def test_process_images_success(monkeypatch: pytest.MonkeyPatch, client) -> None
     result = payload["results"][0]
     assert result["result_name"].endswith(".png")
     assert result["options"]["background_color"] == "#00ff00"
-    assert captured == {"model_key": "isnet-general-use", "feather_radius": 5}
+    assert result["options"]["alpha_matting"] is True
+    assert result["options"]["mask_blur"] == 7
+    assert captured["model_key"] == "isnet-general-use"
+    assert captured["feather_radius"] == 5
+    assert captured["alpha_matting"] is True
+    assert captured["mask_blur"] == pytest.approx(7.0)
+    assert captured["background_color"] == (0, 255, 0)
 
 
 def test_process_images_failure(monkeypatch: pytest.MonkeyPatch, client) -> None:
@@ -115,7 +123,29 @@ def test_process_images_failure(monkeypatch: pytest.MonkeyPatch, client) -> None
     assert payload["error"] == "boom"
 
 
-def test_batch_processing_success(client) -> None:
+def test_batch_processing_success(monkeypatch: pytest.MonkeyPatch, client) -> None:
+    captured = {}
+
+    def recorder(input_dir, output_dir, **kwargs):
+        captured.update(kwargs)
+        output_root = Path(output_dir)
+        output_root.mkdir(parents=True, exist_ok=True)
+        dummy_input = Path(input_dir) / "dummy.png"
+        dummy_input.parent.mkdir(parents=True, exist_ok=True)
+        dummy_input.touch()
+        output_path = output_root / "batch.png"
+        Image.new("RGBA", (2, 2), color=(255, 255, 255, 255)).save(output_path)
+        entry = ReportEntry(
+            path_in=dummy_input,
+            path_out=output_path,
+            success=True,
+            elapsed_ms=1.0,
+            error=None,
+        )
+        return Report([entry])
+
+    monkeypatch.setattr(routes, "process_folder", recorder)
+
     archive_buffer = io.BytesIO()
     with zipfile.ZipFile(archive_buffer, "w") as archive:
         archive.writestr("sample.png", _image_bytes((120, 40, 255, 255)))
@@ -123,7 +153,12 @@ def test_batch_processing_success(client) -> None:
 
     response = client.post(
         "/batch",
-        data={"archive": (archive_buffer, "folder.zip"), "model_key": "isnet-general-use"},
+        data={
+            "archive": (archive_buffer, "folder.zip"),
+            "model_key": "isnet-general-use",
+            "alpha_matting": "true",
+            "mask_blur": "3",
+        },
         content_type="multipart/form-data",
     )
     assert response.status_code == 200
@@ -132,6 +167,8 @@ def test_batch_processing_success(client) -> None:
     download_response = client.get(payload["download_url"])
     assert download_response.status_code == 200
     assert download_response.headers["Content-Type"] == "application/zip"
+    assert captured["alpha_matting"] is True
+    assert captured["mask_blur"] == pytest.approx(3.0)
 
 
 def test_history_endpoint_updates_after_processing(client) -> None:

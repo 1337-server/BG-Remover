@@ -106,9 +106,16 @@ def refine_mask(
     background_threshold: int = 10,
     erode_size: int = 10,
     smoothing: float = 0.0,
+    mask_blur: float = 0.0,
     edge_refinement: bool = False,
 ) -> Image.Image:
-    """Return ``mask`` refined according to advanced settings."""
+    """Return ``mask`` refined according to advanced settings.
+
+    When ``mask_blur`` is greater than zero it is treated as the Gaussian blur
+    radius (in pixels) applied directly to the mask. Otherwise the legacy
+    ``smoothing`` ratio is used which maps the ``0.0`` - ``1.0`` range to a
+    radius of up to eight pixels.
+    """
 
     refined = mask.convert("L")
     if alpha_matting:
@@ -119,10 +126,13 @@ def refine_mask(
             background_threshold=background_threshold,
             erode_size=erode_size,
         )
-    if smoothing > 0:
-        radius = max(0.0, min(float(smoothing), 1.0)) * 8.0
-        if radius > 0:
-            refined = refined.filter(ImageFilter.GaussianBlur(radius=radius))
+    blur_radius = 0.0
+    if mask_blur > 0:
+        blur_radius = max(0.0, min(float(mask_blur), 25.0))
+    elif smoothing > 0:
+        blur_radius = max(0.0, min(float(smoothing), 1.0)) * 8.0
+    if blur_radius > 0:
+        refined = refined.filter(ImageFilter.GaussianBlur(radius=blur_radius))
     if edge_refinement:
         refined = refined.filter(ImageFilter.UnsharpMask(radius=2, percent=160, threshold=3))
     return refined

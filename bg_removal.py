@@ -25,6 +25,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any, cast
 
+from enum import Enum
+
 import numpy as np
 import onnxruntime as ort
 from PIL import Image, ImageFilter, ImageOps
@@ -54,6 +56,32 @@ DEFAULT_MODEL_NAME = "isnet-general-use"
 MODELS_DIRECTORY = Path(__file__).resolve().parent / "models"
 MODEL_DOWNLOAD_ROOT = MODELS_DIRECTORY
 MODEL_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+class DownloadState(Enum):
+    """Enumeration describing lifecycle states for model downloads."""
+
+    AVAILABLE = "available"
+    PENDING = "pending"
+    IN_PROGRESS = "in-progress"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class DownloadStatus:
+    """Snapshot describing the current state of a model download."""
+
+    key: str
+    state: DownloadState
+    path: Path | None = None
+    error: str | None = None
+    attempts: int = 0
+    updated_at: float = field(default_factory=time.time)
+
+
+_DOWNLOAD_STATUS_LOCK = threading.Lock()
+_DOWNLOAD_STATUSES: dict[str, DownloadStatus] = {}
+_PREFETCH_THREADS: dict[str, threading.Thread] = {}
 
 
 @dataclass(frozen=True)
@@ -366,27 +394,119 @@ def _verify_md5(path: Path, expected: str | None) -> bool:
     return checksum.hexdigest() == expected.lower()
 
 
-def ensure_models_downloaded() -> None:
-    """Ensure all configured ONNX models are present locally before runtime."""
+def _update_download_status(
+    key: str,
+    *,
+    state: DownloadState,
+    path: Path | None = None,
+    error: str | None = None,
+    attempts: int | None = None,
+) -> DownloadStatus:
+    """Update the cached download status for ``key`` and return the snapshot."""
+
+    with _DOWNLOAD_STATUS_LOCK:
+        previous = _DOWNLOAD_STATUSES.get(key)
+        resolved_path = path if path is not None else (previous.path if previous else None)
+        resolved_error = error if error is not None else (previous.error if previous else None)
+        resolved_attempts = attempts if attempts is not None else (previous.attempts if previous else 0)
+        status = DownloadStatus(
+            key=key,
+            state=state,
+            path=resolved_path,
+            error=resolved_error,
+            attempts=resolved_attempts,
+            updated_at=time.time(),
+        )
+        _DOWNLOAD_STATUSES[key] = status
+        return status
+
+
+def get_download_statuses() -> dict[str, DownloadStatus]:
+    """Return a shallow copy of the current download status mapping."""
+
+    with _DOWNLOAD_STATUS_LOCK:
+        return dict(_DOWNLOAD_STATUSES)
+
+
+def _prefetch_model(spec: ModelSpec) -> None:
+    """Background worker that downloads ``spec`` without blocking startup."""
+
+    try:
+        _download_model(spec)
+    except Exception as error:  # pragma: no cover - network dependent
+        LOGGER.warning("Background download for %s failed: %s", spec.key, error)
+    finally:
+        with _DOWNLOAD_STATUS_LOCK:
+            thread = _PREFETCH_THREADS.get(spec.key)
+            if thread and thread is threading.current_thread():
+                _PREFETCH_THREADS.pop(spec.key, None)
+
+
+def _schedule_prefetch(spec: ModelSpec) -> None:
+    """Start a background thread to download ``spec`` when not already cached."""
+
+    filename = _build_model_filename(spec)
+    destination = MODEL_DOWNLOAD_ROOT / filename
+    existing = get_download_statuses().get(spec.key)
+    if existing and existing.state is DownloadState.AVAILABLE:
+        return
+
+    with _DOWNLOAD_STATUS_LOCK:
+        thread = _PREFETCH_THREADS.get(spec.key)
+        if thread and thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=_prefetch_model,
+            name=f"prefetch-{spec.key}",
+            args=(spec,),
+            daemon=True,
+        )
+        _PREFETCH_THREADS[spec.key] = thread
+
+    _update_download_status(spec.key, state=DownloadState.IN_PROGRESS, path=destination)
+    thread.start()
+
+
+def ensure_models_downloaded(prefetch: bool | Iterable[str] = True) -> dict[str, DownloadStatus]:
+    """Ensure the models directory exists and optionally prefetch weights."""
 
     MODELS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+
+    if isinstance(prefetch, bool):
+        prefetch_keys = {DEFAULT_MODEL_NAME} if prefetch else set()
+    else:
+        requested = {name for name in prefetch}
+        prefetch_keys = {name for name in requested if name in MODEL_SPECS}
+        missing = requested - prefetch_keys
+        if missing:
+            LOGGER.warning("Ignoring unknown models requested for prefetch: %s", ", ".join(sorted(missing)))
+
+    statuses: dict[str, DownloadStatus] = {}
     for spec in MODEL_SPECS.values():
         filename = _build_model_filename(spec)
-        destination = MODELS_DIRECTORY / filename
+        destination = MODEL_DOWNLOAD_ROOT / filename
         relative_destination = Path("models") / filename
         if _verify_md5(destination, spec.checksum_md5):
-            print(f"[✓] {spec.key} already downloaded.")
-            continue
-        if not spec.url and not (spec.huggingface_repo and spec.huggingface_filename):
-            print(f"[⚠] {spec.key} missing URL — skipped.")
-            continue
-        print(f"[↓] Downloading {spec.key}...")
-        try:
-            _download_model(spec)
-        except Exception as error:  # pragma: no cover - network dependent
-            print(f"[⚠] Failed to download {spec.key}: {error}")
-            continue
-        print(f"[✓] Saved ./{relative_destination.as_posix()}")
+            status = _update_download_status(
+                spec.key,
+                state=DownloadState.AVAILABLE,
+                path=destination,
+                error=None,
+            )
+            print(f"[✓] {spec.key} available at ./{relative_destination.as_posix()}")
+        else:
+            status = _update_download_status(
+                spec.key,
+                state=DownloadState.PENDING,
+                path=destination if destination.exists() else None,
+                error=None,
+            )
+            print(f"[ ] {spec.key} will download on first use.")
+            if spec.key in prefetch_keys:
+                print(f"[~] Prefetching {spec.key} in background…")
+                _schedule_prefetch(spec)
+        statuses[spec.key] = status
+    return statuses
 
 
 def _read_token_file(path: Path) -> str | None:
@@ -496,24 +616,91 @@ def _download_model_via_http(
     return destination
 
 
-def _download_model(spec: ModelSpec) -> Path:
+def _download_model(
+    spec: ModelSpec, *, max_attempts: int = 3, backoff_base: float = 0.5
+) -> Path:
     """Download the ONNX model defined by ``spec`` when needed."""
 
     destination = MODEL_DOWNLOAD_ROOT / f"{spec.key}.onnx"
     if _verify_md5(destination, spec.checksum_md5):
         LOGGER.debug("Model %s already present at %s", spec.key, destination)
+        _update_download_status(spec.key, state=DownloadState.AVAILABLE, path=destination, error=None)
         return destination
+
+    if not (spec.huggingface_repo and spec.huggingface_filename) and not spec.url:
+        message = f"No download source configured for model {spec.key}"
+        _update_download_status(spec.key, state=DownloadState.FAILED, path=destination, error=message)
+        raise ValueError(message)
+
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if spec.huggingface_repo and spec.huggingface_filename:
-        LOGGER.info("Fetching model %s from Hugging Face repo %s", spec.key, spec.huggingface_repo)
-        path = _download_model_from_huggingface(spec, destination)
-    elif spec.url:
-        LOGGER.info("Fetching model %s from %s", spec.key, spec.url)
-        path = _download_model_from_url(spec, destination)
-    else:
-        raise ValueError(f"No download source configured for model {spec.key}")
-    LOGGER.info("Model %s stored at %s", spec.key, path)
-    return path
+    attempts = 0
+    while attempts < max_attempts:
+        attempts += 1
+        _update_download_status(
+            spec.key,
+            state=DownloadState.IN_PROGRESS,
+            path=destination,
+            attempts=attempts,
+        )
+        try:
+            if spec.huggingface_repo and spec.huggingface_filename:
+                LOGGER.info(
+                    "Fetching model %s from Hugging Face repo %s (attempt %s)",
+                    spec.key,
+                    spec.huggingface_repo,
+                    attempts,
+                )
+                path = _download_model_from_huggingface(spec, destination)
+            else:
+                LOGGER.info(
+                    "Fetching model %s from %s (attempt %s)",
+                    spec.key,
+                    spec.url,
+                    attempts,
+                )
+                path = _download_model_from_url(spec, destination)
+        except Exception as error:
+            LOGGER.warning("Attempt %s to download %s failed: %s", attempts, spec.key, error)
+            if attempts >= max_attempts:
+                _update_download_status(
+                    spec.key,
+                    state=DownloadState.FAILED,
+                    path=destination if destination.exists() else None,
+                    error=str(error),
+                    attempts=attempts,
+                )
+                raise
+            _update_download_status(
+                spec.key,
+                state=DownloadState.PENDING,
+                path=destination if destination.exists() else None,
+                error=str(error),
+                attempts=attempts,
+            )
+            delay = backoff_base * (2 ** (attempts - 1))
+            LOGGER.debug(
+                "Retrying download for %s in %.2f seconds (attempt %s of %s)",
+                spec.key,
+                delay,
+                attempts + 1,
+                max_attempts,
+            )
+            time.sleep(delay)
+            continue
+
+        _update_download_status(
+            spec.key,
+            state=DownloadState.AVAILABLE,
+            path=path,
+            error=None,
+            attempts=attempts,
+        )
+        LOGGER.info("Model %s stored at %s", spec.key, path)
+        return path
+
+    # The loop should always return or raise beforehand, but the interpreter
+    # requires an explicit ``raise`` in case logic changes in the future.
+    raise RuntimeError(f"Failed to download {spec.key}")
 
 
 class BackgroundRemovalSession:

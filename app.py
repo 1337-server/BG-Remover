@@ -67,25 +67,25 @@ FORMAT_OPTIONS = [
 ]
 DEFAULT_OUTPUT_FORMAT_KEY = DEFAULT_OUTPUT_FORMAT
 REMOVAL_MODEL_OPTIONS = [
-    {"key": "general", "label": "General Model", "model_name": "isnet-general-use"},
+    {"key": "general", "label": "General Model (isnet-general-use)", "model_name": "isnet-general-use"},
     {
         "key": "general_high_quality",
         "label": "BRIA RMBG v2.0 (High-Quality General)",
         "model_name": "briaai/RMBG-2.0",
     },
-    {"key": "human", "label": "Human Model", "model_name": "u2net_human_seg"},
+    {"key": "human", "label": "Human Model (u2net_human_seg)", "model_name": "u2net_human_seg"},
     {
         "key": "human_matting",
         "label": "BRIA RMBG v1.4 (Portrait Matting)",
         "model_name": "matting-by-generation",
     },
-    {"key": "object", "label": "Object Model", "model_name": "u2net"},
+    {"key": "object", "label": "Object Model (u2net)", "model_name": "u2net"},
     {
         "key": "complex_scene",
         "label": "BRIA RMBG v2.0 (Complex Scenes)",
         "model_name": "sam_segmentation_model",
     },
-    {"key": "anime", "label": "Anime / Illustration Model", "model_name": "isnet-anime"},
+    {"key": "anime", "label": "Anime / Illustration Model (isnet-anime)", "model_name": "isnet-anime"},
 ]
 _REMOVAL_MODEL_LOOKUP: dict[str, str] = {
     option["key"]: option["model_name"] for option in REMOVAL_MODEL_OPTIONS
@@ -110,9 +110,9 @@ DEFAULT_CHECKBOX_OPTIONS: dict[str, bool] = {
 
 
 def create_app(
-    config_overrides: Mapping[str, object] | None = None,
-    *,
-    run_startup_tasks: bool = True,
+        config_overrides: Mapping[str, object] | None = None,
+        *,
+        run_startup_tasks: bool = True,
 ) -> Flask:
     """Create and configure the Flask application instance."""
 
@@ -356,12 +356,12 @@ def remove_background_view() -> ResponseReturnValue:
 
 
 def _register_registry_item(
-    registry: dict[str, RegistryItem],
-    *,
-    path: Path,
-    mimetype: str | None = None,
-    delete_after_read: bool = False,
-    download_name: str | None = None,
+        registry: dict[str, RegistryItem],
+        *,
+        path: Path,
+        mimetype: str | None = None,
+        delete_after_read: bool = False,
+        download_name: str | None = None,
 ) -> tuple[str, RegistryItem]:
     """Store ``path`` in the ``registry`` and return the associated token."""
 

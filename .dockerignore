@@ -79,3 +79,4 @@ Dockerfile.*
 .pytype/
 .hypothesis/
 .venv
+/models

@@ -177,18 +177,28 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         input_size=(1024, 1024),
         mean=(0.5, 0.5, 0.5),
         std=(0.5, 0.5, 0.5),
-        huggingface_repo="briaai/BRIA-RMBG-1.4",
-        huggingface_filename="RMBG-1.4.onnx",
+        huggingface_repo="briaai/RMBG-1.4",
+        huggingface_filename="onnx/model.onnx",
     ),
-    # The previous SAM-based checkpoint frequently returned 404. BRIA RMBG v2.0
-    # provides a reliable, high-quality alternative for complex compositions.
-    "sam_segmentation_model": ModelSpec(
-        key="sam_segmentation_model",
+
+    # SAM ViT-B Encoder (Hugging Face)
+    "sam_vit_b_01ec64_encoder": ModelSpec(
+        key="sam_vit_b_01ec64_encoder",
         input_size=(1024, 1024),
         mean=(0.5, 0.5, 0.5),
         std=(0.5, 0.5, 0.5),
-        huggingface_repo="briaai/RMBG-2.0",
-        huggingface_filename="RMBG-2.0.onnx",
+        huggingface_repo="microsoft/segment-anything-model-webnn",
+        huggingface_filename="sam_vit_b_01ec64.encoder-fp16.onnx",
+    ),
+
+    # SAM ViT-B Decoder (Hugging Face)
+    "sam_vit_b_01ec64_decoder": ModelSpec(
+        key="sam_vit_b_01ec64_decoder",
+        input_size=(1024, 1024),
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+        huggingface_repo="microsoft/segment-anything-model-webnn",
+        huggingface_filename="sam_vit_b_01ec64.decoder-fp16.onnx",
     ),
 }
 

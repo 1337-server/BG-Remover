@@ -1,0 +1,1115 @@
+"""Tkinter front-end for background removal workflows.
+
+This module provides a ttkbootstrap-powered desktop interface that mirrors
+core options available in the Flask web UI. It supports both single-image
+processing and batch folder processing with live progress reporting.
+"""
+from __future__ import annotations
+
+import queue
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+import ttkbootstrap as tb
+from PIL import Image, ImageTk
+from ttkbootstrap.constants import BOTH, END, LEFT, RIGHT, W
+from ttkbootstrap.dialogs import Messagebox
+from ttkbootstrap.scrolled import ScrolledText
+from ttkbootstrap.tooltip import ToolTip
+
+from bg_removal import (
+    DEFAULT_MODEL_NAME,
+    DEFAULT_OUTPUT_FORMAT,
+    OUTPUT_FORMATS,
+    SUPPORTED_EXTENSIONS,
+    ensure_global_session,
+    ensure_models_downloaded,
+    get_output_format_spec,
+    remove_bg_file,
+)
+
+# Model options mirror the Flask UI so users can switch between
+# performance profiles without leaving the desktop client.
+REMOVAL_MODEL_OPTIONS: tuple[dict[str, str], ...] = (
+    {
+        "key": "general",
+        "label": "General Model (isnet-general-use)",
+        "model_name": "isnet-general-use",
+    },
+    {
+        "key": "general_high_quality",
+        "label": "BRIA RMBG v2.0 (High-Quality General)",
+        "model_name": "briaai/RMBG-2.0",
+    },
+    {
+        "key": "human",
+        "label": "Human Model (u2net_human_seg)",
+        "model_name": "u2net_human_seg",
+    },
+    {
+        "key": "human_matting",
+        "label": "BRIA RMBG v1.4 (Portrait Matting)",
+        "model_name": "matting-by-generation",
+    },
+    {
+        "key": "object",
+        "label": "Object Model (u2net)",
+        "model_name": "u2net",
+    },
+    {
+        "key": "complex_scene",
+        "label": "BRIA RMBG v2.0 (Complex Scenes)",
+        "model_name": "sam_segmentation_model",
+    },
+    {
+        "key": "anime",
+        "label": "Anime / Illustration Model (isnet-anime)",
+        "model_name": "isnet-anime",
+    },
+)
+
+_REMOVAL_MODEL_LOOKUP: dict[str, str] = {
+    option["key"]: option["model_name"] for option in REMOVAL_MODEL_OPTIONS
+}
+
+DEFAULT_ALPHA_MATTING_VALUES = {
+    "alpha_matting": False,
+    "am_foreground": 240,
+    "am_background": 10,
+    "am_erode": 10,
+}
+
+DEFAULT_TUNE_VALUES = {
+    "feather_radius": 3,
+    "colorkey_tolerance": 14,
+    "use_colorkey_fallback": True,
+}
+
+
+def human_readable_duration(seconds: float) -> str:
+    """Return a friendly textual representation for ``seconds``."""
+
+    if seconds <= 0:
+        return "Calculating…"
+    minutes, secs = divmod(int(seconds), 60)
+    if minutes == 0:
+        return f"{secs}s remaining"
+    return f"{minutes}m {secs}s remaining"
+
+
+@dataclass(slots=True)
+class FolderTaskOptions:
+    """Container describing configuration shared with the worker thread."""
+
+    folder: Path
+    output_format: str
+    model_key: str
+    recursive: bool
+    skip_existing: bool
+    alpha_matting: bool
+    am_foreground: int
+    am_background: int
+    am_erode: int
+    feather_radius: int
+    use_colorkey_fallback: bool
+    colorkey_tolerance: int
+
+    def as_kwargs(self) -> dict[str, Any]:
+        """Return keyword arguments for :func:`remove_bg_file`."""
+
+        model_name = _REMOVAL_MODEL_LOOKUP.get(self.model_key, DEFAULT_MODEL_NAME)
+        return {
+            "output_format": self.output_format,
+            "model_name": model_name,
+            "alpha_matting": self.alpha_matting,
+            "am_foreground": self.am_foreground,
+            "am_background": self.am_background,
+            "am_erode": self.am_erode,
+            "feather_radius": self.feather_radius,
+            "use_colorkey_fallback": self.use_colorkey_fallback,
+            "colorkey_tolerance": self.colorkey_tolerance,
+        }
+
+
+class FolderProcessor(threading.Thread):
+    """Process folders of images in a background thread."""
+
+    def __init__(
+        self,
+        options: FolderTaskOptions,
+        events: queue.Queue[tuple[str, dict[str, Any]]],
+        cancel_event: threading.Event,
+    ) -> None:
+        super().__init__(daemon=True)
+        self.options = options
+        self.events = events
+        self.cancel_event = cancel_event
+
+    def _iter_sources(self) -> Iterable[Path]:
+        """Yield supported source images."""
+
+        folder = self.options.folder
+        iterator: Iterable[Path]
+        if self.options.recursive:
+            iterator = folder.rglob("*")
+        else:
+            iterator = folder.iterdir()
+        for item in iterator:
+            if item.is_file() and item.suffix.lower() in SUPPORTED_EXTENSIONS:
+                yield item
+
+    def run(self) -> None:  # noqa: D401 - inherited behaviour documented above.
+        # Saving occurs inside a dedicated "output" sub-folder to keep
+        # original images untouched. Adjust ``output_root`` here if a
+        # different export layout is preferred.
+        output_root = self.options.folder / "output"
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        sources = list(self._iter_sources())
+        total = len(sources)
+        if total == 0:
+            self.events.put(
+                (
+                    "batch_empty",
+                    {
+                        "folder": str(self.options.folder),
+                        "output": str(output_root),
+                    },
+                )
+            )
+            return
+
+        self.events.put(
+            (
+                "batch_start",
+                {
+                    "total": total,
+                    "folder": str(self.options.folder),
+                    "output": str(output_root),
+                },
+            )
+        )
+
+        try:
+            session = ensure_global_session(
+                _REMOVAL_MODEL_LOOKUP.get(self.options.model_key, DEFAULT_MODEL_NAME)
+            )
+        except Exception as exc:  # pragma: no cover - defensive guard for UI errors.
+            self.events.put(
+                (
+                    "batch_error",
+                    {
+                        "message": "Unable to prepare the selected model.",
+                        "exception": exc,
+                    },
+                )
+            )
+            return
+
+        processed = 0
+        durations: list[float] = []
+        format_spec = get_output_format_spec(self.options.output_format)
+
+        for index, source in enumerate(sources, start=1):
+            if self.cancel_event.is_set():
+                self.events.put(
+                    (
+                        "batch_cancelled",
+                        {
+                            "processed": processed,
+                            "total": total,
+                        },
+                    )
+                )
+                return
+
+            relative = source.relative_to(self.options.folder)
+            destination = format_spec.normalise_filename(output_root / relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+
+            if self.options.skip_existing and destination.exists():
+                processed += 1
+                durations.append(0.0)
+                self.events.put(
+                    (
+                        "image_skipped",
+                        {
+                            "source": str(source),
+                            "destination": str(destination),
+                            "index": index,
+                            "total": total,
+                        },
+                    )
+                )
+                self._update_progress(processed, total, durations)
+                continue
+
+            self.events.put(
+                (
+                    "image_start",
+                    {
+                        "source": str(source),
+                        "index": index,
+                        "total": total,
+                    },
+                )
+            )
+
+            start_time = time.perf_counter()
+            try:
+                result = remove_bg_file(
+                    source,
+                    destination,
+                    session=session,
+                    retain_image=False,
+                    save_to_disk=True,
+                    **self.options.as_kwargs(),
+                )
+            except Exception as exc:  # pragma: no cover - best effort logging.
+                durations.append(time.perf_counter() - start_time)
+                processed += 1
+                self.events.put(
+                    (
+                        "image_error",
+                        {
+                            "source": str(source),
+                            "error": str(exc),
+                            "index": index,
+                            "total": total,
+                        },
+                    )
+                )
+                self._update_progress(processed, total, durations)
+                continue
+
+            durations.append(time.perf_counter() - start_time)
+            processed += 1
+            self.events.put(
+                (
+                    "image_complete",
+                    {
+                        "source": str(source),
+                        "destination": str(result.path_out) if result.path_out else str(destination),
+                        "index": index,
+                        "total": total,
+                        "success": result.success,
+                    },
+                )
+            )
+            self._update_progress(processed, total, durations)
+
+        self.events.put(
+            (
+                "batch_complete",
+                {
+                    "processed": processed,
+                    "total": total,
+                    "output": str(output_root),
+                },
+            )
+        )
+
+    def _update_progress(
+        self,
+        processed: int,
+        total: int,
+        durations: list[float],
+    ) -> None:
+        """Send progress information to the UI event queue."""
+
+        remaining = max(total - processed, 0)
+        average = sum(durations) / len(durations) if durations else 0.0
+        eta = average * remaining
+        self.events.put(
+            (
+                "progress",
+                {
+                    "processed": processed,
+                    "total": total,
+                    "eta": eta,
+                },
+            )
+        )
+
+
+class BackgroundRemoverApp(tb.Window):
+    """Desktop interface for running background removal locally."""
+
+    def __init__(self) -> None:
+        super().__init__(title="Background Remover", themename="flatly")
+        self.style = tb.Style()
+        self.geometry("1100x720")
+        self.minsize(960, 640)
+        self._theme_dark = False
+        self._folder_worker: Optional[FolderProcessor] = None
+        self._folder_cancel_event = threading.Event()
+        self._single_worker: Optional[threading.Thread] = None
+        self.event_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        self._image_preview: Optional[ImageTk.PhotoImage] = None
+        self._result_preview: Optional[ImageTk.PhotoImage] = None
+        self.alpha_spinboxes: list[tb.Spinbox] = []
+
+        ensure_models_downloaded()
+        ensure_global_session()
+
+        self._create_variables()
+        self._build_ui()
+        self.after(100, self._process_event_queue)
+
+    def _create_variables(self) -> None:
+        """Initialise Tkinter variables used across the UI."""
+
+        self.mode_var = tb.StringVar(value="single")
+        self.selected_file = tb.StringVar(value="No image selected")
+        self.selected_folder = tb.StringVar(value="No folder selected")
+        self.folder_summary = tb.StringVar(value="")
+        self.progress_var = tb.DoubleVar(value=0.0)
+        self.progress_text = tb.StringVar(value="Waiting to start")
+        self.eta_text = tb.StringVar(value="")
+        self.current_image_name = tb.StringVar(value="")
+        self.output_message = tb.StringVar(value="")
+        self.alpha_matting_var = tb.BooleanVar(value=DEFAULT_ALPHA_MATTING_VALUES["alpha_matting"])
+        self.am_foreground_var = tb.IntVar(value=DEFAULT_ALPHA_MATTING_VALUES["am_foreground"])
+        self.am_background_var = tb.IntVar(value=DEFAULT_ALPHA_MATTING_VALUES["am_background"])
+        self.am_erode_var = tb.IntVar(value=DEFAULT_ALPHA_MATTING_VALUES["am_erode"])
+        self.feather_var = tb.IntVar(value=DEFAULT_TUNE_VALUES["feather_radius"])
+        self.colorkey_var = tb.IntVar(value=DEFAULT_TUNE_VALUES["colorkey_tolerance"])
+        self.use_colorkey_var = tb.BooleanVar(value=DEFAULT_TUNE_VALUES["use_colorkey_fallback"])
+        self.output_format_var = tb.StringVar(value=DEFAULT_OUTPUT_FORMAT)
+        self.model_var = tb.StringVar(value="general")
+        self.recursive_var = tb.BooleanVar(value=False)
+        self.skip_existing_var = tb.BooleanVar(value=True)
+
+    def _build_ui(self) -> None:
+        """Construct the window layout and widgets."""
+
+        container = tb.Frame(self, padding=20)
+        container.pack(fill=BOTH, expand=True)
+
+        header = tb.Frame(container)
+        header.pack(fill=BOTH, expand=False)
+
+        title = tb.Label(
+            header,
+            text="Background Remover",
+            font=("Segoe UI", 20, "bold"),
+        )
+        title.pack(side=LEFT)
+
+        subtitle = tb.Label(
+            header,
+            text="Process single images or entire folders with live previews.",
+            bootstyle="secondary",
+        )
+        subtitle.pack(side=LEFT, padx=10, pady=6)
+
+        theme_button = tb.Button(
+            header,
+            text="Toggle Theme",
+            command=self._toggle_theme,
+            bootstyle="secondary-outline",
+        )
+        theme_button.pack(side=RIGHT)
+        ToolTip(theme_button, "Switch between light and dark themes.")
+
+        mode_frame = tb.Frame(container, padding=(0, 20, 0, 10))
+        mode_frame.pack(fill=BOTH, expand=False)
+
+        tb.Label(mode_frame, text="Processing mode", font=("Segoe UI", 12, "bold")).pack(
+            anchor=W
+        )
+
+        choices = tb.Frame(mode_frame)
+        choices.pack(anchor=W, pady=8)
+        single_radio = tb.Radiobutton(
+            choices,
+            text="Single Image",
+            value="single",
+            variable=self.mode_var,
+            command=self._on_mode_changed,
+            bootstyle="success-toolbutton",
+        )
+        single_radio.pack(side=LEFT, padx=(0, 8))
+        ToolTip(single_radio, "Process a single image file.")
+
+        folder_radio = tb.Radiobutton(
+            choices,
+            text="Folder Batch",
+            value="folder",
+            variable=self.mode_var,
+            command=self._on_mode_changed,
+            bootstyle="info-toolbutton",
+        )
+        folder_radio.pack(side=LEFT, padx=(0, 8))
+        ToolTip(folder_radio, "Process all supported images inside a folder.")
+
+        body = tb.PanedWindow(container, orient="horizontal")
+        body.pack(fill=BOTH, expand=True)
+
+        left_panel = tb.Frame(body, padding=10)
+        right_panel = tb.Frame(body, padding=10)
+        body.add(left_panel, weight=2)
+        body.add(right_panel, weight=1)
+
+        # Shared options reside in the right panel.
+        self._build_options_panel(right_panel)
+
+        # Mode specific controls.
+        self.single_frame = tb.Labelframe(left_panel, text="Single Image Workflow", padding=15)
+        self.single_frame.pack(fill=BOTH, expand=True)
+        self._build_single_controls(self.single_frame)
+
+        self.folder_frame = tb.Labelframe(left_panel, text="Folder Workflow", padding=15)
+        self.folder_frame.pack(fill=BOTH, expand=True)
+        self._build_folder_controls(self.folder_frame)
+        self.folder_frame.forget()
+
+    def _build_options_panel(self, parent: tb.Frame) -> None:
+        """Create the panel that exposes shared processing options."""
+
+        info_label = tb.Label(
+            parent,
+            text=(
+                "Tune how backgrounds are removed. These settings match the "
+                "advanced options in the web interface."
+            ),
+            wraplength=280,
+            bootstyle="secondary",
+            justify=LEFT,
+        )
+        info_label.pack(anchor=W, pady=(0, 10))
+
+        format_label = tb.Label(parent, text="Output format", font=("Segoe UI", 10, "bold"))
+        format_label.pack(anchor=W)
+        ToolTip(format_label, "Choose the file type used for saved results.")
+
+        formats = [f"{spec.label}" for spec in OUTPUT_FORMATS]
+        keys = [spec.key for spec in OUTPUT_FORMATS]
+        try:
+            initial_index = keys.index(self.output_format_var.get())
+        except ValueError:
+            initial_index = 0
+            self.output_format_var.set(keys[0])
+        self.output_format_display = tb.StringVar(value=formats[initial_index])
+        self.format_combo = tb.Combobox(
+            parent,
+            values=formats,
+            state="readonly",
+            textvariable=self.output_format_display,
+        )
+        self.format_combo.current(initial_index)
+        self.format_combo.pack(fill=BOTH, pady=5)
+        self.format_combo.bind("<<ComboboxSelected>>", self._on_format_selected)
+
+        model_label = tb.Label(parent, text="Removal model", font=("Segoe UI", 10, "bold"))
+        model_label.pack(anchor=W, pady=(10, 0))
+        ToolTip(model_label, "Select which ML model should run background removal.")
+
+        model_values = [option["label"] for option in REMOVAL_MODEL_OPTIONS]
+        model_keys = [option["key"] for option in REMOVAL_MODEL_OPTIONS]
+        self.model_combo = tb.Combobox(
+            parent,
+            values=model_values,
+            state="readonly",
+        )
+        try:
+            idx = model_keys.index(self.model_var.get())
+        except ValueError:
+            idx = 0
+            self.model_var.set(model_keys[0])
+        self.model_display = tb.StringVar(value=model_values[idx])
+        self.model_combo.configure(textvariable=self.model_display)
+        self.model_combo.current(idx)
+        self.model_combo.pack(fill=BOTH, pady=5)
+        self.model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
+
+        alpha_check = tb.Checkbutton(
+            parent,
+            text="Enable alpha matting",
+            variable=self.alpha_matting_var,
+            command=self._sync_alpha_controls,
+        )
+        alpha_check.pack(anchor=W, pady=(15, 5))
+        ToolTip(alpha_check, "Use fine-grained matting to refine edges around hair or fur.")
+
+        alpha_frame = tb.Frame(parent)
+        alpha_frame.pack(fill=BOTH, pady=5)
+
+        self._add_labeled_spinbox(
+            alpha_frame,
+            label="Foreground threshold",
+            variable=self.am_foreground_var,
+            from_=0,
+            to=255,
+            tooltip="Pixels brighter than this are treated as definite foreground.",
+            collector=self.alpha_spinboxes,
+        )
+        self._add_labeled_spinbox(
+            alpha_frame,
+            label="Background threshold",
+            variable=self.am_background_var,
+            from_=0,
+            to=255,
+            tooltip="Pixels darker than this are treated as background.",
+            collector=self.alpha_spinboxes,
+        )
+        self._add_labeled_spinbox(
+            alpha_frame,
+            label="Erode structure size",
+            variable=self.am_erode_var,
+            from_=0,
+            to=255,
+            tooltip="Higher values slightly expand the background mask for smoother edges.",
+            collector=self.alpha_spinboxes,
+        )
+
+        tuning_frame = tb.Frame(parent)
+        tuning_frame.pack(fill=BOTH, pady=(15, 0))
+
+        self._add_labeled_spinbox(
+            tuning_frame,
+            label="Feather radius",
+            variable=self.feather_var,
+            from_=0,
+            to=50,
+            tooltip="Softens edges by blending the mask with the background.",
+        )
+        self._add_labeled_spinbox(
+            tuning_frame,
+            label="Colour key tolerance",
+            variable=self.colorkey_var,
+            from_=0,
+            to=60,
+            tooltip="Higher values allow more aggressive colour spill removal.",
+        )
+
+        colorkey_check = tb.Checkbutton(
+            parent,
+            text="Use colour key fallback",
+            variable=self.use_colorkey_var,
+        )
+        colorkey_check.pack(anchor=W, pady=(5, 0))
+        ToolTip(
+            colorkey_check,
+            "When enabled, a colour key fallback is applied when matting is disabled.",
+        )
+
+        recursive_check = tb.Checkbutton(
+            parent,
+            text="Include sub-folders",
+            variable=self.recursive_var,
+        )
+        recursive_check.pack(anchor=W, pady=(15, 0))
+        ToolTip(recursive_check, "Scan sub-folders when batch processing.")
+
+        skip_check = tb.Checkbutton(
+            parent,
+            text="Skip existing outputs",
+            variable=self.skip_existing_var,
+        )
+        skip_check.pack(anchor=W, pady=5)
+        ToolTip(skip_check, "Avoid reprocessing files that already have background-free versions.")
+        self._sync_alpha_controls()
+
+    def _add_labeled_spinbox(
+        self,
+        parent: tb.Frame,
+        *,
+        label: str,
+        variable: tb.IntVar,
+        from_: int,
+        to: int,
+        tooltip: str,
+        collector: Optional[list[tb.Spinbox]] = None,
+    ) -> None:
+        """Create a labeled spinbox with a tooltip for numeric settings."""
+
+        frame = tb.Frame(parent)
+        frame.pack(fill=BOTH, pady=3)
+        lbl = tb.Label(frame, text=label)
+        lbl.pack(anchor=W)
+        ToolTip(lbl, tooltip)
+        spin = tb.Spinbox(
+            frame,
+            from_=from_,
+            to=to,
+            textvariable=variable,
+            increment=1,
+            width=10,
+        )
+        spin.pack(anchor=W)
+        if collector is not None:
+            collector.append(spin)
+
+    def _build_single_controls(self, parent: tb.Frame) -> None:
+        """Create widgets specific to single-image processing."""
+
+        description = tb.Label(
+            parent,
+            text="Choose an image and apply the configured options.",
+            bootstyle="secondary",
+        )
+        description.pack(anchor=W, pady=(0, 10))
+
+        file_row = tb.Frame(parent)
+        file_row.pack(fill=BOTH, pady=5)
+
+        self.file_button = tb.Button(
+            file_row,
+            text="Select image",
+            command=self._choose_single_image,
+            bootstyle="primary-outline",
+        )
+        self.file_button.pack(side=LEFT)
+        ToolTip(self.file_button, "Browse for a single image to process.")
+
+        file_label = tb.Label(
+            file_row,
+            textvariable=self.selected_file,
+            wraplength=420,
+            justify=LEFT,
+        )
+        file_label.pack(side=LEFT, padx=10)
+
+        self.single_preview = tb.Label(parent)
+        self.single_preview.pack(pady=10)
+
+        self.single_status = tb.Label(parent, textvariable=self.output_message, bootstyle="info")
+        self.single_status.pack(anchor=W, pady=5)
+
+        action_row = tb.Frame(parent)
+        action_row.pack(fill=BOTH, pady=10)
+
+        self.process_button = tb.Button(
+            action_row,
+            text="Remove background",
+            command=self._process_single_image,
+            bootstyle="success",
+        )
+        self.process_button.pack(side=LEFT)
+        ToolTip(self.process_button, "Generate a background-free version of the selected image.")
+
+    def _build_folder_controls(self, parent: tb.Frame) -> None:
+        """Create widgets for folder-based processing."""
+
+        description = tb.Label(
+            parent,
+            text=(
+                "Process every supported image in a folder. Results are saved to an "
+                '"output" sub-folder beside your originals.'
+            ),
+            bootstyle="secondary",
+            wraplength=420,
+            justify=LEFT,
+        )
+        description.pack(anchor=W, pady=(0, 10))
+
+        choose_row = tb.Frame(parent)
+        choose_row.pack(fill=BOTH, pady=5)
+
+        self.folder_button = tb.Button(
+            choose_row,
+            text="Select folder",
+            command=self._choose_folder,
+            bootstyle="primary-outline",
+        )
+        self.folder_button.pack(side=LEFT)
+        ToolTip(self.folder_button, "Choose the folder that should be processed in batch mode.")
+
+        folder_label = tb.Label(
+            choose_row,
+            textvariable=self.selected_folder,
+            wraplength=420,
+            justify=LEFT,
+        )
+        folder_label.pack(side=LEFT, padx=10)
+
+        summary_label = tb.Label(parent, textvariable=self.folder_summary, bootstyle="info")
+        summary_label.pack(anchor=W, pady=5)
+
+        progress_bar = tb.Progressbar(parent, variable=self.progress_var, maximum=1.0)
+        progress_bar.pack(fill=BOTH, pady=10)
+
+        progress_info = tb.Frame(parent)
+        progress_info.pack(fill=BOTH)
+
+        tb.Label(progress_info, textvariable=self.progress_text).pack(side=LEFT)
+        tb.Label(progress_info, textvariable=self.eta_text, bootstyle="secondary").pack(side=RIGHT)
+
+        current_frame = tb.Frame(parent)
+        current_frame.pack(fill=BOTH, pady=10)
+
+        tb.Label(current_frame, text="Current image:").pack(anchor=W)
+        tb.Label(current_frame, textvariable=self.current_image_name, bootstyle="secondary").pack(anchor=W)
+        self.batch_preview = tb.Label(current_frame)
+        self.batch_preview.pack(pady=6)
+
+        action_row = tb.Frame(parent)
+        action_row.pack(fill=BOTH, pady=10)
+
+        self.start_batch_button = tb.Button(
+            action_row,
+            text="Start batch",
+            command=self._start_batch,
+            bootstyle="success",
+        )
+        self.start_batch_button.pack(side=LEFT)
+
+        self.cancel_batch_button = tb.Button(
+            action_row,
+            text="Cancel batch",
+            command=self._cancel_batch,
+            bootstyle="danger-outline",
+            state="disabled",
+        )
+        self.cancel_batch_button.pack(side=LEFT, padx=10)
+        ToolTip(self.cancel_batch_button, "Stop processing after the current image completes.")
+
+        log_label = tb.Label(parent, text="Status log", font=("Segoe UI", 10, "bold"))
+        log_label.pack(anchor=W)
+
+        self.log_console = ScrolledText(parent, height=10, padding=5, state="disabled")
+        self.log_console.pack(fill=BOTH, expand=True)
+
+    def _on_mode_changed(self) -> None:
+        """Switch between single and folder workflows."""
+
+        mode = self.mode_var.get()
+        if mode == "single":
+            self.folder_frame.forget()
+            self.single_frame.pack(fill=BOTH, expand=True)
+            self.file_button.configure(state="normal")
+            self.process_button.configure(state="normal")
+        else:
+            self.single_frame.forget()
+            self.folder_frame.pack(fill=BOTH, expand=True)
+            self.file_button.configure(state="disabled")
+            self.process_button.configure(state="disabled")
+
+    def _toggle_theme(self) -> None:
+        """Toggle between the light and dark ttkbootstrap themes."""
+
+        self._theme_dark = not self._theme_dark
+        theme = "darkly" if self._theme_dark else "flatly"
+        self.style.theme_use(theme)
+
+    def _on_format_selected(self, _event: Any) -> None:
+        """Synchronise the output format variable with the dropdown."""
+
+        index = self.format_combo.current()
+        if 0 <= index < len(OUTPUT_FORMATS):
+            self.output_format_var.set(OUTPUT_FORMATS[index].key)
+
+    def _on_model_selected(self, _event: Any) -> None:
+        """Synchronise the chosen model key."""
+
+        index = self.model_combo.current()
+        keys = [option["key"] for option in REMOVAL_MODEL_OPTIONS]
+        if 0 <= index < len(keys):
+            self.model_var.set(keys[index])
+
+    def _sync_alpha_controls(self) -> None:
+        """Enable or disable alpha matting controls based on the checkbox."""
+
+        state = "normal" if self.alpha_matting_var.get() else "disabled"
+        for widget in self.alpha_spinboxes:
+            widget.configure(state=state)
+
+    def _choose_single_image(self) -> None:
+        """Prompt the user to choose an image file."""
+
+        from tkinter import filedialog
+
+        patterns = ["*.{}".format(ext.lstrip(".")) for ext in SUPPORTED_EXTENSIONS]
+        path = filedialog.askopenfilename(
+            title="Choose an image",
+            filetypes=[
+                ("Image files", " ".join(patterns)),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        self.selected_file.set(path)
+        self._display_preview(Path(path), self.single_preview, max_size=400)
+        self.output_message.set("Ready to process.")
+
+    def _process_single_image(self) -> None:
+        """Run background removal for the selected image."""
+
+        if self._single_worker and self._single_worker.is_alive():
+            Messagebox.show_warning(
+                "Processing already in progress. Please wait until it finishes.",
+                "Background Remover",
+            )
+            return
+
+        path_text = self.selected_file.get()
+        path = Path(path_text)
+        if not path.exists():
+            Messagebox.show_error("Please choose an image before processing.", "Background Remover")
+            return
+
+        def worker() -> None:
+            self.output_message.set("Processing…")
+            options = self._build_common_options()
+            destination = options["output"]
+            result = None
+            try:
+                result = remove_bg_file(
+                    path,
+                    destination,
+                    retain_image=True,
+                    save_to_disk=True,
+                    **options["kwargs"],
+                )
+            except Exception as exc:  # pragma: no cover - UI level reporting.
+                self.output_message.set("Failed to process image.")
+                self._append_log(f"Error processing {path.name}: {exc}")
+                return
+            finally:
+                if result is not None and result.image is not None:
+                    result.image.close()
+
+            if result.success and result.path_out:
+                self.output_message.set(f"Saved to {result.path_out}")
+                self._display_preview(
+                    result.path_out,
+                    self.single_preview,
+                    max_size=400,
+                    store_result=True,
+                )
+                self._append_log(f"✔ Saved {result.path_out}")
+            else:
+                self.output_message.set("Processing completed without an output file.")
+
+        self._single_worker = threading.Thread(target=worker, daemon=True)
+        self._single_worker.start()
+
+    def _build_common_options(self) -> dict[str, Any]:
+        """Return keyword arguments shared by single and batch workflows."""
+
+        model_name = _REMOVAL_MODEL_LOOKUP.get(self.model_var.get(), DEFAULT_MODEL_NAME)
+        format_spec = get_output_format_spec(self.output_format_var.get())
+        kwargs = {
+            "output_format": format_spec.key,
+            "model_name": model_name,
+            "alpha_matting": self.alpha_matting_var.get(),
+            "am_foreground": int(self.am_foreground_var.get()),
+            "am_background": int(self.am_background_var.get()),
+            "am_erode": int(self.am_erode_var.get()),
+            "feather_radius": int(self.feather_var.get()),
+            "use_colorkey_fallback": self.use_colorkey_var.get(),
+            "colorkey_tolerance": int(self.colorkey_var.get()),
+        }
+        return {"output": None, "kwargs": kwargs}
+
+    def _display_preview(
+        self,
+        path: Path,
+        target: tb.Label,
+        *,
+        max_size: int = 280,
+        store_result: bool = False,
+    ) -> None:
+        """Display a thumbnail preview for ``path`` in ``target``."""
+
+        try:
+            with Image.open(path) as image:
+                image.thumbnail((max_size, max_size))
+                photo = ImageTk.PhotoImage(image)
+        except Exception:
+            return
+        target.configure(image=photo)
+        target.image = photo
+        if store_result:
+            self._result_preview = photo
+        else:
+            self._image_preview = photo
+
+    def _choose_folder(self) -> None:
+        """Prompt the user to select a folder for batch processing."""
+
+        from tkinter import filedialog
+
+        path = filedialog.askdirectory(title="Choose a folder")
+        if not path:
+            return
+        folder = Path(path)
+        self.selected_folder.set(str(folder))
+        sources = list(self._scan_folder(folder, self.recursive_var.get()))
+        self.folder_summary.set(
+            f"Found {len(sources)} image(s) · Output: {folder / 'output'}"
+        )
+        self._append_log(f"Folder selected: {folder}")
+
+    def _scan_folder(self, folder: Path, recursive: bool) -> Iterable[Path]:
+        """Yield supported image files inside ``folder``."""
+
+        iterator: Iterable[Path]
+        if recursive:
+            iterator = folder.rglob("*")
+        else:
+            iterator = folder.iterdir()
+        # To add support for new file types, extend ``SUPPORTED_EXTENSIONS``
+        # in :mod:`bg_removal`. The GUI automatically honours that list when
+        # filtering candidate files.
+        for path in iterator:
+            if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                yield path
+
+    def _start_batch(self) -> None:
+        """Launch a worker thread for batch processing."""
+
+        if self._folder_worker and self._folder_worker.is_alive():
+            Messagebox.show_info("Batch already running.", "Background Remover")
+            return
+
+        folder_text = self.selected_folder.get()
+        folder = Path(folder_text)
+        if not folder.exists():
+            Messagebox.show_error("Please choose a folder before starting the batch.", "Background Remover")
+            return
+
+        options = FolderTaskOptions(
+            folder=folder,
+            output_format=self.output_format_var.get(),
+            model_key=self.model_var.get(),
+            recursive=self.recursive_var.get(),
+            skip_existing=self.skip_existing_var.get(),
+            alpha_matting=self.alpha_matting_var.get(),
+            am_foreground=int(self.am_foreground_var.get()),
+            am_background=int(self.am_background_var.get()),
+            am_erode=int(self.am_erode_var.get()),
+            feather_radius=int(self.feather_var.get()),
+            use_colorkey_fallback=self.use_colorkey_var.get(),
+            colorkey_tolerance=int(self.colorkey_var.get()),
+        )
+        self.progress_var.set(0.0)
+        self.progress_text.set("Preparing…")
+        self.eta_text.set("")
+        self.current_image_name.set("")
+        self.batch_preview.configure(image="")
+        self.batch_preview.image = None
+        self.log_console.configure(state="normal")
+        self.log_console.delete(1.0, END)
+        self.log_console.configure(state="disabled")
+        self._folder_cancel_event.clear()
+        self.cancel_batch_button.configure(state="normal")
+        self.start_batch_button.configure(state="disabled")
+        self._append_log("Batch started.")
+        self._folder_worker = FolderProcessor(options, self.event_queue, self._folder_cancel_event)
+        self._folder_worker.start()
+
+    def _cancel_batch(self) -> None:
+        """Signal the background worker to cancel processing."""
+
+        if self._folder_worker and self._folder_worker.is_alive():
+            self._folder_cancel_event.set()
+            self._append_log("Cancellation requested. Finishing current image…")
+            self.cancel_batch_button.configure(state="disabled")
+
+    def _process_event_queue(self) -> None:
+        """Handle events emitted from worker threads."""
+
+        try:
+            while True:
+                event, payload = self.event_queue.get_nowait()
+                self._handle_event(event, payload)
+        except queue.Empty:
+            pass
+        finally:
+            self.after(100, self._process_event_queue)
+
+    def _handle_event(self, event: str, payload: dict[str, Any]) -> None:
+        """Respond to a single event emitted by a worker."""
+
+        if event == "batch_start":
+            total = payload.get("total", 0)
+            folder = payload.get("folder", "")
+            self.progress_text.set(f"Processing {total} image(s) from {folder}")
+            self._append_log(f"Found {total} image(s) to process.")
+        elif event == "batch_empty":
+            self.progress_text.set("No supported images found.")
+            self._append_log("Selected folder does not contain supported images.")
+            self._reset_batch_controls()
+        elif event == "batch_error":
+            message = payload.get("message", "An error occurred.")
+            exception = payload.get("exception")
+            self._append_log(f"Error: {message} ({exception})")
+            self.progress_text.set(message)
+            self._reset_batch_controls()
+        elif event == "batch_cancelled":
+            processed = payload.get("processed", 0)
+            total = payload.get("total", 0)
+            self.progress_text.set(f"Cancelled after {processed}/{total} images.")
+            self._append_log("Batch cancelled by user.")
+            self._reset_batch_controls()
+        elif event == "batch_complete":
+            processed = payload.get("processed", 0)
+            total = payload.get("total", 0)
+            output = payload.get("output", "")
+            self.progress_var.set(1.0)
+            self.progress_text.set(f"Completed {processed}/{total} images.")
+            self.eta_text.set("Done!")
+            self._append_log(f"Batch complete. Files saved to {output}")
+            Messagebox.show_info(f"Batch complete! Files saved to {output}", "Background Remover")
+            self._reset_batch_controls()
+        elif event == "image_start":
+            source = payload.get("source", "")
+            self.current_image_name.set(Path(source).name)
+            self._display_preview(Path(source), self.batch_preview, max_size=200)
+            self._append_log(f"Processing {source}")
+        elif event == "image_complete":
+            destination = payload.get("destination", "")
+            source = payload.get("source", "")
+            success = payload.get("success", True)
+            if success:
+                self._append_log(f"✔ Saved {Path(destination).name}")
+            else:
+                self._append_log(f"⚠ Issue processing {source}")
+        elif event == "image_error":
+            source = payload.get("source", "")
+            error = payload.get("error", "Unknown error")
+            self._append_log(f"✖ Failed {source}: {error}")
+        elif event == "image_skipped":
+            destination = payload.get("destination", "")
+            self._append_log(f"⏭ Skipped existing output {destination}")
+        elif event == "progress":
+            processed = payload.get("processed", 0)
+            total = payload.get("total", 0)
+            eta = payload.get("eta", 0.0)
+            fraction = processed / total if total else 0.0
+            self.progress_var.set(fraction)
+            self.progress_text.set(f"Processed {processed}/{total} images")
+            self.eta_text.set(human_readable_duration(eta))
+
+    def _reset_batch_controls(self) -> None:
+        """Return batch controls to their idle state."""
+
+        self.cancel_batch_button.configure(state="disabled")
+        self.start_batch_button.configure(state="normal")
+        self._folder_worker = None
+        self._folder_cancel_event.clear()
+
+    def _append_log(self, message: str) -> None:
+        """Append ``message`` to the batch status console."""
+
+        self.log_console.configure(state="normal")
+        self.log_console.insert(END, message + "\n")
+        self.log_console.see(END)
+        self.log_console.configure(state="disabled")
+
+
+def main() -> None:
+    """Entry point used by ``python bg_remover_gui.py``."""
+
+    app = BackgroundRemoverApp()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()

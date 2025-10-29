@@ -19,11 +19,11 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import IO, Any, Callable, cast
+from typing import IO, Any, cast
 
 import numpy as np
 import onnxruntime as ort
@@ -815,6 +815,39 @@ def _remove_background_from_image_loader(
     )
 
 
+def remove_background_bytes(
+    data: bytes,
+    *,
+    output_format: str | None = None,
+    model_name: str = DEFAULT_MODEL_NAME,
+    alpha_matting: bool = False,
+    am_foreground: int = 240,
+    am_background: int = 10,
+    am_erode: int = 10,
+    use_colorkey_fallback: bool = True,
+    colorkey_tolerance: int = 14,
+    feather_radius: int = 3,
+) -> RemovalResult:
+    """Remove the background from raw ``data`` and return the processed result."""
+
+    if not data:
+        raise ValueError("No image data supplied for background removal.")
+
+    buffer = io.BytesIO(data)
+    return _remove_background_from_image_loader(
+        lambda: Image.open(buffer),
+        output_format=output_format,
+        model_name=model_name,
+        alpha_matting=alpha_matting,
+        am_foreground=am_foreground,
+        am_background=am_background,
+        am_erode=am_erode,
+        use_colorkey_fallback=use_colorkey_fallback,
+        colorkey_tolerance=colorkey_tolerance,
+        feather_radius=feather_radius,
+    )
+
+
 def remove_background_stream(
     stream: IO[bytes],
     *,
@@ -837,39 +870,6 @@ def remove_background_stream(
 
     return _remove_background_from_image_loader(
         lambda: Image.open(stream),
-        output_format=output_format,
-        model_name=model_name,
-        alpha_matting=alpha_matting,
-        am_foreground=am_foreground,
-        am_background=am_background,
-        am_erode=am_erode,
-        use_colorkey_fallback=use_colorkey_fallback,
-        colorkey_tolerance=colorkey_tolerance,
-        feather_radius=feather_radius,
-    )
-
-
-def remove_background_bytes(
-    data: bytes,
-    *,
-    output_format: str | None = None,
-    model_name: str = DEFAULT_MODEL_NAME,
-    alpha_matting: bool = False,
-    am_foreground: int = 240,
-    am_background: int = 10,
-    am_erode: int = 10,
-    use_colorkey_fallback: bool = True,
-    colorkey_tolerance: int = 14,
-    feather_radius: int = 3,
-) -> RemovalResult:
-    """Remove the background from raw ``data`` and return the processed result."""
-
-    if not data:
-        raise ValueError("No image data supplied for background removal.")
-
-    buffer = io.BytesIO(data)
-    return _remove_background_from_image_loader(
-        lambda: Image.open(buffer),
         output_format=output_format,
         model_name=model_name,
         alpha_matting=alpha_matting,

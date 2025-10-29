@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+import bg_removal as bg_remove
+
 
 @pytest.fixture()
 def large_rgba_image(tmp_path: Path) -> Path:
@@ -22,8 +24,6 @@ def large_rgba_bytes(large_rgba_image: Path) -> bytes:
     """Return the encoded bytes for the ``large_rgba_image`` fixture."""
 
     return large_rgba_image.read_bytes()
-
-import bg_removal as bg_remove
 
 
 def _make_image_bytes(color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> bytes:

@@ -2,7 +2,10 @@
 (() => {
   'use strict';
 
-  const storageKey = 'bg-remover-theme';
+  const themeStorageKey = 'bg-remover-theme';
+  const previewBackgroundStorageKey = 'bg-remover-preview-background';
+  // Track the most recently applied preview background colour for quick reapplication.
+  let previewBackgroundCurrentHex = null;
   const root = document.documentElement;
 
   const prefersDarkMediaQuery = typeof window.matchMedia === 'function'
@@ -14,7 +17,7 @@
    * @returns {('light'|'dark')} The preferred theme name.
    */
   const resolvePreferredTheme = () => {
-    const stored = window.localStorage ? localStorage.getItem(storageKey) : null;
+    const stored = window.localStorage ? localStorage.getItem(themeStorageKey) : null;
     if (stored === 'light' || stored === 'dark') {
       return stored;
     }
@@ -35,7 +38,7 @@
     root.classList.toggle('dark', resolved === 'dark');
     root.style.colorScheme = resolved;
     if (persist && window.localStorage) {
-      localStorage.setItem(storageKey, resolved);
+      localStorage.setItem(themeStorageKey, resolved);
     }
     return resolved;
   };
@@ -77,7 +80,7 @@
 
   if (prefersDarkMediaQuery) {
     prefersDarkMediaQuery.addEventListener('change', (event) => {
-      const stored = window.localStorage ? localStorage.getItem(storageKey) : null;
+      const stored = window.localStorage ? localStorage.getItem(themeStorageKey) : null;
       if (stored !== 'light' && stored !== 'dark') {
         const applied = applyTheme(event.matches ? 'dark' : 'light', false);
         syncThemeToggle(applied);
@@ -582,6 +585,8 @@
   const previewSizeInput = document.getElementById('single-preview-size');
   const previewSizeLabel = document.getElementById('single-preview-size-label');
   const previewContainer = document.getElementById('single-preview')?.parentElement;
+  const previewBackgroundInput = document.getElementById('single-preview-background');
+  const previewBackgroundValue = document.getElementById('single-preview-background-value');
 
   const applyPreviewSize = () => {
     if (!previewSizeInput) {
@@ -605,6 +610,140 @@
     previewSizeInput.addEventListener('change', applyPreviewSize);
     applyPreviewSize();
   }
+
+  /**
+   * Convert a numeric colour component to its two-digit hexadecimal representation.
+   * @param {number} component - A colour channel value between 0 and 255.
+   * @returns {string} Two-digit hexadecimal representation.
+   */
+  const componentToHex = (component) => {
+    const safeValue = Number.isFinite(component) ? Math.min(Math.max(Math.round(component), 0), 255) : 0;
+    return safeValue.toString(16).padStart(2, '0');
+  };
+
+  /**
+   * Convert a CSS rgba()/rgb() string to a hexadecimal colour.
+   * @param {string} colorString - The CSS colour string to convert.
+   * @returns {string | null} The equivalent hexadecimal colour or null if parsing fails.
+   */
+  const rgbaToHex = (colorString) => {
+    if (typeof colorString !== 'string') {
+      return null;
+    }
+    const match = colorString
+      .trim()
+      .match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
+    if (!match) {
+      return null;
+    }
+    const [, r, g, b] = match;
+    return `#${componentToHex(Number(r))}${componentToHex(Number(g))}${componentToHex(Number(b))}`;
+  };
+
+  /**
+   * Resolve a CSS colour string to a normalised hexadecimal colour.
+   * @param {string} value - The CSS colour string to resolve.
+   * @param {string} fallback - The fallback hexadecimal colour.
+   * @returns {string} A #RRGGBB colour string.
+   */
+  const resolveToHex = (value, fallback) => {
+    if (typeof value !== 'string') {
+      return fallback;
+    }
+    const trimmed = value.trim();
+    if (trimmed.startsWith('#')) {
+      return normaliseHex(trimmed);
+    }
+    const converted = rgbaToHex(trimmed);
+    if (converted) {
+      return normaliseHex(converted);
+    }
+    return fallback;
+  };
+
+  /**
+   * Normalise a hex colour value to the #RRGGBB format.
+   * @param {string} value - The colour value to normalise.
+   * @returns {string} A #RRGGBB colour string.
+   */
+  const normaliseHex = (value) => {
+    if (typeof value !== 'string') {
+      return '#94a3b8';
+    }
+    const trimmed = value.trim();
+    if (/^#([0-9a-f]{6})$/i.test(trimmed)) {
+      return trimmed.toLowerCase();
+    }
+    if (/^#([0-9a-f]{3})$/i.test(trimmed)) {
+      const [, shortHex] = trimmed.match(/^#([0-9a-f]{3})$/i) || [];
+      if (shortHex) {
+        const expanded = shortHex
+          .split('')
+          .map((char) => char + char)
+          .join('');
+        return `#${expanded.toLowerCase()}`;
+      }
+    }
+    return '#94a3b8';
+  };
+
+  /**
+   * Update the checkerboard backdrop colour in the preview container.
+   * @param {string} hexValue - The selected hexadecimal colour.
+   * @param {boolean} persist - Whether to persist the colour for future previews.
+   */
+  const applyPreviewBackgroundColor = (hexValue, persist = true) => {
+    if (!previewContainer) {
+      return;
+    }
+    const normalisedHex = normaliseHex(hexValue);
+    previewContainer.style.setProperty('--checkerboard-color', normalisedHex);
+    previewContainer.style.setProperty('--checkerboard-pattern-color', normalisedHex);
+    previewContainer.style.setProperty('--checkerboard-solid-color', normalisedHex);
+    previewBackgroundCurrentHex = normalisedHex;
+    if (previewBackgroundInput && previewBackgroundInput.value !== normalisedHex) {
+      previewBackgroundInput.value = normalisedHex;
+    }
+    if (previewBackgroundValue) {
+      previewBackgroundValue.textContent = normalisedHex.toUpperCase();
+    }
+    if (persist && window.localStorage) {
+      localStorage.setItem(previewBackgroundStorageKey, normalisedHex);
+    }
+  };
+
+  const initialisePreviewBackgroundControl = () => {
+    if (!previewBackgroundInput || !previewContainer) {
+      return;
+    }
+
+    const computedStyle = getComputedStyle(previewContainer);
+    const existingColor =
+      computedStyle.getPropertyValue('--checkerboard-solid-color') ||
+      computedStyle.getPropertyValue('--checkerboard-pattern-color') ||
+      computedStyle.getPropertyValue('--checkerboard-color');
+    const fallbackHex = normaliseHex(previewBackgroundInput.value);
+    const existingHex = resolveToHex(existingColor, fallbackHex);
+    let startingHex = normaliseHex(existingHex);
+
+    if (window.localStorage) {
+      const storedValue = localStorage.getItem(previewBackgroundStorageKey);
+      if (typeof storedValue === 'string' && storedValue.trim()) {
+        startingHex = normaliseHex(storedValue);
+      }
+    }
+    previewBackgroundInput.value = startingHex;
+    applyPreviewBackgroundColor(startingHex, false);
+
+    const handleBackgroundChange = (event) => {
+      applyPreviewBackgroundColor(event.target.value, true);
+    };
+
+    previewBackgroundInput.addEventListener('input', handleBackgroundChange);
+    previewBackgroundInput.addEventListener('change', handleBackgroundChange);
+  };
+
+  initialisePreviewBackgroundControl();
 
   const edgeSlider = document.getElementById('single-feather');
   const edgeValueLabel = document.getElementById('single-feather-value');
@@ -740,6 +879,21 @@
           }
         }
         applyPreviewSize();
+
+        let restoredPreviewBackground = null;
+        if (window.localStorage) {
+          const storedPreviewBackground = localStorage.getItem(previewBackgroundStorageKey);
+          if (typeof storedPreviewBackground === 'string' && storedPreviewBackground.trim()) {
+            restoredPreviewBackground = storedPreviewBackground;
+          }
+        }
+        // Fall back to the last applied value when storage is unavailable.
+        if (!restoredPreviewBackground && typeof previewBackgroundCurrentHex === 'string') {
+          restoredPreviewBackground = previewBackgroundCurrentHex;
+        }
+        if (restoredPreviewBackground) {
+          applyPreviewBackgroundColor(restoredPreviewBackground, false);
+        }
 
         if (singleResult) {
           singleResult.removeAttribute('hidden');

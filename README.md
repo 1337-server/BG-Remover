@@ -161,17 +161,20 @@ colour-key fallback, etc.) mirror those exposed in the Flask UI.
 
 #### Packaging the desktop app
 
-Rebuild the Tkinter executable with PyInstaller once dependencies are installed:
+Bundle the Tkinter interface with the optimized helper script in `scripts/build_executable.py`:
 
 ```bash
-pyinstaller --noconfirm --windowed --name BackgroundRemoverGUI \
-  --add-data "static:static" --add-data "templates:templates" bg_remover_gui.py
+python scripts/build_executable.py --entry-point bg_remover_gui.py --name BackgroundRemoverGUI
 ```
+
+The wrapper enables PyInstaller's multi-core build mode, automatically includes the `static/` and
+`templates/` assets, and compresses the output with UPX when the packer is installed. Pass
+`--onefile` to create a single-binary build or `--clean` to discard existing `build/` and `dist/`
+artifacts before compiling; use `--no-upx` if antivirus software objects to the compressed output.
 
 The GUI now wraps its startup sequence in a safe handler that logs uncaught exceptions to
 `error.log` beside the script or bundled executable. If a packaged run fails you will also see a
-message box pointing to that log file for the full traceback. Delete `dist/` + `build/` between
-rebuilds to avoid stale assets.
+message box pointing to that log file for the full traceback.
 
 ---
 

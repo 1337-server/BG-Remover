@@ -42,9 +42,12 @@ python scripts/build_executable.py
 
 The script performs the following:
 
-- Removes any previous `build/` and `dist/` artefacts (unless `--no-clean` is supplied).
+- Reuses the cached PyInstaller workspace for faster incremental builds (pass `--clean` to reset).
 - Invokes PyInstaller on `app.py`, bundling templates and static assets automatically.
-- Writes the frozen application to `dist/br-remover/` (one-folder layout).
+- Enables PyInstaller's parallel build mode to leverage all CPU cores.
+- Compresses the result with [UPX](https://upx.github.io/) when the utility is installed (falls back
+  gracefully if it is missing).
+- Writes the frozen application to `dist/br-remover/` (one-folder layout by default).
 
 ### Command options
 
@@ -54,8 +57,9 @@ The script performs the following:
 | `--entry-point PATH` | Bundle a different entry point, e.g. `main.py` for CLI-only builds. |
 | `--dist-dir PATH` | Custom output directory for the packaged app. |
 | `--build-dir PATH` | Temporary workspace for PyInstaller. |
-| `--no-clean` | Preserve existing `build/`/`dist/` directories between runs. |
+| `--clean` | Remove existing `build/`/`dist/` directories before packaging. |
 | `--onefile` | Produce a single-file binary instead of a folder bundle (startup is slower). |
+| `--no-upx` | Disable UPX compression (helpful when antivirus tools flag the packed binary). |
 
 ## 4. Run and verify the bundle
 
@@ -90,9 +94,9 @@ workflows. At runtime it creates an `output/` subfolder inside whichever directo
 the original images untouched.
 
 All command-line flags described above continue to work—for example pass `--onefile` to emit a
-single-binary distribution or `--no-clean` during iterative testing. Regardless of the packaging
-mode, the GUI records uncaught exceptions to an `error.log` file that lives next to the executable
-and surfaces a message box with the location so crashes are no longer silent.
+single-binary distribution or `--clean` when you need to start from a fresh workspace. Regardless of
+the packaging mode, the GUI records uncaught exceptions to an `error.log` file that lives next to the
+executable and surfaces a message box with the location so crashes are no longer silent.
 
 After building, double-click the executable (or run it from a terminal) to open the GUI window directly
 without starting a local web server.

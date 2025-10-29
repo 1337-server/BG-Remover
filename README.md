@@ -15,6 +15,7 @@ preserved whenever the format allows it.
 * ✅ **Flexible exports** with selectable PNG, WebP, or JPEG output (alpha preserved when supported).
 * ✅ **Multiple removal models** covering general scenes, portraits, products, and anime-style artwork.
 * ✅ **Web interface** built with Flask featuring upload + server-folder workflows, ZIP downloads, previews, and guided help.
+* ✅ **Desktop GUI** powered by ttkbootstrap with single-image and cancellable folder batch processing.
 * ✅ Runs entirely on CPU, auto-orients input files, limits oversized images to keep RAM usage stable, and caches downloaded weights.
 
 ### 🎯 Model catalogue
@@ -127,6 +128,53 @@ Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 The Flask app initialises a single ONNX Runtime session on startup so repeated requests remain fast. The
 UI header displays the active CPU execution provider so you can confirm the model is ready before
 processing uploads.
+
+---
+
+### 🪟 Desktop GUI
+
+Launch the ttkbootstrap-based desktop client to work with local files:
+
+```bash
+python bg_remover_gui.py
+```
+
+Key capabilities:
+
+* **Single-image mode** (default) – choose an image file, preview the foreground mask, and export the
+  processed result without blocking the interface.
+* **Folder mode** – point the app at a directory and it will enumerate supported images (PNG, JPG,
+  WebP, and more), display the file count, and process them in a background thread with a live
+  progress bar, ETA, and log console.
+* **Safe exports** – each batch is written to an `output/` subfolder inside the chosen directory to
+  preserve the original assets. Existing files can be skipped automatically.
+* **Cancellable runs** – stop an in-progress folder job with the *Cancel Batch* button; the UI remains
+  responsive while work continues in the background thread.
+
+Toggle *Folder Batch* mode via the radio buttons to reveal the folder workflow controls. While a batch
+is running the file picker is disabled, the current image name and thumbnail are shown, and progress
+updates are appended to the footer console. All advanced options (model selection, alpha matting,
+colour-key fallback, etc.) mirror those exposed in the Flask UI.
+
+> **Tip:** The first time you launch the GUI it downloads the selected model weights to
+> `~/.u2net`. Future runs reuse the cached files so processing starts immediately.
+
+#### Packaging the desktop app
+
+Bundle the Tkinter interface with the optimized helper script in `scripts/build_executable.py`:
+
+```bash
+python scripts/build_executable.py --entry-point bg_remover_gui.py --name BackgroundRemoverGUI
+```
+
+The wrapper enables PyInstaller's multi-core build mode, automatically includes the `static/` and
+`templates/` assets, and compresses the output with UPX when the packer is installed. Pass
+`--onefile` to create a single-binary build or `--clean` to discard existing `build/` and `dist/`
+artifacts before compiling; use `--no-upx` if antivirus software objects to the compressed output.
+
+The GUI now wraps its startup sequence in a safe handler that logs uncaught exceptions to
+`error.log` beside the script or bundled executable. If a packaged run fails you will also see a
+message box pointing to that log file for the full traceback.
 
 ---
 

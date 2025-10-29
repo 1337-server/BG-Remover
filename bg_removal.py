@@ -19,18 +19,17 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any, cast
 
-from enum import Enum
-
 import numpy as np
 import onnxruntime as ort
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
 try:  # pragma: no cover - optional dependency fallback
     import requests  # type: ignore[import]
@@ -53,10 +52,50 @@ except Exception:  # pragma: no cover - gracefully handle missing OpenCV
 
 LOGGER = logging.getLogger(__name__)
 
+
+class ModelUnavailableError(RuntimeError):
+    """Raised when an ONNX model cannot be prepared for inference."""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ModelDownloadError(RuntimeError):
+    """Raised when a download attempt fails while fetching model weights."""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 DEFAULT_MODEL_NAME = "isnet-general-use"
-MODELS_DIRECTORY = Path(__file__).resolve().parent / "models"
-MODEL_DOWNLOAD_ROOT = MODELS_DIRECTORY
-MODEL_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+MODELS_DIRECTORY = Path("./models")
+
+
+def get_models_directory() -> Path:
+    """Return the directory used to cache downloaded ONNX models."""
+
+    return MODELS_DIRECTORY
+
+
+def set_models_directory(path: Path | str) -> Path:
+    """Update the model cache directory and return the resolved path."""
+
+    global MODELS_DIRECTORY
+    resolved = Path(path).expanduser()
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        raise RuntimeError(f"Unable to prepare models directory {resolved}: {exc}") from exc
+
+    if resolved != MODELS_DIRECTORY:
+        MODELS_DIRECTORY = resolved
+        with _DOWNLOAD_STATUS_LOCK:
+            _DOWNLOAD_STATUSES.clear()
+        _PREFETCH_THREADS.clear()
+        reset_session_cache()
+    return MODELS_DIRECTORY
 
 
 class DownloadState(Enum):
@@ -158,6 +197,7 @@ class ModelSpec:
     huggingface_repo: str | None = None
     huggingface_filename: str | None = None
     huggingface_revision: str = "main"
+    local_filename: str | None = None
 
 
 MODEL_SPECS: dict[str, ModelSpec] = {
@@ -221,6 +261,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         std=(0.5, 0.5, 0.5),
         huggingface_repo="briaai/RMBG-2.0",
         huggingface_filename="RMBG-2.0.onnx",
+        local_filename="briaai/RMBG-2.0.onnx",
     ),
 
     # SAM ViT-B Encoder (Hugging Face)
@@ -373,6 +414,8 @@ def _compute_mask(array: np.ndarray, original_size: tuple[int, int]) -> Image.Im
 def _build_model_filename(spec: ModelSpec) -> str:
     """Return the expected filename for ``spec`` within the models directory."""
 
+    if spec.local_filename:
+        return spec.local_filename
     return f"{spec.key}.onnx"
 
 
@@ -448,7 +491,8 @@ def _schedule_prefetch(spec: ModelSpec) -> None:
     """Start a background thread to download ``spec`` when not already cached."""
 
     filename = _build_model_filename(spec)
-    destination = MODEL_DOWNLOAD_ROOT / filename
+    models_dir = get_models_directory()
+    destination = models_dir / filename
     existing = get_download_statuses().get(spec.key)
     if existing and existing.state is DownloadState.AVAILABLE:
         return
@@ -472,7 +516,8 @@ def _schedule_prefetch(spec: ModelSpec) -> None:
 def ensure_models_downloaded(prefetch: bool | Iterable[str] = True) -> dict[str, DownloadStatus]:
     """Ensure the models directory exists and optionally prefetch weights."""
 
-    MODELS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    models_dir = get_models_directory()
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     if isinstance(prefetch, bool):
         prefetch_keys = {DEFAULT_MODEL_NAME} if prefetch else set()
@@ -486,8 +531,7 @@ def ensure_models_downloaded(prefetch: bool | Iterable[str] = True) -> dict[str,
     statuses: dict[str, DownloadStatus] = {}
     for spec in MODEL_SPECS.values():
         filename = _build_model_filename(spec)
-        destination = MODEL_DOWNLOAD_ROOT / filename
-        relative_destination = Path("models") / filename
+        destination = models_dir / filename
         if _verify_md5(destination, spec.checksum_md5):
             status = _update_download_status(
                 spec.key,
@@ -495,7 +539,12 @@ def ensure_models_downloaded(prefetch: bool | Iterable[str] = True) -> dict[str,
                 path=destination,
                 error=None,
             )
-            print(f"[✓] {spec.key} available at ./{relative_destination.as_posix()}")
+            try:
+                relative_path = destination.relative_to(Path.cwd())
+                display_path = f"./{relative_path.as_posix()}"
+            except ValueError:
+                display_path = str(destination.resolve())
+            print(f"[✓] {spec.key} available at {display_path}")
         else:
             status = _update_download_status(
                 spec.key,
@@ -602,7 +651,11 @@ def _download_model_via_http(
                 response.raise_for_status()
             except requests.HTTPError as error:  # pragma: no cover - exercised in ensure helper
                 tmp_path.unlink(missing_ok=True)
-                raise RuntimeError(f"Failed to download {spec.key} from {url}: {error}") from error
+                status_code = getattr(getattr(error, "response", None), "status_code", None)
+                if status_code is None:
+                    status_code = getattr(error, "status_code", None)
+                message = f"Failed to download {spec.key} from {url}: {error}"
+                raise ModelDownloadError(message, status_code=status_code) from error
             with stack.enter_context(tmp_path.open("wb")) as buffer:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if not chunk:
@@ -610,12 +663,31 @@ def _download_model_via_http(
                     buffer.write(chunk)
     except requests.RequestException as error:
         tmp_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Failed to download {spec.key} from {url}: {error}") from error
+        status_code = getattr(error, "status_code", None)
+        message = f"Failed to download {spec.key} from {url}: {error}"
+        raise ModelDownloadError(message, status_code=status_code) from error
     if not _verify_md5(tmp_path, spec.checksum_md5):
         tmp_path.unlink(missing_ok=True)
-        raise ValueError(f"Checksum mismatch for model {spec.key}")
+        raise ModelDownloadError(f"Checksum mismatch for model {spec.key}")
     tmp_path.replace(destination)
     return destination
+
+
+def _format_download_failure(spec: ModelSpec, error: ModelDownloadError | Exception) -> str:
+    """Return a human-readable message describing a download ``error`` for ``spec``."""
+
+    status_code = getattr(error, "status_code", None)
+    base = f"Unable to download model '{spec.key}'."
+    if status_code == 403:
+        return (
+            f"{base} Access was denied (HTTP 403). Supply a Hugging Face token or download the "
+            "weights manually into the models directory."
+        )
+    if status_code == 404:
+        return (
+            f"{base} The requested file was not found (HTTP 404). Confirm the filename and revision."
+        )
+    return f"{base} {error}"
 
 
 def _download_model(
@@ -623,16 +695,24 @@ def _download_model(
 ) -> Path:
     """Download the ONNX model defined by ``spec`` when needed."""
 
-    destination = MODEL_DOWNLOAD_ROOT / f"{spec.key}.onnx"
+    models_dir = get_models_directory()
+    destination = models_dir / _build_model_filename(spec)
     if _verify_md5(destination, spec.checksum_md5):
         LOGGER.debug("Model %s already present at %s", spec.key, destination)
         _update_download_status(spec.key, state=DownloadState.AVAILABLE, path=destination, error=None)
         return destination
 
+    if destination.exists():
+        LOGGER.warning(
+            "Existing model file %s failed validation and will be replaced.", destination
+        )
+        with contextlib.suppress(OSError):
+            destination.unlink()
+
     if not (spec.huggingface_repo and spec.huggingface_filename) and not spec.url:
         message = f"No download source configured for model {spec.key}"
         _update_download_status(spec.key, state=DownloadState.FAILED, path=destination, error=message)
-        raise ValueError(message)
+        raise ModelUnavailableError(message)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     attempts = 0
@@ -661,22 +741,54 @@ def _download_model(
                     attempts,
                 )
                 path = _download_model_from_url(spec, destination)
-        except Exception as error:
-            LOGGER.warning("Attempt %s to download %s failed: %s", attempts, spec.key, error)
+        except ModelDownloadError as error:
+            message = _format_download_failure(spec, error)
+            LOGGER.warning("Attempt %s to download %s failed: %s", attempts, spec.key, message)
             if attempts >= max_attempts:
                 _update_download_status(
                     spec.key,
                     state=DownloadState.FAILED,
                     path=destination if destination.exists() else None,
-                    error=str(error),
+                    error=message,
                     attempts=attempts,
                 )
-                raise
+                raise ModelUnavailableError(message, status_code=error.status_code) from error
             _update_download_status(
                 spec.key,
                 state=DownloadState.PENDING,
                 path=destination if destination.exists() else None,
-                error=str(error),
+                error=message,
+                attempts=attempts,
+            )
+            delay = backoff_base * (2 ** (attempts - 1))
+            LOGGER.debug(
+                "Retrying download for %s in %.2f seconds (attempt %s of %s)",
+                spec.key,
+                delay,
+                attempts + 1,
+                max_attempts,
+            )
+            time.sleep(delay)
+            continue
+        except Exception as error:
+            message = str(error)
+            LOGGER.warning("Attempt %s to download %s failed: %s", attempts, spec.key, message)
+            if attempts >= max_attempts:
+                _update_download_status(
+                    spec.key,
+                    state=DownloadState.FAILED,
+                    path=destination if destination.exists() else None,
+                    error=message,
+                    attempts=attempts,
+                )
+                raise ModelUnavailableError(
+                    f"Failed to download model {spec.key}: {message}"
+                ) from error
+            _update_download_status(
+                spec.key,
+                state=DownloadState.PENDING,
+                path=destination if destination.exists() else None,
+                error=message,
                 attempts=attempts,
             )
             delay = backoff_base * (2 ** (attempts - 1))
@@ -702,7 +814,7 @@ def _download_model(
 
     # The loop should always return or raise beforehand, but the interpreter
     # requires an explicit ``raise`` in case logic changes in the future.
-    raise RuntimeError(f"Failed to download {spec.key}")
+    raise ModelUnavailableError(f"Failed to download {spec.key}")
 
 
 class BackgroundRemovalSession:
@@ -710,28 +822,47 @@ class BackgroundRemovalSession:
 
     def __init__(self, spec: ModelSpec):
         self.spec = spec
-        model_path = _download_model(spec)
+        try:
+            model_path = _download_model(spec)
+        except ModelUnavailableError:
+            raise
+        except Exception as error:  # pragma: no cover - defensive wrapper
+            message = f"Failed to prepare model {spec.key}: {error}"
+            raise ModelUnavailableError(message) from error
         session_options = ort.SessionOptions()
         if "OMP_NUM_THREADS" in os.environ:  # type: ignore[name-defined]
             threads = int(os.environ["OMP_NUM_THREADS"])  # type: ignore[name-defined]
             session_options.inter_op_num_threads = threads
             session_options.intra_op_num_threads = threads
-        self.inner = ort.InferenceSession(
-            str(model_path),
-            sess_options=session_options,
-            providers=["CPUExecutionProvider"],
-        )
+        try:
+            self.inner = ort.InferenceSession(
+                str(model_path),
+                sess_options=session_options,
+                providers=["CPUExecutionProvider"],
+            )
+        except Exception as error:  # pragma: no cover - depends on onnxruntime
+            message = (
+                f"Failed to load ONNX model {spec.key} from {model_path}: {error}"
+            )
+            raise ModelUnavailableError(message) from error
         self.input_name = self.inner.get_inputs()[0].name
         providers = self.inner.get_providers()
         self.providers_available = tuple(providers)
         self.primary_provider = providers[0] if providers else "CPUExecutionProvider"
 
-    def predict_mask(self, image: Image.Image) -> Image.Image:
+    def predict_mask(
+        self, image: Image.Image, *, options: Mapping[str, Any] | None = None
+    ) -> Image.Image:
         """Return the segmentation mask predicted for ``image``."""
 
         tensor = _normalise_image(image, self.spec)
         LOGGER.debug(
-            "Running ONNX inference", extra={"input_size": self.spec.input_size, "model": self.spec.key}
+            "Running ONNX inference",
+            extra={
+                "input_size": self.spec.input_size,
+                "model": self.spec.key,
+                "model_options": dict(options or {}),
+            },
         )
         outputs = self.inner.run(None, {self.input_name: tensor})
         return _compute_mask(outputs[0], image.size)
@@ -746,7 +877,13 @@ def _load_session(model_name: str) -> Any:
         LOGGER.warning("Unknown model %s requested; using default %s", model_name, DEFAULT_MODEL_NAME)
         spec = MODEL_SPECS[DEFAULT_MODEL_NAME]
     LOGGER.info("Initialising ONNX session for model: %s", spec.key)
-    return BackgroundRemovalSession(spec)
+    try:
+        return BackgroundRemovalSession(spec)
+    except ModelUnavailableError:
+        raise
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        message = f"Failed to initialise ONNX session for {spec.key}: {error}"
+        raise ModelUnavailableError(message) from error
 
 
 def _resolve_providers(session: BackgroundRemovalSession) -> tuple[str, ...]:
@@ -766,7 +903,14 @@ def create_session(model_name: str = DEFAULT_MODEL_NAME) -> SessionContext:
     if cached is not None:
         return cached
 
-    session = _load_session(model_name)
+    session: BackgroundRemovalSession
+    try:
+        session = _load_session(model_name)
+    except ModelUnavailableError:
+        raise
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        message = f"Failed to create background removal session: {error}"
+        raise ModelUnavailableError(message) from error
     providers = _resolve_providers(session)
     context = SessionContext(
         model_name=model_name,
@@ -787,7 +931,13 @@ def ensure_global_session(model_name: str = DEFAULT_MODEL_NAME) -> Any:
     if context is not None and context.model_name == model_name:
         return context.session
 
-    context = create_session(model_name)
+    try:
+        context = create_session(model_name)
+    except ModelUnavailableError:
+        raise
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        message = f"Failed to ensure global session for {model_name}: {error}"
+        raise ModelUnavailableError(message) from error
     with _GLOBAL_SESSION_LOCK:
         _GLOBAL_SESSION = context
     return context.session
@@ -797,6 +947,17 @@ def get_session_context() -> SessionContext | None:
     """Return the cached global session context, if initialised."""
 
     return _GLOBAL_SESSION
+
+
+def reset_session_cache() -> None:
+    """Clear cached ONNX Runtime sessions."""
+
+    global _GLOBAL_SESSION
+    with _SESSION_CACHE_LOCK:
+        _SESSION_CACHE.clear()
+    with _GLOBAL_SESSION_LOCK:
+        _GLOBAL_SESSION = None
+    _load_session.cache_clear()
 
 
 def get_output_format_spec(value: str | None) -> OutputFormat:
@@ -846,10 +1007,15 @@ def _prepare_for_format(image: Image.Image, format_spec: OutputFormat) -> Image.
     return background
 
 
-def _predict_mask(image: Image.Image, session: BackgroundRemovalSession) -> Image.Image:
+def _predict_mask(
+    image: Image.Image,
+    session: BackgroundRemovalSession,
+    *,
+    model_options: Mapping[str, Any] | None = None,
+) -> Image.Image:
     """Return the segmentation mask predicted for ``image``."""
 
-    return session.predict_mask(image)
+    return session.predict_mask(image, options=model_options)
 
 
 def build_colorkey_mask(image: Image.Image, tolerance: int = 14) -> np.ndarray | None:
@@ -910,6 +1076,7 @@ def _remove_background_from_image_loader(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -925,8 +1092,31 @@ def _remove_background_from_image_loader(
     # initialisation overhead and share ONNX runtime state across threads.
 
     format_spec = get_output_format_spec(output_format)
-    active_session = session if session is not None else ensure_global_session(model_name)
+    try:
+        active_session = session if session is not None else ensure_global_session(model_name)
+    except ModelUnavailableError as error:
+        LOGGER.error(
+            "Unable to prepare background removal model",
+            extra={"model": model_name, "error": str(error)},
+        )
+        return RemovalResult(
+            image=None,
+            format_spec=format_spec,
+            elapsed_ms=0.0,
+            error=str(error),
+        )
+    except Exception as error:  # pragma: no cover - defensive logging
+        LOGGER.exception("Unexpected error initialising background removal session")
+        return RemovalResult(
+            image=None,
+            format_spec=format_spec,
+            elapsed_ms=0.0,
+            error=str(error),
+        )
+
     model_key = getattr(getattr(active_session, "spec", None), "key", model_name)
+
+    option_snapshot = dict(model_options or {})
 
     LOGGER.info(
         "Starting background removal request",
@@ -935,6 +1125,7 @@ def _remove_background_from_image_loader(
             "output_format": format_spec.key,
             "alpha_matting": bool(alpha_matting),
             "feather_radius": int(feather_radius),
+            "model_options": option_snapshot,
         },
     )
 
@@ -949,8 +1140,19 @@ def _remove_background_from_image_loader(
     output_image: Image.Image | None = None
     original: Image.Image | None = None
     processed_input: Image.Image | None = None
+    elapsed_ms = 0.0
     try:
-        mask_image = _predict_mask(processed_input, active_session)
+        original = loader()
+        original.load()
+        processed_input = ImageOps.exif_transpose(original)
+        if processed_input is not original:
+            processed_input.load()
+
+        mask_image = _predict_mask(
+            processed_input,
+            active_session,
+            model_options=option_snapshot,
+        )
         mask_l = cast(Image.Image, ImageOps.exif_transpose(mask_image)).convert("L")
         mask_image.close()
         mask_l.load()
@@ -964,14 +1166,18 @@ def _remove_background_from_image_loader(
         refined_mask = Image.fromarray(alpha_np, mode="L")
         output_image = processed_input.copy()
         output_image.putalpha(refined_mask)
+    except UnidentifiedImageError:
+        error = "The uploaded file is not a recognised image format."
+        LOGGER.error("Failed to open input image for background removal", exc_info=True)
     except Exception as exc:  # pragma: no cover - depends on third-party libraries
         error = str(exc)
-        output_image = None
+        LOGGER.exception("Background removal pipeline raised an unexpected error")
     finally:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         if processed_input is not None:
-            processed_input.close()
-        if original is not None:
+            with contextlib.suppress(Exception):
+                processed_input.close()
+        if original is not None and original is not processed_input:
             with contextlib.suppress(Exception):
                 original.close()
 
@@ -1007,6 +1213,7 @@ def remove_background_bytes(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -1022,6 +1229,8 @@ def remove_background_bytes(
         data: Raw image bytes to process. Must not be empty.
         output_format: Optional key describing the desired output format.
         model_name: Identifier used to resolve the ONNX session.
+        model_options: Optional mapping of advanced model parameters applied to
+            the inference call.
         alpha_matting: Whether alpha matting refinement should be applied.
         am_foreground: Foreground threshold for alpha matting.
         am_background: Background threshold for alpha matting.
@@ -1043,6 +1252,7 @@ def remove_background_bytes(
         lambda: Image.open(buffer),
         output_format=output_format,
         model_name=model_name,
+        model_options=model_options,
         alpha_matting=alpha_matting,
         am_foreground=am_foreground,
         am_background=am_background,
@@ -1059,6 +1269,7 @@ def remove_background_stream(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -1067,7 +1278,12 @@ def remove_background_stream(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
 ) -> RemovalResult:
-    """Process ``stream`` directly without materialising the entire payload."""
+    """Process ``stream`` directly without materialising the entire payload.
+
+    Args:
+        model_options: Optional mapping of per-model settings forwarded to the
+            inference pipeline.
+    """
 
     try:
         stream.seek(0)
@@ -1078,6 +1294,7 @@ def remove_background_stream(
         lambda: Image.open(stream),
         output_format=output_format,
         model_name=model_name,
+        model_options=model_options,
         alpha_matting=alpha_matting,
         am_foreground=am_foreground,
         am_background=am_background,
@@ -1147,6 +1364,7 @@ def remove_bg_file(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -1155,9 +1373,18 @@ def remove_bg_file(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
     retain_image: bool = False,
+    save_to_disk: bool = True,
     session: BackgroundRemovalSession | None = None,
 ) -> RemovalResult:
-    """Remove the background from ``input_path`` and write the result to ``output``."""
+    """Remove the background from ``input_path`` and optionally persist the result.
+
+    Args:
+        model_options: Optional mapping of model-specific parameters that tailor
+            inference for specialised models.
+        save_to_disk: When ``True`` (the default) the processed image is written
+            to ``output``. When ``False`` the caller receives the processed
+            image entirely in memory and no filesystem artefact is created.
+    """
 
     # Allow callers to inject a pre-created session so batch processing can share
     # the same inference instance when running concurrently.
@@ -1169,6 +1396,7 @@ def remove_bg_file(
         data,
         output_format=output_format,
         model_name=model_name,
+        model_options=model_options,
         alpha_matting=alpha_matting,
         am_foreground=am_foreground,
         am_background=am_background,
@@ -1179,7 +1407,7 @@ def remove_bg_file(
         session=session,
     )
     destination: Path | None = None
-    if result.success:
+    if result.success and save_to_disk:
         destination = _resolve_output_path(source_path, output, result.format_spec)
         result.save(destination)
     image_ref = result.image if retain_image else None
@@ -1194,6 +1422,7 @@ def remove_bg_folder(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     recursive: bool = False,
     alpha_matting: bool = False,
     am_foreground: int = 240,
@@ -1203,7 +1432,12 @@ def remove_bg_folder(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
 ) -> list[RemovalResult]:
-    """Process every supported image found under ``input_dir``."""
+    """Process every supported image found under ``input_dir``.
+
+    Args:
+        model_options: Optional mapping of per-model settings applied to every
+            processed image in the batch.
+    """
 
     # The folder workflow submits each image to a shared executor so that
     # background removal can be parallelised while retaining deterministic
@@ -1216,11 +1450,19 @@ def remove_bg_folder(
     output_root = _resolve_output_directory(output_dir, source_dir)
     format_spec = get_output_format_spec(output_format)
 
+    sources = list(_iter_input_files(source_dir, recursive))
     session = ensure_global_session(model_name)
 
+    if not sources:
+        return []
+
+    # Match the thread pool size to available CPU capacity while avoiding
+    # launching redundant workers when there are only a handful of tasks.
+    max_workers = min(os.cpu_count() or 1, len(sources)) or 1
+
     submitted: list[tuple[Path, Future[RemovalResult]]] = []
-    with ThreadPoolExecutor() as executor:
-        for source in _iter_input_files(source_dir, recursive):
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for source in sources:
             relative = source.relative_to(source_dir) if recursive else Path(source.name)
             destination = format_spec.normalise_filename(output_root / relative)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1230,6 +1472,7 @@ def remove_bg_folder(
                 destination,
                 output_format=format_spec.key,
                 model_name=model_name,
+                model_options=model_options,
                 alpha_matting=alpha_matting,
                 am_foreground=am_foreground,
                 am_background=am_background,

@@ -3,12 +3,24 @@ from __future__ import annotations
 
 import io
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
 import bg_removal as bg_remove
+
+
+def _use_temporary_models_dir(
+    monkeypatch: pytest.MonkeyPatch, directory: Path
+) -> Path:
+    """Point the model cache to ``directory`` for the duration of a test."""
+
+    original_dir = bg_remove.get_models_directory()
+    bg_remove.set_models_directory(directory)
+    monkeypatch.addfinalizer(lambda: bg_remove.set_models_directory(original_dir))
+    return directory
 
 
 @pytest.fixture()
@@ -39,13 +51,16 @@ def _make_image_bytes(color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> by
     (
         (
             (255, 255, 255),
-            tuple((1.0 - mean) / std for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))),
+            tuple(
+                (1.0 - mean) / std
+                for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), strict=False)
+            ),
         ),
         (
             (10, 10, 10),
             tuple(
                 ((10 / 255.0) - mean) / std
-                for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), strict=False)
             ),
         ),
     ),
@@ -96,7 +111,12 @@ def test_remove_background_bytes_returns_result(monkeypatch: pytest.MonkeyPatch)
 
     call_count = 0
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         nonlocal call_count
         call_count += 1
         mask = Image.new("L", image.size, color=255)
@@ -120,7 +140,12 @@ def test_remove_bg_file_writes_to_directory(tmp_path: Path, monkeypatch: pytest.
     class DummySession:
         providers_available = ("CPUExecutionProvider",)
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         return Image.new("L", image.size, color=255)
 
     monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
@@ -140,7 +165,12 @@ def test_remove_background_stream_handles_large_image(
     class DummySession:
         providers_available = ("CPUExecutionProvider",)
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         return Image.new("L", image.size, color=255)
 
     monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
@@ -165,7 +195,12 @@ def test_large_stream_and_byte_inputs_produce_identical_outputs(
     class DummySession:
         providers_available = ("CPUExecutionProvider",)
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         return Image.new("L", image.size, color=255)
 
     monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
@@ -192,7 +227,7 @@ def test_encode_result_image_returns_data_url(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         bg_remove,
         "_predict_mask",
-        lambda image, session: Image.new("L", image.size, color=255),
+        lambda image, session, model_options=None: Image.new("L", image.size, color=255),
     )
     result = bg_remove.remove_background_bytes(_make_image_bytes())
     data_url = bg_remove.encode_result_image(result)
@@ -215,7 +250,12 @@ def test_remove_bg_folder_parallel_preserves_order(tmp_path: Path, monkeypatch: 
 
     session_calls: set[int] = set()
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         session_calls.add(id(session))
         if image.size == (4, 4):
             time.sleep(0.05)
@@ -251,7 +291,12 @@ def test_remove_bg_folder_parallel_propagates_errors(
     class DummySession:
         providers_available = ("CPUExecutionProvider",)
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         if image.size == (3, 3):
             raise RuntimeError("boom")
         return Image.new("L", image.size, color=255)
@@ -272,11 +317,128 @@ def test_remove_bg_folder_parallel_propagates_errors(
     assert failure_result.path_out is None
 
 
+@pytest.mark.parametrize(
+    ("file_count", "cpu_count", "expected_workers"),
+    ((1, 4, 1), (6, 4, 4)),
+)
+def test_remove_bg_folder_scales_thread_pool(
+    file_count: int, cpu_count: int, expected_workers: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify ``remove_bg_folder`` tailors the thread pool to workload and CPU capacity."""
+
+    source_dir = tmp_path / "input"
+    source_dir.mkdir()
+    output_dir = tmp_path / "output"
+
+    for index in range(file_count):
+        path = source_dir / f"image_{index}.png"
+        Image.new("RGBA", (2, 2), color=(index, index, index, 255)).save(path, "PNG")
+
+    monkeypatch.setattr(bg_remove.os, "cpu_count", lambda: cpu_count)
+    monkeypatch.setattr(
+        bg_remove,
+        "ensure_global_session",
+        lambda model_name=bg_remove.DEFAULT_MODEL_NAME: object(),
+    )
+
+    format_spec = bg_remove.get_output_format_spec("png")
+
+    def fake_remove_bg_file(source: Path, destination: Path, **_: object) -> bg_remove.RemovalResult:
+        return bg_remove.RemovalResult(
+            image=None,
+            format_spec=format_spec,
+            elapsed_ms=0.0,
+            path_in=source,
+            path_out=destination,
+        )
+
+    monkeypatch.setattr(bg_remove, "remove_bg_file", fake_remove_bg_file)
+
+    captured_workers: dict[str, int | None] = {"value": None}
+
+    class ImmediateFuture:
+        """Simple future implementation executing work synchronously for test assertions."""
+
+        def __init__(
+            self,
+            func: Callable[..., bg_remove.RemovalResult],
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            try:
+                self._result = func(*args, **kwargs)
+                self._exception: Exception | None = None
+            except Exception as exc:  # pragma: no cover - defensive path
+                self._result = None
+                self._exception = exc
+
+        def result(self) -> bg_remove.RemovalResult:
+            if self._exception is not None:
+                raise self._exception
+            return self._result
+
+    class DummyExecutor:
+        """Test double mirroring :class:`ThreadPoolExecutor` initialisation semantics."""
+
+        def __init__(self, *_, max_workers: int | None = None, **__: object) -> None:
+            captured_workers["value"] = max_workers
+
+        def __enter__(self) -> DummyExecutor:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: object | None,
+        ) -> bool:
+            return False
+
+        def submit(
+            self,
+            func: Callable[..., bg_remove.RemovalResult],
+            *args: object,
+            **kwargs: object,
+        ) -> ImmediateFuture:
+            return ImmediateFuture(func, *args, **kwargs)
+
+    monkeypatch.setattr(bg_remove, "ThreadPoolExecutor", DummyExecutor)
+
+    results = bg_remove.remove_bg_folder(source_dir, output_dir)
+
+    assert captured_workers["value"] == expected_workers
+    assert len(results) == file_count
+
+
+def test_remove_bg_folder_avoids_thread_pool_for_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure no executor is constructed when there are no images to process."""
+
+    source_dir = tmp_path / "input"
+    source_dir.mkdir()
+
+    monkeypatch.setattr(
+        bg_remove,
+        "ensure_global_session",
+        lambda model_name=bg_remove.DEFAULT_MODEL_NAME: object(),
+    )
+
+    class FailingExecutor:
+        def __init__(self, *args: object, **kwargs: object) -> None:  # pragma: no cover - safeguard
+            raise AssertionError("Executor should not be created for empty workloads")
+
+    monkeypatch.setattr(bg_remove, "ThreadPoolExecutor", FailingExecutor)
+
+    results = bg_remove.remove_bg_folder(source_dir, tmp_path / "output")
+
+    assert results == []
+
 def test_download_model_from_huggingface(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Ensure Hugging Face hosted models download through the hub helper."""
 
     spec = bg_remove.MODEL_SPECS["matting-by-generation"]
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
 
     assert spec.huggingface_filename is not None
 
@@ -300,7 +462,7 @@ def test_download_model_from_huggingface_uses_token(monkeypatch: pytest.MonkeyPa
     """Attach Hugging Face tokens from the environment when provided."""
 
     spec = bg_remove.MODEL_SPECS["sam_segmentation_model"]
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
     monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "secret")
 
     captured_headers: dict[str, str] = {}
@@ -325,7 +487,7 @@ def test_download_model_from_huggingface_reports_auth_issue(
     """Surface a helpful message when Hugging Face access is denied."""
 
     spec = bg_remove.MODEL_SPECS["briaai/RMBG-2.0"]
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
 
     def fake_download(
         spec_arg: bg_remove.ModelSpec, url: str, destination: Path, headers: dict[str, str]
@@ -374,8 +536,7 @@ def test_ensure_models_downloaded_defers_until_requested(
 ) -> None:
     """Ensure downloads are not triggered until a session requests a model."""
 
-    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
 
     def raise_prefetch(spec: bg_remove.ModelSpec) -> None:
         raise AssertionError("Prefetch should not run during deferral test")
@@ -402,8 +563,7 @@ def test_ensure_models_downloaded_prefetches_requested_models(
 ) -> None:
     """Schedule background downloads for explicitly requested models."""
 
-    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
 
     scheduled: list[str] = []
 
@@ -432,8 +592,7 @@ def test_download_model_retries_transient_failure(
         checksum_md5=None,
     )
 
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
-    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(bg_remove, "_verify_md5", lambda path, checksum: path.exists())
 
     attempts: list[int] = []
@@ -477,8 +636,7 @@ def test_download_model_records_failure_after_retries(
         checksum_md5=None,
     )
 
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
-    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(bg_remove, "_verify_md5", lambda path, checksum: False)
     monkeypatch.setattr(bg_remove.time, "sleep", lambda value: None)
 

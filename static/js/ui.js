@@ -1103,4 +1103,5 @@
     revokeDownloadUrl();
     activeToasts.forEach((toast) => toast.remove());
   });
+
 })();

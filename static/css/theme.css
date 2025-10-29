@@ -40,6 +40,10 @@ body {
   transition: background-color 0.35s ease, color 0.35s ease;
 }
 
+[x-cloak] {
+  display: none !important;
+}
+
 .checkerboard {
   --checkerboard-pattern-color: var(
     --checkerboard-color,

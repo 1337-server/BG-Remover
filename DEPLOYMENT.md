@@ -40,22 +40,70 @@ Run the packaging helper to generate a distributable build:
 python scripts/build_executable.py
 ```
 
-The script performs the following:
+The helper optimizes PyInstaller for this project by reusing cached build artefacts, bundling the
+templates and static assets automatically, and enabling parallel compilation for faster builds. When
+[UPX](https://upx.github.io/) is available it also compresses the output for smaller downloads.
 
-- Removes any previous `build/` and `dist/` artefacts (unless `--no-clean` is supplied).
-- Invokes PyInstaller on `app.py`, bundling templates and static assets automatically.
-- Writes the frozen application to `dist/br-remover/` (one-folder layout).
+### Build Commands
 
-### Command options
+`scripts/build_executable.py` is a helper script for packaging the Background Remover GUI into a
+standalone executable using PyInstaller. It wraps the recommended options so you can focus on choosing
+the right entry point and output layout for your release.
 
-| Flag | Description |
-|------|-------------|
-| `--name NAME` | Override the executable name (default: `br-remover`). |
-| `--entry-point PATH` | Bundle a different entry point, e.g. `main.py` for CLI-only builds. |
-| `--dist-dir PATH` | Custom output directory for the packaged app. |
-| `--build-dir PATH` | Temporary workspace for PyInstaller. |
-| `--no-clean` | Preserve existing `build/`/`dist/` directories between runs. |
-| `--onefile` | Produce a single-file binary instead of a folder bundle (startup is slower). |
+```bash
+python scripts/build_executable.py [OPTIONS]
+```
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--name NAME` | Sets the executable name (defaults to `br-remover`). | `--name br-remover-gui` |
+| `--entry-point PATH` | Points PyInstaller at the module to freeze. Use `bg_remover_gui.py` for the desktop GUI or `app.py` for the Flask server. | `--entry-point bg_remover_gui.py` |
+| `--dist-dir PATH` | Directory that receives the finished build. Useful when writing to fast storage. | `--dist-dir /mnt/ssd/dist` |
+| `--build-dir PATH` | Workspace used for intermediate files; can live on a RAM disk for faster I/O. | `--build-dir /mnt/ramdisk/build` |
+| `--clean` | Removes existing build/dist folders before compiling (clears caches). | `--clean` |
+| `--onefile` | Produces a single-file executable instead of a folder bundle. | `--onefile` |
+| `--no-upx` | Skips UPX compression if antivirus tools raise false positives. | `--no-upx` |
+| `--help` | Displays the full CLI usage information. | `--help` |
+
+#### Example build scenarios
+
+- **Basic fast cached build:**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui
+  ```
+
+- **Clean one-file build:**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui --onefile --clean
+  ```
+
+- **Build without UPX compression:**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui --no-upx
+  ```
+
+- **Build using a RAM disk:**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui --build-dir /mnt/ramdisk/build --dist-dir /mnt/ramdisk/dist
+  ```
+
+- **Multi-core optimized build (e.g., Ryzen 9 9950X):**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui
+  ```
+
+  > PyInstaller automatically leverages all available CPU cores because the helper appends `--parallel`.
+
+##### Performance Tips
+
+- Reuse cached build artefacts for quick iterations; only pass `--clean` when dependencies change.
+- Keep UPX compression enabled for smaller binaries unless antivirus software objects (`--no-upx`).
+- Direct the `--build-dir` and `--dist-dir` to a RAM disk or ultra-fast SSD to reduce I/O bottlenecks.
 
 ## 4. Run and verify the bundle
 
@@ -76,7 +124,28 @@ a sample image to confirm background removal completes without errors and the UI
 > **Note:** The first run downloads the necessary ONNX model weights to the user's profile directory.
 > Subsequent launches reuse the cached files and start significantly faster.
 
-## 5. Distribute to end users
+## 5. Package the desktop GUI (optional)
+
+Prefer a native-feeling desktop app instead of the Flask web server? Reuse the same helper script with a
+different entry point:
+
+```bash
+python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui
+```
+
+The generated bundle contains the ttkbootstrap-powered interface with single-image and batch folder
+workflows. At runtime it creates an `output/` subfolder inside whichever directory you process to keep
+the original images untouched.
+
+All command-line flags described above continue to work—for example pass `--onefile` to emit a
+single-binary distribution or `--clean` when you need to start from a fresh workspace. Regardless of
+the packaging mode, the GUI records uncaught exceptions to an `error.log` file that lives next to the
+executable and surfaces a message box with the location so crashes are no longer silent.
+
+After building, double-click the executable (or run it from a terminal) to open the GUI window directly
+without starting a local web server.
+
+## 6. Distribute to end users
 
 Share the contents of `dist/br-remover/` (or the single binary when using `--onefile`) with your users.
 Provide the startup command above and highlight that the application serves the UI via a local web

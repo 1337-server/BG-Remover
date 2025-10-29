@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
+import binascii
 import json
 import logging
 import shutil
@@ -11,7 +13,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,7 @@ from bg_removal import (
     remove_bg_file,
     remove_bg_folder,
 )
+from model_configs import parse_model_options, serialise_model_configs
 
 LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +61,8 @@ class RegistryItem:
     mimetype: str | None = None
     delete_after_read: bool = False
     download_name: str | None = None
+    created_at: float = field(default_factory=time.time)
+    expiry_timer: threading.Timer | None = None
 
 
 @dataclass(slots=True)
@@ -77,12 +82,21 @@ _ZIP_REGISTRY: dict[str, ZipRegistryItem] = {}
 _ZIP_REGISTRY_LOCK = threading.Lock()
 _FILE_REGISTRY: dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: dict[str, RegistryItem] = {}
+_FILE_REGISTRY_LOCK = threading.Lock()
+_PREVIEW_REGISTRY_LOCK = threading.Lock()
+
+FILE_REGISTRY_TTL_SECONDS: float = 600.0
+"""Time-to-live for individual file downloads before automatic eviction."""
+
+PREVIEW_REGISTRY_TTL_SECONDS: float = 600.0
+"""Time-to-live for preview downloads before automatic eviction."""
 
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
     for spec in OUTPUT_FORMATS
 ]
 DEFAULT_OUTPUT_FORMAT_KEY = DEFAULT_OUTPUT_FORMAT
+MODEL_CONFIGS_FRONTEND = serialise_model_configs()
 REMOVAL_MODEL_OPTIONS = [
     {"key": "general", "label": "General Model (isnet-general-use)", "model_name": "isnet-general-use"},
     {
@@ -161,7 +175,7 @@ def register_routes(app: Flask) -> None:
     app.register_blueprint(image_converter_bp)
 
 
-def _parse_int(value: str | None, default: int) -> int:
+def _parse_int(value: Any, default: int) -> int:
     """Safely parse integers from incoming form values."""
 
     if value is None:
@@ -172,15 +186,17 @@ def _parse_int(value: str | None, default: int) -> int:
         return default
 
 
-def _is_truthy(value: str | None) -> bool:
+def _is_truthy(value: Any) -> bool:
     """Return ``True`` for common representations of truthy checkbox values."""
 
     if value is None:
         return False
-    return value.strip().lower() in {"1", "true", "on", "yes"}
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "on", "yes"}
 
 
-def _collect_single_options(form: Mapping[str, str], defaults: Mapping[str, Any]) -> dict[str, Any]:
+def _collect_single_options(form: Mapping[str, Any], defaults: Mapping[str, Any]) -> dict[str, Any]:
     """Extract reusable single-image processing options from the request."""
 
     return {
@@ -193,6 +209,79 @@ def _collect_single_options(form: Mapping[str, str], defaults: Mapping[str, Any]
     }
 
 
+def _extract_model_option_payload(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a flat mapping of model-specific options from ``values``."""
+
+    direct = values.get("model_options")
+    if isinstance(direct, Mapping):
+        return {str(key): direct[key] for key in direct}
+
+    extracted: dict[str, Any] = {}
+    prefix = "model_option_"
+    for key, raw_value in values.items():
+        if isinstance(key, str) and key.startswith(prefix):
+            extracted[key[len(prefix) :]] = raw_value
+    return extracted
+
+
+def _load_json_payload() -> Mapping[str, Any] | None:
+    """Return the parsed JSON payload when available and valid."""
+
+    if not request.is_json:
+        return None
+    payload = request.get_json(silent=True)
+    if isinstance(payload, Mapping):
+        return payload
+    LOGGER.error(
+        "Invalid JSON payload supplied", extra={"content_type": request.content_type}
+    )
+    return None
+
+
+def _decode_base64_image(value: str) -> bytes:
+    """Decode a base64-encoded image payload, handling data URLs when present."""
+
+    text = value.strip()
+    if not text:
+        raise ValueError("Empty base64 payload received.")
+    if text.startswith("data:"):
+        try:
+            _, text = text.split(",", 1)
+        except ValueError as exc:  # pragma: no cover - malformed data URL
+            raise ValueError("Malformed data URL supplied.") from exc
+    try:
+        return base64.b64decode(text, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("Base64 decoding failed for the supplied image payload.") from exc
+
+
+def _extract_json_image(payload: Mapping[str, Any]) -> tuple[bytes, str | None]:
+    """Return raw image bytes and an optional filename from ``payload``."""
+
+    for key in ("image_base64", "image"):
+        candidate = payload.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return _decode_base64_image(candidate), payload.get("filename")
+
+    raw_bytes = payload.get("image_bytes")
+    if isinstance(raw_bytes, bytes | bytearray):
+        return bytes(raw_bytes), payload.get("filename")
+    if isinstance(raw_bytes, list) and all(isinstance(item, int) for item in raw_bytes):
+        return bytes(raw_bytes), payload.get("filename")
+
+    raise ValueError(
+        "JSON payload must include base64 data under 'image_base64' or 'image'."
+    )
+
+
+def _get_stripped(value: Any) -> str:
+    """Return ``value`` coerced to ``str`` with surrounding whitespace removed."""
+
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 @image_converter_bp.route("/", methods=["GET", "POST"])
 @image_converter_bp.route("/image/remove-bg", methods=["GET", "POST"])
 def remove_background_view() -> ResponseReturnValue:
@@ -201,6 +290,8 @@ def remove_background_view() -> ResponseReturnValue:
     defaults = dict(DEFAULT_SINGLE_OPTIONS)
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
     defaults.update(DEFAULT_CHECKBOX_OPTIONS)
+    defaults["model_options"] = {}
+    defaults["model_options_model_name"] = _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY]
 
     if request.method == "GET":
         ensure_global_session()
@@ -211,23 +302,46 @@ def remove_background_view() -> ResponseReturnValue:
             format_options=FORMAT_OPTIONS,
             accelerator_runtime=runtime_info,
             removal_model_options=REMOVAL_MODEL_OPTIONS,
+            model_configs=MODEL_CONFIGS_FRONTEND,
+            removal_model_lookup=_REMOVAL_MODEL_LOOKUP,
         )
 
-    form = request.form
-    process_folder = _is_truthy(form.get("process_folder"))
-    recursive = _is_truthy(form.get("recursive")) or request.args.get("recursive") == "1"
-    options = _collect_single_options(form, defaults)
+    json_payload = _load_json_payload()
+    form_data: Mapping[str, Any] = request.form if json_payload is None else json_payload
+
+    process_folder = _is_truthy(form_data.get("process_folder"))
+    recursive = _is_truthy(form_data.get("recursive")) or request.args.get("recursive") == "1"
+    options = _collect_single_options(form_data, defaults)
     try:
-        format_spec = get_output_format_spec(form.get("output_format"))
+        format_spec = get_output_format_spec(form_data.get("output_format"))
     except ValueError as exc:
+        LOGGER.error(
+            "Unsupported output format requested", extra={"output_format": form_data.get("output_format")}
+        )
         return _bad_request(str(exc))
 
-    removal_model_key = (form.get("removal_model") or DEFAULT_REMOVAL_MODEL_KEY).strip().lower()
+    removal_model_key = _get_stripped(form_data.get("removal_model") or DEFAULT_REMOVAL_MODEL_KEY)
+    if not removal_model_key:
+        removal_model_key = DEFAULT_REMOVAL_MODEL_KEY
+    removal_model_key = removal_model_key.lower()
     model_name = _REMOVAL_MODEL_LOOKUP.get(
         removal_model_key, _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY]
     )
+    defaults["removal_model"] = removal_model_key
+    raw_model_options = _extract_model_option_payload(form_data)
+    try:
+        model_options = parse_model_options(model_name, raw_model_options)
+    except ValueError as exc:
+        LOGGER.error(
+            "Invalid model-specific options supplied",
+            extra={"model_name": model_name, "error": str(exc)},
+        )
+        runtime_info = get_runtime_payload()
+        return _bad_request(str(exc), runtime_info=runtime_info)
+    defaults["model_options"] = dict(model_options)
+    defaults["model_options_model_name"] = model_name
     preview_size: int | None = None
-    preview_size_raw = form.get("preview_size")
+    preview_size_raw = form_data.get("preview_size")
     if preview_size_raw:
         try:
             preview_size = int(preview_size_raw)
@@ -239,15 +353,18 @@ def remove_background_view() -> ResponseReturnValue:
 
     json_requested = request.args.get("json") == "1"
 
-    if process_folder or form.get("folder_path"):
-        folder_path = (form.get("folder_path") or "").strip()
+    if process_folder or _get_stripped(form_data.get("folder_path")):
+        folder_path = _get_stripped(form_data.get("folder_path"))
         if not folder_path:
+            LOGGER.error(
+                "Folder processing requested without a folder path", extra={"path": request.path}
+            )
             return _bad_request(
                 "A folder path is required when processing folders.",
                 runtime_info=runtime_info,
             )
 
-        output_dir = (form.get("output_dir") or "").strip() or None
+        output_dir = _get_stripped(form_data.get("output_dir")) or None
 
         try:
             results = remove_bg_folder(
@@ -255,6 +372,7 @@ def remove_background_view() -> ResponseReturnValue:
                 output_dir,
                 output_format=format_spec.key,
                 model_name=model_name,
+                model_options=model_options,
                 recursive=recursive,
                 alpha_matting=options["alpha_matting"],
                 am_foreground=options["am_foreground"],
@@ -275,9 +393,10 @@ def remove_background_view() -> ResponseReturnValue:
             "removal_model_label": _REMOVAL_MODEL_LABEL_LOOKUP.get(removal_model_key),
             "output_directory": output_dir,
             "preview_size": preview_size,
+            "model_options": model_options,
         }
 
-        if _is_truthy(form.get("zip")):
+        if _is_truthy(form_data.get("zip")):
             try:
                 token, download_url = _create_zip(results)
                 payload["zip_download_url"] = download_url
@@ -294,38 +413,69 @@ def remove_background_view() -> ResponseReturnValue:
             format_options=FORMAT_OPTIONS,
             accelerator_runtime=runtime_info,
             removal_model_options=REMOVAL_MODEL_OPTIONS,
+            model_configs=MODEL_CONFIGS_FRONTEND,
+            removal_model_lookup=_REMOVAL_MODEL_LOOKUP,
             results=payload,
         )
 
     file_storage = request.files.get("image_file")
-    if not file_storage or file_storage.filename == "":
+    image_bytes: bytes | None = None
+    upload_name: str | None = None
+    if file_storage and file_storage.filename not in {None, ""}:
+        upload_name = file_storage.filename
+    elif json_payload is not None:
+        try:
+            image_bytes, upload_name = _extract_json_image(json_payload)
+        except ValueError as exc:
+            LOGGER.error(
+                "JSON payload did not include a valid image", extra={"error": str(exc)}
+            )
+            return _bad_request(str(exc), runtime_info=runtime_info)
+    else:
+        LOGGER.error(
+            "No image data supplied in request", extra={"path": request.path, "method": request.method}
+        )
         return _bad_request(
             "Please choose an image to upload or provide a folder path.",
             runtime_info=runtime_info,
         )
 
-    filename = secure_filename(file_storage.filename or "image.png")
+    filename = secure_filename(upload_name or "image.png")
+    if not filename:
+        filename = "image.png"
+
     temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_"))
     input_path = temp_dir / filename
-    file_storage.save(input_path)
+    if file_storage and image_bytes is None:
+        file_storage.save(input_path)
+    else:
+        assert image_bytes is not None  # for type-checkers
+        input_path.write_bytes(image_bytes)
+
     persistent_output_dir: Path | None = None
-    single_output_dir_text = (form.get("single_output_dir") or "").strip()
-    output_base = temp_dir / input_path.stem
+    single_output_dir_text = _get_stripped(form_data.get("single_output_dir"))
+    temp_output_base = temp_dir / input_path.stem
     if single_output_dir_text:
         candidate = Path(single_output_dir_text).expanduser()
         if not candidate.is_absolute():
             candidate = Path.cwd() / candidate
         persistent_output_dir = candidate
-        output_base = candidate / input_path.stem
-
+    output_base = (
+        persistent_output_dir / input_path.stem
+        if persistent_output_dir is not None
+        else temp_output_base
+    )
     output_path = format_spec.normalise_filename(output_base)
     download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
 
+    save_to_disk = not json_requested or persistent_output_dir is not None
+
     result = remove_bg_file(
         input_path,
-        output_path,
+        output_path if save_to_disk else None,
         output_format=format_spec.key,
         model_name=model_name,
+        model_options=model_options,
         alpha_matting=options["alpha_matting"],
         am_foreground=options["am_foreground"],
         am_background=options["am_background"],
@@ -333,9 +483,18 @@ def remove_background_view() -> ResponseReturnValue:
         colorkey_tolerance=options["colorkey_tolerance"],
         feather_radius=options["feather_radius"],
         retain_image=True,
+        save_to_disk=save_to_disk,
     )
 
     if not result.success:
+        LOGGER.error(
+            "Background removal failed for uploaded image",
+            extra={
+                "error": result.error,
+                "model_name": model_name,
+                "input_path": str(result.path_in) if result.path_in else None,
+            },
+        )
         shutil.rmtree(temp_dir, ignore_errors=True)
         return _bad_request(
             result.error or "Background removal failed.", runtime_info=runtime_info
@@ -355,6 +514,7 @@ def remove_background_view() -> ResponseReturnValue:
                 "removal_model_label": _REMOVAL_MODEL_LABEL_LOOKUP.get(removal_model_key),
                 "preview_size": preview_size,
                 "output_directory": str(persistent_output_dir) if persistent_output_dir else None,
+                "model_options": model_options,
             },
         }
         response_data.update(runtime_info)
@@ -380,14 +540,16 @@ def remove_background_view() -> ResponseReturnValue:
 
 
 def _register_registry_item(
-        registry: dict[str, RegistryItem],
-        *,
-        path: Path,
-        mimetype: str | None = None,
-        delete_after_read: bool = False,
-        download_name: str | None = None,
+    registry: dict[str, RegistryItem],
+    *,
+    path: Path,
+    mimetype: str | None = None,
+    delete_after_read: bool = False,
+    download_name: str | None = None,
+    ttl_seconds: float | None = None,
+    registry_lock: threading.Lock | None = None,
 ) -> tuple[str, RegistryItem]:
-    """Store ``path`` in the ``registry`` and return the associated token."""
+    """Store ``path`` in ``registry`` and optionally schedule an expiry timer."""
 
     token = uuid.uuid4().hex
     entry = RegistryItem(
@@ -396,8 +558,70 @@ def _register_registry_item(
         delete_after_read=delete_after_read,
         download_name=download_name,
     )
-    registry[token] = entry
+
+    if ttl_seconds is not None and ttl_seconds <= 0:
+        _delete_registry_item_artifacts(entry)
+        return token, entry
+
+    if registry_lock is None:
+        registry[token] = entry
+    else:
+        with registry_lock:
+            registry[token] = entry
+
+    if ttl_seconds is not None:
+        timer = threading.Timer(
+            ttl_seconds,
+            _expire_registry_entry,
+            args=(registry, registry_lock, token),
+        )
+        timer.daemon = True
+        entry.expiry_timer = timer
+        timer.start()
+
     return token, entry
+
+
+def _delete_registry_item_artifacts(entry: RegistryItem) -> None:
+    """Delete temporary files for ``entry`` when automatic expiry occurs."""
+
+    if not entry.delete_after_read:
+        return
+    try:
+        entry.path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+    except Exception:
+        LOGGER.debug(
+            "Failed to remove temporary file %s during cleanup", entry.path, exc_info=True
+        )
+
+
+def _cancel_registry_timer(entry: RegistryItem) -> None:
+    """Cancel the expiry timer assigned to ``entry`` when it is served."""
+
+    timer = entry.expiry_timer
+    if timer is None:
+        return
+    entry.expiry_timer = None
+    try:
+        timer.cancel()
+    except Exception:
+        LOGGER.debug("Failed to cancel registry expiry timer", exc_info=True)
+
+
+def _expire_registry_entry(
+    registry: dict[str, RegistryItem], registry_lock: threading.Lock | None, token: str
+) -> None:
+    """Remove ``token`` from ``registry`` and delete temporary files if required."""
+
+    if registry_lock is None:
+        entry = registry.pop(token, None)
+    else:
+        with registry_lock:
+            entry = registry.pop(token, None)
+    if entry is None:
+        return
+    entry.expiry_timer = None
+    _delete_registry_item_artifacts(entry)
 
 
 def _delete_zip_artifacts(item: ZipRegistryItem) -> None:
@@ -469,15 +693,59 @@ def _drain_zip_registry() -> None:
         _delete_zip_artifacts(item)
 
 
+def _drain_registry(
+    registry: dict[str, RegistryItem], registry_lock: threading.Lock
+) -> None:
+    """Remove all pending registry entries and cancel their timers."""
+
+    with registry_lock:
+        pending = list(registry.values())
+        registry.clear()
+    for entry in pending:
+        _cancel_registry_timer(entry)
+        _delete_registry_item_artifacts(entry)
+
+
+def _drain_file_registry() -> None:
+    """Clear the file download registry during shutdown or tests."""
+
+    _drain_registry(_FILE_REGISTRY, _FILE_REGISTRY_LOCK)
+
+
+def _drain_preview_registry() -> None:
+    """Clear the preview registry during shutdown or tests."""
+
+    _drain_registry(_PREVIEW_REGISTRY, _PREVIEW_REGISTRY_LOCK)
+
+
 atexit.register(_drain_zip_registry)
+atexit.register(_drain_file_registry)
+atexit.register(_drain_preview_registry)
 
 
-def _serve_registry_item(registry: dict[str, RegistryItem], token: str, *, as_attachment: bool) -> Response:
+def _serve_registry_item(
+    registry: dict[str, RegistryItem],
+    registry_lock: threading.Lock | None,
+    token: str,
+    *,
+    as_attachment: bool,
+) -> Response:
     """Return the file referenced by ``token`` from ``registry``."""
 
-    entry = registry.pop(token, None)
-    if entry is None or not entry.path.exists():
+    if registry_lock is None:
+        entry = registry.pop(token, None)
+    else:
+        with registry_lock:
+            entry = registry.pop(token, None)
+    if entry is None:
         abort(404)
+        raise RuntimeError("Registry entry missing")  # pragma: no cover - satisfies type checkers
+    if not entry.path.exists():
+        abort(404)
+        raise RuntimeError("Registry entry missing")  # pragma: no cover - satisfies type checkers
+
+    _cancel_registry_timer(entry)
+    # Timers must be cancelled eagerly to avoid double-cleaning after serving.
 
     if entry.delete_after_read:
         @after_this_request
@@ -504,8 +772,12 @@ def download_zip(token: str) -> Response:
 
     with _ZIP_REGISTRY_LOCK:
         item = _ZIP_REGISTRY.pop(token, None)
-    if item is None or not item.path.exists():
+    if item is None:
         abort(404)
+        raise RuntimeError("ZIP entry missing")  # pragma: no cover - satisfies type checkers
+    if not item.path.exists():
+        abort(404)
+        raise RuntimeError("ZIP entry missing")  # pragma: no cover - satisfies type checkers
 
     _cancel_zip_timer(item)
 
@@ -526,14 +798,18 @@ def download_zip(token: str) -> Response:
 def download_file(token: str) -> Response:
     """Serve an exported image referenced by a temporary token."""
 
-    return _serve_registry_item(_FILE_REGISTRY, token, as_attachment=True)
+    return _serve_registry_item(
+        _FILE_REGISTRY, _FILE_REGISTRY_LOCK, token, as_attachment=True
+    )
 
 
 @image_converter_bp.route("/image/remove-bg/preview/<token>")
 def preview_file(token: str) -> Response:
     """Serve an inline preview for a processed image."""
 
-    return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
+    return _serve_registry_item(
+        _PREVIEW_REGISTRY, _PREVIEW_REGISTRY_LOCK, token, as_attachment=False
+    )
 
 
 @image_converter_bp.route("/health/accelerator", methods=["GET"])
@@ -561,12 +837,16 @@ def _serialise_results(results: list[RemovalResult]) -> dict[str, Any]:
                 mimetype=format_spec.mime_type,
                 delete_after_read=False,
                 download_name=result.path_out.name,
+                ttl_seconds=FILE_REGISTRY_TTL_SECONDS,
+                registry_lock=_FILE_REGISTRY_LOCK,
             )
             preview_token, _ = _register_registry_item(
                 _PREVIEW_REGISTRY,
                 path=result.path_out,
                 mimetype=format_spec.mime_type,
                 delete_after_read=False,
+                ttl_seconds=PREVIEW_REGISTRY_TTL_SECONDS,
+                registry_lock=_PREVIEW_REGISTRY_LOCK,
             )
             data["download_url"] = url_for("image_converter.download_file", token=download_token)
             data["preview_url"] = url_for("image_converter.preview_file", token=preview_token)

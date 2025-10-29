@@ -1103,4 +1103,151 @@
     revokeDownloadUrl();
     activeToasts.forEach((toast) => toast.remove());
   });
+
+  document.addEventListener('alpine:init', () => {
+    /**
+     * Alpine component that drives model-specific advanced option controls.
+     * @param {object} config - Configuration payload injected from the template.
+     */
+    Alpine.data('modelOptionsForm', (config = {}) => {
+      const {
+        configs = {},
+        lookup = {},
+        initialKey = '',
+        initialValues = {},
+        initialModelName = null,
+        idPrefix = 'model',
+      } = config;
+
+      return {
+        configs,
+        lookup,
+        selectedModelKey: initialKey || '',
+        initialValues: initialValues || {},
+        initialModelName: initialModelName || null,
+        idPrefix,
+        fieldValues: { ...(initialValues || {}) },
+        init() {
+          if (!this.selectedModelKey) {
+            const keys = Object.keys(this.lookup || {});
+            if (keys.length > 0) {
+              [this.selectedModelKey] = keys;
+            }
+          }
+          this.resetModelOptions(true);
+          this.$watch('selectedModelKey', () => {
+            this.resetModelOptions(false);
+          });
+        },
+        get selectedModelName() {
+          return this.lookup?.[this.selectedModelKey] || this.selectedModelKey || null;
+        },
+        get optionSchemas() {
+          const name = this.selectedModelName;
+          if (!name) {
+            return {};
+          }
+          return this.configs?.[name] || {};
+        },
+        get hasAdvancedOptions() {
+          return Object.keys(this.optionSchemas).length > 0;
+        },
+        inputType(schema) {
+          if (!schema) {
+            return 'text';
+          }
+          if (Array.isArray(schema.options) && schema.options.length > 0) {
+            return 'select';
+          }
+          const type = schema.type;
+          if (type === 'int' || type === 'float') {
+            return 'number';
+          }
+          if (type === 'bool') {
+            return 'checkbox';
+          }
+          return 'text';
+        },
+        optionList(schema) {
+          if (!schema || !Array.isArray(schema.options)) {
+            return [];
+          }
+          return schema.options.map((entry) => {
+            if (entry && typeof entry === 'object' && 'value' in entry) {
+              return { value: entry.value, label: entry.label || String(entry.value) };
+            }
+            return { value: entry, label: String(entry) };
+          });
+        },
+        normaliseValue(value, schema) {
+          if (!schema) {
+            return value;
+          }
+          const type = schema.type;
+          if (type === 'bool') {
+            return Boolean(value);
+          }
+          if (type === 'int' || type === 'float') {
+            if (value === undefined || value === null || value === '') {
+              if (schema.default === undefined || schema.default === null) {
+                return '';
+              }
+              return String(schema.default);
+            }
+            return String(value);
+          }
+          if (value === undefined || value === null) {
+            return '';
+          }
+          return String(value);
+        },
+        numberStep(schema) {
+          if (!schema) {
+            return '1';
+          }
+          if (schema.step) {
+            return schema.step;
+          }
+          return schema.type === 'float' ? '0.1' : '1';
+        },
+        resetModelOptions(preserveExisting) {
+          const schemas = this.optionSchemas;
+          const keys = Object.keys(schemas);
+          if (!keys.length) {
+            this.fieldValues = {};
+            return;
+          }
+          const nextValues = {};
+          const shouldReuseInitial =
+            preserveExisting && this.initialModelName === this.selectedModelName;
+
+          keys.forEach((name) => {
+            const schema = schemas[name];
+            let baseValue;
+            if (preserveExisting && Object.prototype.hasOwnProperty.call(this.fieldValues, name)) {
+              baseValue = this.fieldValues[name];
+            } else if (
+              shouldReuseInitial &&
+              Object.prototype.hasOwnProperty.call(this.initialValues || {}, name)
+            ) {
+              baseValue = this.initialValues[name];
+            } else {
+              baseValue = schema.default;
+            }
+            nextValues[name] = this.normaliseValue(baseValue, schema);
+          });
+
+          this.fieldValues = nextValues;
+        },
+        formatLabel(name, schema) {
+          if (schema && schema.label) {
+            return schema.label;
+          }
+          return String(name)
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (letter) => letter.toUpperCase());
+        },
+      };
+    });
+  });
 })();

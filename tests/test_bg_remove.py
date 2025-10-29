@@ -100,7 +100,12 @@ def test_remove_background_bytes_returns_result(monkeypatch: pytest.MonkeyPatch)
 
     call_count = 0
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         nonlocal call_count
         call_count += 1
         mask = Image.new("L", image.size, color=255)
@@ -124,7 +129,12 @@ def test_remove_bg_file_writes_to_directory(tmp_path: Path, monkeypatch: pytest.
     class DummySession:
         providers_available = ("CPUExecutionProvider",)
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         return Image.new("L", image.size, color=255)
 
     monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
@@ -144,7 +154,12 @@ def test_remove_background_stream_handles_large_image(
     class DummySession:
         providers_available = ("CPUExecutionProvider",)
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         return Image.new("L", image.size, color=255)
 
     monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
@@ -169,7 +184,12 @@ def test_large_stream_and_byte_inputs_produce_identical_outputs(
     class DummySession:
         providers_available = ("CPUExecutionProvider",)
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         return Image.new("L", image.size, color=255)
 
     monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
@@ -196,7 +216,7 @@ def test_encode_result_image_returns_data_url(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         bg_remove,
         "_predict_mask",
-        lambda image, session: Image.new("L", image.size, color=255),
+        lambda image, session, model_options=None: Image.new("L", image.size, color=255),
     )
     result = bg_remove.remove_background_bytes(_make_image_bytes())
     data_url = bg_remove.encode_result_image(result)
@@ -219,7 +239,12 @@ def test_remove_bg_folder_parallel_preserves_order(tmp_path: Path, monkeypatch: 
 
     session_calls: set[int] = set()
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         session_calls.add(id(session))
         if image.size == (4, 4):
             time.sleep(0.05)
@@ -255,7 +280,12 @@ def test_remove_bg_folder_parallel_propagates_errors(
     class DummySession:
         providers_available = ("CPUExecutionProvider",)
 
-    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+    def fake_predict(
+        image: Image.Image,
+        session: DummySession,
+        *,
+        model_options: object | None = None,
+    ) -> Image.Image:
         if image.size == (3, 3):
             raise RuntimeError("boom")
         return Image.new("L", image.size, color=255)

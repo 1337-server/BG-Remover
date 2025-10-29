@@ -820,12 +820,19 @@ class BackgroundRemovalSession:
         self.providers_available = tuple(providers)
         self.primary_provider = providers[0] if providers else "CPUExecutionProvider"
 
-    def predict_mask(self, image: Image.Image) -> Image.Image:
+    def predict_mask(
+        self, image: Image.Image, *, options: Mapping[str, Any] | None = None
+    ) -> Image.Image:
         """Return the segmentation mask predicted for ``image``."""
 
         tensor = _normalise_image(image, self.spec)
         LOGGER.debug(
-            "Running ONNX inference", extra={"input_size": self.spec.input_size, "model": self.spec.key}
+            "Running ONNX inference",
+            extra={
+                "input_size": self.spec.input_size,
+                "model": self.spec.key,
+                "model_options": dict(options or {}),
+            },
         )
         outputs = self.inner.run(None, {self.input_name: tensor})
         return _compute_mask(outputs[0], image.size)
@@ -959,10 +966,15 @@ def _prepare_for_format(image: Image.Image, format_spec: OutputFormat) -> Image.
     return background
 
 
-def _predict_mask(image: Image.Image, session: BackgroundRemovalSession) -> Image.Image:
+def _predict_mask(
+    image: Image.Image,
+    session: BackgroundRemovalSession,
+    *,
+    model_options: Mapping[str, Any] | None = None,
+) -> Image.Image:
     """Return the segmentation mask predicted for ``image``."""
 
-    return session.predict_mask(image)
+    return session.predict_mask(image, options=model_options)
 
 
 def build_colorkey_mask(image: Image.Image, tolerance: int = 14) -> np.ndarray | None:
@@ -1023,6 +1035,7 @@ def _remove_background_from_image_loader(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -1062,6 +1075,8 @@ def _remove_background_from_image_loader(
 
     model_key = getattr(getattr(active_session, "spec", None), "key", model_name)
 
+    option_snapshot = dict(model_options or {})
+
     LOGGER.info(
         "Starting background removal request",
         extra={
@@ -1069,6 +1084,7 @@ def _remove_background_from_image_loader(
             "output_format": format_spec.key,
             "alpha_matting": bool(alpha_matting),
             "feather_radius": int(feather_radius),
+            "model_options": option_snapshot,
         },
     )
 
@@ -1091,7 +1107,11 @@ def _remove_background_from_image_loader(
         if processed_input is not original:
             processed_input.load()
 
-        mask_image = _predict_mask(processed_input, active_session)
+        mask_image = _predict_mask(
+            processed_input,
+            active_session,
+            model_options=option_snapshot,
+        )
         mask_l = cast(Image.Image, ImageOps.exif_transpose(mask_image)).convert("L")
         mask_image.close()
         mask_l.load()
@@ -1152,6 +1172,7 @@ def remove_background_bytes(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -1167,6 +1188,8 @@ def remove_background_bytes(
         data: Raw image bytes to process. Must not be empty.
         output_format: Optional key describing the desired output format.
         model_name: Identifier used to resolve the ONNX session.
+        model_options: Optional mapping of advanced model parameters applied to
+            the inference call.
         alpha_matting: Whether alpha matting refinement should be applied.
         am_foreground: Foreground threshold for alpha matting.
         am_background: Background threshold for alpha matting.
@@ -1188,6 +1211,7 @@ def remove_background_bytes(
         lambda: Image.open(buffer),
         output_format=output_format,
         model_name=model_name,
+        model_options=model_options,
         alpha_matting=alpha_matting,
         am_foreground=am_foreground,
         am_background=am_background,
@@ -1204,6 +1228,7 @@ def remove_background_stream(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -1212,7 +1237,12 @@ def remove_background_stream(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
 ) -> RemovalResult:
-    """Process ``stream`` directly without materialising the entire payload."""
+    """Process ``stream`` directly without materialising the entire payload.
+
+    Args:
+        model_options: Optional mapping of per-model settings forwarded to the
+            inference pipeline.
+    """
 
     try:
         stream.seek(0)
@@ -1223,6 +1253,7 @@ def remove_background_stream(
         lambda: Image.open(stream),
         output_format=output_format,
         model_name=model_name,
+        model_options=model_options,
         alpha_matting=alpha_matting,
         am_foreground=am_foreground,
         am_background=am_background,
@@ -1292,6 +1323,7 @@ def remove_bg_file(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     alpha_matting: bool = False,
     am_foreground: int = 240,
     am_background: int = 10,
@@ -1306,6 +1338,8 @@ def remove_bg_file(
     """Remove the background from ``input_path`` and optionally persist the result.
 
     Args:
+        model_options: Optional mapping of model-specific parameters that tailor
+            inference for specialised models.
         save_to_disk: When ``True`` (the default) the processed image is written
             to ``output``. When ``False`` the caller receives the processed
             image entirely in memory and no filesystem artefact is created.
@@ -1321,6 +1355,7 @@ def remove_bg_file(
         data,
         output_format=output_format,
         model_name=model_name,
+        model_options=model_options,
         alpha_matting=alpha_matting,
         am_foreground=am_foreground,
         am_background=am_background,
@@ -1346,6 +1381,7 @@ def remove_bg_folder(
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
+    model_options: Mapping[str, Any] | None = None,
     recursive: bool = False,
     alpha_matting: bool = False,
     am_foreground: int = 240,
@@ -1355,7 +1391,12 @@ def remove_bg_folder(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
 ) -> list[RemovalResult]:
-    """Process every supported image found under ``input_dir``."""
+    """Process every supported image found under ``input_dir``.
+
+    Args:
+        model_options: Optional mapping of per-model settings applied to every
+            processed image in the batch.
+    """
 
     # The folder workflow submits each image to a shared executor so that
     # background removal can be parallelised while retaining deterministic
@@ -1390,6 +1431,7 @@ def remove_bg_folder(
                 destination,
                 output_format=format_spec.key,
                 model_name=model_name,
+                model_options=model_options,
                 alpha_matting=alpha_matting,
                 am_foreground=am_foreground,
                 am_background=am_background,

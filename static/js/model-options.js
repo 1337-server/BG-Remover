@@ -192,15 +192,13 @@
     };
   }
 
-  document.addEventListener('alpine:init', function () {
-    Alpine.data('modelOptionsForm', function (config) {
-      return createModelOptionsState(config);
-    });
-  });
-
-  if (!window.modelOptionsForm) {
-    window.modelOptionsForm = function modelOptionsForm(config) {
-      return createModelOptionsState(config);
-    };
+  function modelOptionsForm(config) {
+    return createModelOptionsState(config);
   }
+
+  window.modelOptionsForm = modelOptionsForm;
+
+  document.addEventListener('alpine:init', function () {
+    Alpine.data('modelOptionsForm', modelOptionsForm);
+  });
 })();

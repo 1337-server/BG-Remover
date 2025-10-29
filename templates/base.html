@@ -52,6 +52,7 @@
       };
     </script>
     <script src="https://cdn.tailwindcss.com?plugins=forms,typography" defer></script>
+    <script src="{{ url_for('static', filename='js/model-options.js') }}" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
     {% block extra_head %}{% endblock %}
@@ -170,7 +171,6 @@
       aria-atomic="true"
     ></div>
 
-    <script src="{{ url_for('static', filename='js/model-options.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/ui.js') }}" defer></script>
     {% block extra_scripts %}{% endblock %}
   </body>

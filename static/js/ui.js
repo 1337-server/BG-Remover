@@ -638,29 +638,24 @@
   };
 
   /**
-   * Extract the alpha channel from a CSS rgba()/rgb() string.
-   * @param {string} colorString - The CSS colour string.
-   * @returns {number | null} Parsed alpha channel between 0 and 1, or null if unavailable.
+   * Resolve a CSS colour string to a normalised hexadecimal colour.
+   * @param {string} value - The CSS colour string to resolve.
+   * @param {string} fallback - The fallback hexadecimal colour.
+   * @returns {string} A #RRGGBB colour string.
    */
-  const parseAlphaChannel = (colorString) => {
-    if (typeof colorString !== 'string') {
-      return null;
+  const resolveToHex = (value, fallback) => {
+    if (typeof value !== 'string') {
+      return fallback;
     }
-    const match = colorString
-      .trim()
-      .match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
-    if (!match) {
-      return null;
+    const trimmed = value.trim();
+    if (trimmed.startsWith('#')) {
+      return normaliseHex(trimmed);
     }
-    const alpha = match[4];
-    if (typeof alpha === 'undefined') {
-      return null;
+    const converted = rgbaToHex(trimmed);
+    if (converted) {
+      return normaliseHex(converted);
     }
-    const numeric = Number(alpha);
-    if (Number.isNaN(numeric)) {
-      return null;
-    }
-    return Math.min(Math.max(numeric, 0), 1);
+    return fallback;
   };
 
   /**
@@ -690,23 +685,6 @@
   };
 
   /**
-   * Convert a hexadecimal colour to an rgba() string with the provided alpha channel.
-   * @param {string} hex - The hexadecimal colour value.
-   * @param {number} alpha - Alpha channel between 0 and 1.
-   * @returns {string} A CSS rgba() representation.
-   */
-  const hexToRgba = (hex, alpha) => {
-    const normalised = normaliseHex(hex);
-    const r = parseInt(normalised.slice(1, 3), 16);
-    const g = parseInt(normalised.slice(3, 5), 16);
-    const b = parseInt(normalised.slice(5, 7), 16);
-    const safeAlpha = Number.isFinite(alpha) ? Math.min(Math.max(alpha, 0), 1) : 0.35;
-    return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
-  };
-
-  let previewBackgroundAlpha = 0.35;
-
-  /**
    * Update the checkerboard backdrop colour in the preview container.
    * @param {string} hexValue - The selected hexadecimal colour.
    */
@@ -714,11 +692,12 @@
     if (!previewContainer) {
       return;
     }
-    const rgbaValue = hexToRgba(hexValue, previewBackgroundAlpha);
-    previewContainer.style.setProperty('--checkerboard-color', rgbaValue);
-    previewContainer.style.setProperty('--checkerboard-pattern-color', rgbaValue);
+    const normalisedHex = normaliseHex(hexValue);
+    previewContainer.style.setProperty('--checkerboard-color', normalisedHex);
+    previewContainer.style.setProperty('--checkerboard-pattern-color', normalisedHex);
+    previewContainer.style.setProperty('--checkerboard-solid-color', normalisedHex);
     if (previewBackgroundValue) {
-      previewBackgroundValue.textContent = normaliseHex(hexValue).toUpperCase();
+      previewBackgroundValue.textContent = normalisedHex.toUpperCase();
     }
   };
 
@@ -729,14 +708,11 @@
 
     const computedStyle = getComputedStyle(previewContainer);
     const existingColor =
+      computedStyle.getPropertyValue('--checkerboard-solid-color') ||
       computedStyle.getPropertyValue('--checkerboard-pattern-color') ||
       computedStyle.getPropertyValue('--checkerboard-color');
-    const existingHex = rgbaToHex(existingColor) || normaliseHex(previewBackgroundInput.value);
-    const alphaFromCss = parseAlphaChannel(existingColor);
-    if (alphaFromCss !== null) {
-      previewBackgroundAlpha = alphaFromCss;
-    }
-
+    const fallbackHex = normaliseHex(previewBackgroundInput.value);
+    const existingHex = resolveToHex(existingColor, fallbackHex);
     const startingHex = normaliseHex(existingHex);
     previewBackgroundInput.value = startingHex;
     applyPreviewBackgroundColor(startingHex);

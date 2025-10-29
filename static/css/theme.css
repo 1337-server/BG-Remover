@@ -13,6 +13,7 @@
   --color-accent-soft: rgba(37, 99, 235, 0.18);
   --color-overlay: 15, 23, 42;
   --checkerboard-color: rgba(148, 163, 184, 0.25);
+  --checkerboard-solid-color: #94a3b8;
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
@@ -32,6 +33,7 @@
   --color-accent-soft: rgba(96, 165, 250, 0.2);
   --color-overlay: 15, 23, 42;
   --checkerboard-color: rgba(51, 65, 85, 0.5);
+  --checkerboard-solid-color: #334155;
 }
 
 body {
@@ -42,6 +44,10 @@ body {
   --checkerboard-pattern-color: var(
     --checkerboard-color,
     rgba(148, 163, 184, 0.25)
+  );
+  background-color: var(
+    --checkerboard-solid-color,
+    var(--checkerboard-pattern-color)
   );
   background-image:
     linear-gradient(45deg, var(--checkerboard-pattern-color) 25%, transparent 25%),

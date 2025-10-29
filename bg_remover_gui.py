@@ -6,12 +6,17 @@ processing and batch folder processing with live progress reporting.
 """
 from __future__ import annotations
 
+import logging
+import os
 import queue
+import sys
 import threading
 import time
+import traceback
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import TYPE_CHECKING, Any
 
 import ttkbootstrap as tb
 from PIL import Image, ImageTk
@@ -87,6 +92,90 @@ DEFAULT_TUNE_VALUES = {
     "colorkey_tolerance": 14,
     "use_colorkey_fallback": True,
 }
+
+
+def resource_path(rel_path: str) -> str:
+    """Return the absolute path for ``rel_path`` when bundled by PyInstaller."""
+
+    base_path = getattr(sys, "_MEIPASS", os.path.abspath("."))
+    return os.path.join(base_path, rel_path)
+
+
+def _ensure_pyinstaller_hidden_imports() -> None:
+    """Import modules that PyInstaller struggles to detect automatically."""
+
+    if TYPE_CHECKING:
+        return
+
+    try:
+        import importlib
+
+        for module_name in (
+            "ttkbootstrap.dialogs",
+            "ttkbootstrap.tooltip",
+            "ttkbootstrap.scrolled",
+            "ttkbootstrap.constants",
+            "PIL.Image",
+            "PIL.ImageTk",
+            "watchdog.events",
+            "watchdog.observers",
+        ):
+            importlib.import_module(module_name)
+    except Exception:
+        # Import failures are non-fatal during development but will be logged.
+        logging.getLogger(__name__).debug(
+            "Optional PyInstaller imports are unavailable in this environment.",
+            exc_info=True,
+        )
+
+
+_ensure_pyinstaller_hidden_imports()
+
+LOG_FILE = Path(os.path.abspath(".")) / "error.log"
+
+
+def _configure_logging() -> None:
+    """Initialise a file-based logger for capturing runtime issues."""
+
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.FileHandler) and handler.baseFilename == str(LOG_FILE):
+            return
+
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    root_logger.setLevel(logging.INFO)
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _show_fatal_error_dialog(title: str, traceback_text: str) -> None:
+    """Display a blocking error dialog containing ``traceback_text``."""
+
+    message = (
+        "An unrecoverable error occurred and the application must close. "
+        f"A detailed log was written to {LOG_FILE}.\n\n{traceback_text}"
+    )
+    try:
+        Messagebox.show_error(message, title)
+    except Exception:
+        # ``Messagebox`` relies on an existing Tk interpreter. Create a minimal
+        # fallback root to surface the error when initialisation fails early.
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(title, message)
+        root.destroy()
 
 
 def human_readable_duration(seconds: float) -> str:
@@ -198,6 +287,7 @@ class FolderProcessor(threading.Thread):
                 _REMOVAL_MODEL_LOOKUP.get(self.options.model_key, DEFAULT_MODEL_NAME)
             )
         except Exception as exc:  # pragma: no cover - defensive guard for UI errors.
+            LOGGER.exception("Unable to prepare the selected model for batch processing.")
             self.events.put(
                 (
                     "batch_error",
@@ -269,6 +359,7 @@ class FolderProcessor(threading.Thread):
                     **self.options.as_kwargs(),
                 )
             except Exception as exc:  # pragma: no cover - best effort logging.
+                LOGGER.exception("Error while processing %s during batch run", source)
                 durations.append(time.perf_counter() - start_time)
                 processed += 1
                 self.events.put(
@@ -344,12 +435,12 @@ class BackgroundRemoverApp(tb.Window):
         self.geometry("1100x720")
         self.minsize(960, 640)
         self._theme_dark = False
-        self._folder_worker: Optional[FolderProcessor] = None
+        self._folder_worker: FolderProcessor | None = None
         self._folder_cancel_event = threading.Event()
-        self._single_worker: Optional[threading.Thread] = None
+        self._single_worker: threading.Thread | None = None
         self.event_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
-        self._image_preview: Optional[ImageTk.PhotoImage] = None
-        self._result_preview: Optional[ImageTk.PhotoImage] = None
+        self._image_preview: ImageTk.PhotoImage | None = None
+        self._result_preview: ImageTk.PhotoImage | None = None
         self.alpha_spinboxes: list[tb.Spinbox] = []
 
         ensure_models_downloaded()
@@ -623,7 +714,7 @@ class BackgroundRemoverApp(tb.Window):
         from_: int,
         to: int,
         tooltip: str,
-        collector: Optional[list[tb.Spinbox]] = None,
+        collector: list[tb.Spinbox] | None = None,
     ) -> None:
         """Create a labeled spinbox with a tooltip for numeric settings."""
 
@@ -867,6 +958,7 @@ class BackgroundRemoverApp(tb.Window):
                     **options["kwargs"],
                 )
             except Exception as exc:  # pragma: no cover - UI level reporting.
+                LOGGER.exception("Failed to process single image %s", path)
                 self.output_message.set("Failed to process image.")
                 self._append_log(f"Error processing {path.name}: {exc}")
                 return
@@ -1107,8 +1199,25 @@ class BackgroundRemoverApp(tb.Window):
 def main() -> None:
     """Entry point used by ``python bg_remover_gui.py``."""
 
-    app = BackgroundRemoverApp()
-    app.mainloop()
+    _configure_logging()
+    LOGGER.info("Launching Background Remover GUI.")
+
+    try:
+        app = BackgroundRemoverApp()
+    except Exception:
+        traceback_text = traceback.format_exc()
+        LOGGER.exception("Failed to initialise the Background Remover GUI.")
+        _show_fatal_error_dialog("Background Remover", traceback_text)
+        return
+
+    try:
+        app.mainloop()
+    except Exception:
+        traceback_text = traceback.format_exc()
+        LOGGER.exception("Unhandled exception within the Tkinter main loop.")
+        _show_fatal_error_dialog("Background Remover", traceback_text)
+    finally:
+        LOGGER.info("Background Remover GUI stopped.")
 
 
 if __name__ == "__main__":

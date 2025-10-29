@@ -1078,7 +1078,6 @@ class BackgroundRemoverApp(tb.Window):
 
     def _start_batch(self) -> None:
         """Launch a worker thread for batch processing."""
-
         if self._folder_worker and self._folder_worker.is_alive():
             Messagebox.show_info("Batch already running.", "Background Remover")
             return
@@ -1086,7 +1085,10 @@ class BackgroundRemoverApp(tb.Window):
         folder_text = self.selected_folder.get()
         folder = Path(folder_text)
         if not folder.exists():
-            Messagebox.show_error("Please choose a folder before starting the batch.", "Background Remover")
+            Messagebox.show_error(
+                "Please choose a folder before starting the batch.",
+                "Background Remover",
+            )
             return
 
         options = FolderTaskOptions(
@@ -1103,20 +1105,33 @@ class BackgroundRemoverApp(tb.Window):
             use_colorkey_fallback=self.use_colorkey_var.get(),
             colorkey_tolerance=int(self.colorkey_var.get()),
         )
+
+        # reset UI state
         self.progress_var.set(0.0)
         self.progress_text.set("Preparing…")
         self.eta_text.set("")
         self.current_image_name.set("")
         self.batch_preview.configure(image="")
         self.batch_preview.image = None
-        self.log_console.configure(state="normal")
-        self.log_console.delete(1.0, END)
-        self.log_console.configure(state="disabled")
+
+        # 🧩 safely clear log_console — no 'state' calls
+        try:
+            if hasattr(self.log_console, "delete"):
+                self.log_console.delete("1.0", END)
+            elif hasattr(self.log_console, "configure") and "text" in self.log_console.keys():
+                self.log_console.configure(text="")
+        except Exception as e:
+            print(f"[LOG CLEAR ERROR]: {e}")
+
         self._folder_cancel_event.clear()
         self.cancel_batch_button.configure(state="normal")
         self.start_batch_button.configure(state="disabled")
         self._append_log("Batch started.")
-        self._folder_worker = FolderProcessor(options, self.event_queue, self._folder_cancel_event)
+
+        # 🚀 Start the background worker
+        self._folder_worker = FolderProcessor(
+            options, self.event_queue, self._folder_cancel_event
+        )
         self._folder_worker.start()
 
     def _cancel_batch(self) -> None:
@@ -1210,13 +1225,20 @@ class BackgroundRemoverApp(tb.Window):
         self._folder_worker = None
         self._folder_cancel_event.clear()
 
-    def _append_log(self, message: str) -> None:
-        """Append ``message`` to the batch status console."""
-
-        self.log_console.configure(state="normal")
-        self.log_console.insert(END, message + "\n")
-        self.log_console.see(END)
-        self.log_console.configure(state="disabled")
+    def _append_log(self, message: str):
+        try:
+            # Some ttkbootstrap widgets don't support 'state'
+            if hasattr(self.log_console, "insert"):
+                self.log_console.insert("end", message + "\n")
+                if hasattr(self.log_console, "see"):
+                    self.log_console.see("end")
+            elif hasattr(self.log_console, "configure") and "text" in self.log_console.keys():
+                current = self.log_console["text"]
+                self.log_console.configure(text=current + "\n" + message)
+            else:
+                print(f"[LOG]: {message}")
+        except Exception as e:
+            print(f"[LOG ERROR]: {e}")
 
 
 def main() -> None:

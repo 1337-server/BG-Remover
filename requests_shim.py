@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import contextlib
-import socket
 import urllib.error
 import urllib.request
-from typing import Iterator
+from collections.abc import Iterator
 
 
 class RequestException(Exception):
@@ -29,7 +28,7 @@ class Response:
         self.status_code = getattr(raw, "status", None) or raw.getcode()
         self.headers = dict(raw.headers.items()) if getattr(raw, "headers", None) else {}
 
-    def __enter__(self) -> "Response":
+    def __enter__(self) -> Response:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -74,7 +73,9 @@ def get(
         raw = urllib.request.urlopen(request, timeout=timeout_value)
     except urllib.error.HTTPError as error:  # pragma: no cover - best-effort compatibility
         raise HTTPError(str(error), status_code=error.code) from error
-    except (urllib.error.URLError, socket.timeout) as error:
+    except urllib.error.URLError as error:
+        raise RequestException(str(error)) from error
+    except TimeoutError as error:
         raise RequestException(str(error)) from error
     return Response(raw)
 

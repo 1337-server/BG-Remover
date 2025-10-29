@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,8 @@ class RegistryItem:
     mimetype: str | None = None
     delete_after_read: bool = False
     download_name: str | None = None
+    created_at: float = field(default_factory=time.time)
+    expiry_timer: threading.Timer | None = None
 
 
 @dataclass(slots=True)
@@ -79,6 +81,14 @@ _ZIP_REGISTRY: dict[str, ZipRegistryItem] = {}
 _ZIP_REGISTRY_LOCK = threading.Lock()
 _FILE_REGISTRY: dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: dict[str, RegistryItem] = {}
+_FILE_REGISTRY_LOCK = threading.Lock()
+_PREVIEW_REGISTRY_LOCK = threading.Lock()
+
+FILE_REGISTRY_TTL_SECONDS: float = 600.0
+"""Time-to-live for individual file downloads before automatic eviction."""
+
+PREVIEW_REGISTRY_TTL_SECONDS: float = 600.0
+"""Time-to-live for preview downloads before automatic eviction."""
 
 FORMAT_OPTIONS = [
     {"key": spec.key, "label": spec.label, "extension": spec.extension}
@@ -490,14 +500,16 @@ def remove_background_view() -> ResponseReturnValue:
 
 
 def _register_registry_item(
-        registry: dict[str, RegistryItem],
-        *,
-        path: Path,
-        mimetype: str | None = None,
-        delete_after_read: bool = False,
-        download_name: str | None = None,
+    registry: dict[str, RegistryItem],
+    *,
+    path: Path,
+    mimetype: str | None = None,
+    delete_after_read: bool = False,
+    download_name: str | None = None,
+    ttl_seconds: float | None = None,
+    registry_lock: threading.Lock | None = None,
 ) -> tuple[str, RegistryItem]:
-    """Store ``path`` in the ``registry`` and return the associated token."""
+    """Store ``path`` in ``registry`` and optionally schedule an expiry timer."""
 
     token = uuid.uuid4().hex
     entry = RegistryItem(
@@ -506,8 +518,70 @@ def _register_registry_item(
         delete_after_read=delete_after_read,
         download_name=download_name,
     )
-    registry[token] = entry
+
+    if ttl_seconds is not None and ttl_seconds <= 0:
+        _delete_registry_item_artifacts(entry)
+        return token, entry
+
+    if registry_lock is None:
+        registry[token] = entry
+    else:
+        with registry_lock:
+            registry[token] = entry
+
+    if ttl_seconds is not None:
+        timer = threading.Timer(
+            ttl_seconds,
+            _expire_registry_entry,
+            args=(registry, registry_lock, token),
+        )
+        timer.daemon = True
+        entry.expiry_timer = timer
+        timer.start()
+
     return token, entry
+
+
+def _delete_registry_item_artifacts(entry: RegistryItem) -> None:
+    """Delete temporary files for ``entry`` when automatic expiry occurs."""
+
+    if not entry.delete_after_read:
+        return
+    try:
+        entry.path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+    except Exception:
+        LOGGER.debug(
+            "Failed to remove temporary file %s during cleanup", entry.path, exc_info=True
+        )
+
+
+def _cancel_registry_timer(entry: RegistryItem) -> None:
+    """Cancel the expiry timer assigned to ``entry`` when it is served."""
+
+    timer = entry.expiry_timer
+    if timer is None:
+        return
+    entry.expiry_timer = None
+    try:
+        timer.cancel()
+    except Exception:
+        LOGGER.debug("Failed to cancel registry expiry timer", exc_info=True)
+
+
+def _expire_registry_entry(
+    registry: dict[str, RegistryItem], registry_lock: threading.Lock | None, token: str
+) -> None:
+    """Remove ``token`` from ``registry`` and delete temporary files if required."""
+
+    if registry_lock is None:
+        entry = registry.pop(token, None)
+    else:
+        with registry_lock:
+            entry = registry.pop(token, None)
+    if entry is None:
+        return
+    entry.expiry_timer = None
+    _delete_registry_item_artifacts(entry)
 
 
 def _delete_zip_artifacts(item: ZipRegistryItem) -> None:
@@ -579,19 +653,59 @@ def _drain_zip_registry() -> None:
         _delete_zip_artifacts(item)
 
 
+def _drain_registry(
+    registry: dict[str, RegistryItem], registry_lock: threading.Lock
+) -> None:
+    """Remove all pending registry entries and cancel their timers."""
+
+    with registry_lock:
+        pending = list(registry.values())
+        registry.clear()
+    for entry in pending:
+        _cancel_registry_timer(entry)
+        _delete_registry_item_artifacts(entry)
+
+
+def _drain_file_registry() -> None:
+    """Clear the file download registry during shutdown or tests."""
+
+    _drain_registry(_FILE_REGISTRY, _FILE_REGISTRY_LOCK)
+
+
+def _drain_preview_registry() -> None:
+    """Clear the preview registry during shutdown or tests."""
+
+    _drain_registry(_PREVIEW_REGISTRY, _PREVIEW_REGISTRY_LOCK)
+
+
 atexit.register(_drain_zip_registry)
+atexit.register(_drain_file_registry)
+atexit.register(_drain_preview_registry)
 
 
-def _serve_registry_item(registry: dict[str, RegistryItem], token: str, *, as_attachment: bool) -> Response:
+def _serve_registry_item(
+    registry: dict[str, RegistryItem],
+    registry_lock: threading.Lock | None,
+    token: str,
+    *,
+    as_attachment: bool,
+) -> Response:
     """Return the file referenced by ``token`` from ``registry``."""
 
-    entry = registry.pop(token, None)
+    if registry_lock is None:
+        entry = registry.pop(token, None)
+    else:
+        with registry_lock:
+            entry = registry.pop(token, None)
     if entry is None:
         abort(404)
         raise RuntimeError("Registry entry missing")  # pragma: no cover - satisfies type checkers
     if not entry.path.exists():
         abort(404)
         raise RuntimeError("Registry entry missing")  # pragma: no cover - satisfies type checkers
+
+    _cancel_registry_timer(entry)
+    # Timers must be cancelled eagerly to avoid double-cleaning after serving.
 
     if entry.delete_after_read:
         @after_this_request
@@ -644,14 +758,18 @@ def download_zip(token: str) -> Response:
 def download_file(token: str) -> Response:
     """Serve an exported image referenced by a temporary token."""
 
-    return _serve_registry_item(_FILE_REGISTRY, token, as_attachment=True)
+    return _serve_registry_item(
+        _FILE_REGISTRY, _FILE_REGISTRY_LOCK, token, as_attachment=True
+    )
 
 
 @image_converter_bp.route("/image/remove-bg/preview/<token>")
 def preview_file(token: str) -> Response:
     """Serve an inline preview for a processed image."""
 
-    return _serve_registry_item(_PREVIEW_REGISTRY, token, as_attachment=False)
+    return _serve_registry_item(
+        _PREVIEW_REGISTRY, _PREVIEW_REGISTRY_LOCK, token, as_attachment=False
+    )
 
 
 @image_converter_bp.route("/health/accelerator", methods=["GET"])
@@ -679,12 +797,16 @@ def _serialise_results(results: list[RemovalResult]) -> dict[str, Any]:
                 mimetype=format_spec.mime_type,
                 delete_after_read=False,
                 download_name=result.path_out.name,
+                ttl_seconds=FILE_REGISTRY_TTL_SECONDS,
+                registry_lock=_FILE_REGISTRY_LOCK,
             )
             preview_token, _ = _register_registry_item(
                 _PREVIEW_REGISTRY,
                 path=result.path_out,
                 mimetype=format_spec.mime_type,
                 delete_after_read=False,
+                ttl_seconds=PREVIEW_REGISTRY_TTL_SECONDS,
+                registry_lock=_PREVIEW_REGISTRY_LOCK,
             )
             data["download_url"] = url_for("image_converter.download_file", token=download_token)
             data["preview_url"] = url_for("image_converter.preview_file", token=preview_token)

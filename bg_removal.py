@@ -23,7 +23,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import IO, Any, cast
+from typing import IO, Any, Callable, cast
 
 import numpy as np
 import onnxruntime as ort
@@ -716,17 +716,8 @@ def _feather_alpha(alpha: np.ndarray, radius: int) -> np.ndarray:
     return np.asarray(blurred_image, dtype=np.uint8)
 
 
-def _read_stream(stream: IO[bytes]) -> bytes:
-    """Return the bytes from ``stream`` ensuring a useful error on empties."""
-
-    data = stream.read()
-    if not data:
-        raise ValueError("No image data supplied for background removal.")
-    return data
-
-
-def remove_background_bytes(
-    data: bytes,
+def _remove_background_from_image_loader(
+    loader: Callable[[], Image.Image],
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
@@ -738,7 +729,7 @@ def remove_background_bytes(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
 ) -> RemovalResult:
-    """Remove the background from raw ``data`` and return the processed result."""
+    """Run the shared removal pipeline using ``loader`` to obtain the source image."""
 
     format_spec = get_output_format_spec(output_format)
     session = ensure_global_session(model_name)
@@ -754,10 +745,6 @@ def remove_background_bytes(
         },
     )
 
-    original = Image.open(io.BytesIO(data))
-    processed_input = cast(Image.Image, ImageOps.exif_transpose(original)).convert("RGBA")
-    original.close()
-
     am_foreground = max(0, min(255, int(am_foreground)))
     am_background = max(0, min(255, int(am_background)))
     am_erode = max(0, min(255, int(am_erode)))
@@ -767,7 +754,15 @@ def remove_background_bytes(
     start_time = time.perf_counter()
     error: str | None = None
     output_image: Image.Image | None = None
+    original: Image.Image | None = None
+    processed_input: Image.Image | None = None
     try:
+        original = loader()
+        processed_input = cast(Image.Image, ImageOps.exif_transpose(original)).convert("RGBA")
+        with contextlib.suppress(Exception):
+            original.close()
+            original = None
+
         mask_image = _predict_mask(processed_input, session)
         mask_l = cast(Image.Image, ImageOps.exif_transpose(mask_image)).convert("L")
         mask_image.close()
@@ -787,7 +782,11 @@ def remove_background_bytes(
         output_image = None
     finally:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        processed_input.close()
+        if processed_input is not None:
+            processed_input.close()
+        if original is not None:
+            with contextlib.suppress(Exception):
+                original.close()
 
     if error is None:
         LOGGER.info(
@@ -829,11 +828,48 @@ def remove_background_stream(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
 ) -> RemovalResult:
-    """Process ``stream`` by reading its bytes before delegating to ``remove_background_bytes``."""
+    """Process ``stream`` directly without materialising the entire payload."""
 
-    data = _read_stream(stream)
-    return remove_background_bytes(
-        data,
+    try:
+        stream.seek(0)
+    except (AttributeError, OSError):  # pragma: no cover - seek may be unsupported
+        pass
+
+    return _remove_background_from_image_loader(
+        lambda: Image.open(stream),
+        output_format=output_format,
+        model_name=model_name,
+        alpha_matting=alpha_matting,
+        am_foreground=am_foreground,
+        am_background=am_background,
+        am_erode=am_erode,
+        use_colorkey_fallback=use_colorkey_fallback,
+        colorkey_tolerance=colorkey_tolerance,
+        feather_radius=feather_radius,
+    )
+
+
+def remove_background_bytes(
+    data: bytes,
+    *,
+    output_format: str | None = None,
+    model_name: str = DEFAULT_MODEL_NAME,
+    alpha_matting: bool = False,
+    am_foreground: int = 240,
+    am_background: int = 10,
+    am_erode: int = 10,
+    use_colorkey_fallback: bool = True,
+    colorkey_tolerance: int = 14,
+    feather_radius: int = 3,
+) -> RemovalResult:
+    """Remove the background from raw ``data`` and return the processed result."""
+
+    if not data:
+        raise ValueError("No image data supplied for background removal.")
+
+    buffer = io.BytesIO(data)
+    return _remove_background_from_image_loader(
+        lambda: Image.open(buffer),
         output_format=output_format,
         model_name=model_name,
         alpha_matting=alpha_matting,
@@ -918,19 +954,18 @@ def remove_bg_file(
 
     source_path = Path(input_path)
     with source_path.open("rb") as stream:
-        data = stream.read()
-    result = remove_background_bytes(
-        data,
-        output_format=output_format,
-        model_name=model_name,
-        alpha_matting=alpha_matting,
-        am_foreground=am_foreground,
-        am_background=am_background,
-        am_erode=am_erode,
-        use_colorkey_fallback=use_colorkey_fallback,
-        colorkey_tolerance=colorkey_tolerance,
-        feather_radius=feather_radius,
-    )
+        result = remove_background_stream(
+            stream,
+            output_format=output_format,
+            model_name=model_name,
+            alpha_matting=alpha_matting,
+            am_foreground=am_foreground,
+            am_background=am_background,
+            am_erode=am_erode,
+            use_colorkey_fallback=use_colorkey_fallback,
+            colorkey_tolerance=colorkey_tolerance,
+            feather_radius=feather_radius,
+        )
     destination: Path | None = None
     if result.success:
         destination = _resolve_output_path(source_path, output, result.format_spec)

@@ -129,7 +129,7 @@ def _format_row(entry: dict[str, object | None]) -> str:
     input_text = str(entry.get("input") or "")
     output_text = str(entry.get("output") or "")
     elapsed = entry.get("elapsed_ms")
-    if isinstance(elapsed, (int, float)):
+    if isinstance(elapsed, int | float):
         timing = f"{float(elapsed):.1f}"
     else:
         timing = "-"

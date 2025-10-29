@@ -33,6 +33,7 @@ from bg_removal import (
     RemovalResult,
     encode_result_image,
     ensure_global_session,
+    ensure_models_downloaded,
     get_accelerator_status,
     get_mime_type_for_path,
     get_output_format_spec,
@@ -117,6 +118,7 @@ def create_app(
         app.config.update(config_overrides)
 
     if run_startup_tasks:
+        ensure_models_downloaded()
         ensure_global_session()
 
     register_routes(app)

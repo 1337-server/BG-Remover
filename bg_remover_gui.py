@@ -918,6 +918,35 @@ class BackgroundRemoverApp(tb.Window):
 
         self.log_console = ScrolledText(parent, height=10, padding=5, state="disabled")
         self.log_console.pack(fill=BOTH, expand=True)
+        self._configure_log_console()
+
+    def _get_style_color(self, key: str, fallback: str) -> str:
+        """Return a ttkbootstrap theme colour for ``key`` or ``fallback``."""
+
+        colors = getattr(self.app_style, "colors", None)
+        if isinstance(colors, dict):
+            return colors.get(key, fallback)
+        if colors is not None and hasattr(colors, key):
+            return getattr(colors, key)
+        return fallback
+
+    def _configure_log_console(self) -> None:
+        """Prepare the status log for styled, read-only updates."""
+
+        text_widget = getattr(self.log_console, "text", None)
+        if text_widget is None:
+            return
+
+        default_color = text_widget.cget("foreground")
+        success_color = self._get_style_color("success", "#198754")
+        error_color = self._get_style_color("danger", "#dc3545")
+
+        text_widget.configure(state="normal")
+        text_widget.delete("1.0", END)
+        text_widget.tag_configure("info", foreground=default_color)
+        text_widget.tag_configure("success", foreground=success_color)
+        text_widget.tag_configure("error", foreground=error_color)
+        text_widget.configure(state="disabled")
 
     def _on_mode_changed(self) -> None:
         """Switch between single and folder workflows."""
@@ -1227,6 +1256,10 @@ class BackgroundRemoverApp(tb.Window):
             while True:
                 event, payload = self.event_queue.get_nowait()
                 self._handle_event(event, payload)
+                try:
+                    self.update_idletasks()
+                except Exception:
+                    pass
         except queue.Empty:
             pass
         finally:
@@ -1303,36 +1336,56 @@ class BackgroundRemoverApp(tb.Window):
         self._folder_worker = None
         self._folder_cancel_event.clear()
 
-    def _append_log(self, message: str):
+    def _append_log(self, message: str) -> None:
         """Safely append ``message`` to the log console from any thread."""
+
+        def resolve_tag(text: str) -> str:
+            """Return the tag name used to style ``text`` in the log."""
+
+            lowered = text.casefold()
+            if "✖" in text or "⚠" in text or "failed" in lowered or "error" in lowered:
+                return "error"
+            if "✔" in text or "success" in lowered or "saved" in lowered:
+                return "success"
+            return "info"
 
         def write_to_log() -> None:
             try:
-                widget = self.log_console
-                if hasattr(widget, "configure"):
-                    try:
-                        widget.configure(state="normal")
-                    except Exception:
-                        pass
-
-                if hasattr(widget, "insert"):
-                    widget.insert(END, message + "\n")
-                    if hasattr(widget, "see"):
-                        widget.see(END)
-                elif hasattr(widget, "configure") and "text" in widget.keys():
-                    current = widget["text"]
-                    separator = "\n" if current else ""
-                    widget.configure(text=current + separator + message)
+                text_widget = getattr(self.log_console, "text", None)
+                if text_widget is not None:
+                    text_widget.configure(state="normal")
+                    text_widget.insert(END, message + "\n", resolve_tag(message))
+                    text_widget.see(END)
+                    text_widget.configure(state="disabled")
                 else:
-                    print(f"[LOG]: {message}")
-
-                if hasattr(widget, "configure"):
-                    try:
-                        widget.configure(state="disabled")
-                    except Exception:
-                        pass
+                    widget = self.log_console
+                    if hasattr(widget, "configure"):
+                        try:
+                            widget.configure(state="normal")
+                        except Exception:
+                            pass
+                    if hasattr(widget, "insert"):
+                        widget.insert(END, message + "\n")
+                        if hasattr(widget, "see"):
+                            widget.see(END)
+                    elif hasattr(widget, "configure") and "text" in widget.keys():
+                        current = widget["text"]
+                        separator = "\n" if current else ""
+                        widget.configure(text=current + separator + message)
+                    else:
+                        print(f"[LOG]: {message}")
+                    if hasattr(widget, "configure"):
+                        try:
+                            widget.configure(state="disabled")
+                        except Exception:
+                            pass
             except Exception as exc:
                 print(f"[LOG ERROR]: {exc}")
+            finally:
+                try:
+                    self.update_idletasks()
+                except Exception:
+                    pass
 
         if threading.current_thread() is threading.main_thread():
             write_to_log()
@@ -1344,25 +1397,36 @@ class BackgroundRemoverApp(tb.Window):
 
         def clear_console() -> None:
             try:
-                widget = self.log_console
-                if hasattr(widget, "configure"):
-                    try:
-                        widget.configure(state="normal")
-                    except Exception:
-                        pass
+                text_widget = getattr(self.log_console, "text", None)
+                if text_widget is not None:
+                    text_widget.configure(state="normal")
+                    text_widget.delete("1.0", END)
+                    text_widget.configure(state="disabled")
+                else:
+                    widget = self.log_console
+                    if hasattr(widget, "configure"):
+                        try:
+                            widget.configure(state="normal")
+                        except Exception:
+                            pass
 
-                if hasattr(widget, "delete"):
-                    widget.delete("1.0", END)
-                elif hasattr(widget, "configure") and "text" in widget.keys():
-                    widget.configure(text="")
+                    if hasattr(widget, "delete"):
+                        widget.delete("1.0", END)
+                    elif hasattr(widget, "configure") and "text" in widget.keys():
+                        widget.configure(text="")
 
-                if hasattr(widget, "configure"):
-                    try:
-                        widget.configure(state="disabled")
-                    except Exception:
-                        pass
+                    if hasattr(widget, "configure"):
+                        try:
+                            widget.configure(state="disabled")
+                        except Exception:
+                            pass
             except Exception as exc:
                 print(f"[LOG CLEAR ERROR]: {exc}")
+            finally:
+                try:
+                    self.update_idletasks()
+                except Exception:
+                    pass
 
         if threading.current_thread() is threading.main_thread():
             clear_console()

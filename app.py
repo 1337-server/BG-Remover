@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
+import binascii
 import json
 import logging
 import shutil
@@ -161,7 +163,7 @@ def register_routes(app: Flask) -> None:
     app.register_blueprint(image_converter_bp)
 
 
-def _parse_int(value: str | None, default: int) -> int:
+def _parse_int(value: Any, default: int) -> int:
     """Safely parse integers from incoming form values."""
 
     if value is None:
@@ -172,15 +174,17 @@ def _parse_int(value: str | None, default: int) -> int:
         return default
 
 
-def _is_truthy(value: str | None) -> bool:
+def _is_truthy(value: Any) -> bool:
     """Return ``True`` for common representations of truthy checkbox values."""
 
     if value is None:
         return False
-    return value.strip().lower() in {"1", "true", "on", "yes"}
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "on", "yes"}
 
 
-def _collect_single_options(form: Mapping[str, str], defaults: Mapping[str, Any]) -> dict[str, Any]:
+def _collect_single_options(form: Mapping[str, Any], defaults: Mapping[str, Any]) -> dict[str, Any]:
     """Extract reusable single-image processing options from the request."""
 
     return {
@@ -191,6 +195,64 @@ def _collect_single_options(form: Mapping[str, str], defaults: Mapping[str, Any]
         "colorkey_tolerance": _parse_int(form.get("colorkey_tolerance"), int(defaults["colorkey_tolerance"])),
         "feather_radius": _parse_int(form.get("feather_radius"), int(defaults["feather_radius"])),
     }
+
+
+def _load_json_payload() -> Mapping[str, Any] | None:
+    """Return the parsed JSON payload when available and valid."""
+
+    if not request.is_json:
+        return None
+    payload = request.get_json(silent=True)
+    if isinstance(payload, Mapping):
+        return payload
+    LOGGER.error(
+        "Invalid JSON payload supplied", extra={"content_type": request.content_type}
+    )
+    return None
+
+
+def _decode_base64_image(value: str) -> bytes:
+    """Decode a base64-encoded image payload, handling data URLs when present."""
+
+    text = value.strip()
+    if not text:
+        raise ValueError("Empty base64 payload received.")
+    if text.startswith("data:"):
+        try:
+            _, text = text.split(",", 1)
+        except ValueError as exc:  # pragma: no cover - malformed data URL
+            raise ValueError("Malformed data URL supplied.") from exc
+    try:
+        return base64.b64decode(text, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("Base64 decoding failed for the supplied image payload.") from exc
+
+
+def _extract_json_image(payload: Mapping[str, Any]) -> tuple[bytes, str | None]:
+    """Return raw image bytes and an optional filename from ``payload``."""
+
+    for key in ("image_base64", "image"):
+        candidate = payload.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return _decode_base64_image(candidate), payload.get("filename")
+
+    raw_bytes = payload.get("image_bytes")
+    if isinstance(raw_bytes, bytes | bytearray):
+        return bytes(raw_bytes), payload.get("filename")
+    if isinstance(raw_bytes, list) and all(isinstance(item, int) for item in raw_bytes):
+        return bytes(raw_bytes), payload.get("filename")
+
+    raise ValueError(
+        "JSON payload must include base64 data under 'image_base64' or 'image'."
+    )
+
+
+def _get_stripped(value: Any) -> str:
+    """Return ``value`` coerced to ``str`` with surrounding whitespace removed."""
+
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 @image_converter_bp.route("/", methods=["GET", "POST"])
@@ -213,21 +275,29 @@ def remove_background_view() -> ResponseReturnValue:
             removal_model_options=REMOVAL_MODEL_OPTIONS,
         )
 
-    form = request.form
-    process_folder = _is_truthy(form.get("process_folder"))
-    recursive = _is_truthy(form.get("recursive")) or request.args.get("recursive") == "1"
-    options = _collect_single_options(form, defaults)
+    json_payload = _load_json_payload()
+    form_data: Mapping[str, Any] = request.form if json_payload is None else json_payload
+
+    process_folder = _is_truthy(form_data.get("process_folder"))
+    recursive = _is_truthy(form_data.get("recursive")) or request.args.get("recursive") == "1"
+    options = _collect_single_options(form_data, defaults)
     try:
-        format_spec = get_output_format_spec(form.get("output_format"))
+        format_spec = get_output_format_spec(form_data.get("output_format"))
     except ValueError as exc:
+        LOGGER.error(
+            "Unsupported output format requested", extra={"output_format": form_data.get("output_format")}
+        )
         return _bad_request(str(exc))
 
-    removal_model_key = (form.get("removal_model") or DEFAULT_REMOVAL_MODEL_KEY).strip().lower()
+    removal_model_key = _get_stripped(form_data.get("removal_model") or DEFAULT_REMOVAL_MODEL_KEY)
+    if not removal_model_key:
+        removal_model_key = DEFAULT_REMOVAL_MODEL_KEY
+    removal_model_key = removal_model_key.lower()
     model_name = _REMOVAL_MODEL_LOOKUP.get(
         removal_model_key, _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY]
     )
     preview_size: int | None = None
-    preview_size_raw = form.get("preview_size")
+    preview_size_raw = form_data.get("preview_size")
     if preview_size_raw:
         try:
             preview_size = int(preview_size_raw)
@@ -239,15 +309,18 @@ def remove_background_view() -> ResponseReturnValue:
 
     json_requested = request.args.get("json") == "1"
 
-    if process_folder or form.get("folder_path"):
-        folder_path = (form.get("folder_path") or "").strip()
+    if process_folder or _get_stripped(form_data.get("folder_path")):
+        folder_path = _get_stripped(form_data.get("folder_path"))
         if not folder_path:
+            LOGGER.error(
+                "Folder processing requested without a folder path", extra={"path": request.path}
+            )
             return _bad_request(
                 "A folder path is required when processing folders.",
                 runtime_info=runtime_info,
             )
 
-        output_dir = (form.get("output_dir") or "").strip() or None
+        output_dir = _get_stripped(form_data.get("output_dir")) or None
 
         try:
             results = remove_bg_folder(
@@ -277,7 +350,7 @@ def remove_background_view() -> ResponseReturnValue:
             "preview_size": preview_size,
         }
 
-        if _is_truthy(form.get("zip")):
+        if _is_truthy(form_data.get("zip")):
             try:
                 token, download_url = _create_zip(results)
                 payload["zip_download_url"] = download_url
@@ -298,18 +371,41 @@ def remove_background_view() -> ResponseReturnValue:
         )
 
     file_storage = request.files.get("image_file")
-    if not file_storage or file_storage.filename == "":
+    image_bytes: bytes | None = None
+    upload_name: str | None = None
+    if file_storage and file_storage.filename not in {None, ""}:
+        upload_name = file_storage.filename
+    elif json_payload is not None:
+        try:
+            image_bytes, upload_name = _extract_json_image(json_payload)
+        except ValueError as exc:
+            LOGGER.error(
+                "JSON payload did not include a valid image", extra={"error": str(exc)}
+            )
+            return _bad_request(str(exc), runtime_info=runtime_info)
+    else:
+        LOGGER.error(
+            "No image data supplied in request", extra={"path": request.path, "method": request.method}
+        )
         return _bad_request(
             "Please choose an image to upload or provide a folder path.",
             runtime_info=runtime_info,
         )
 
-    filename = secure_filename(file_storage.filename or "image.png")
+    filename = secure_filename(upload_name or "image.png")
+    if not filename:
+        filename = "image.png"
+
     temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_"))
     input_path = temp_dir / filename
-    file_storage.save(input_path)
+    if file_storage and image_bytes is None:
+        file_storage.save(input_path)
+    else:
+        assert image_bytes is not None  # for type-checkers
+        input_path.write_bytes(image_bytes)
+
     persistent_output_dir: Path | None = None
-    single_output_dir_text = (form.get("single_output_dir") or "").strip()
+    single_output_dir_text = _get_stripped(form_data.get("single_output_dir"))
     output_base = temp_dir / input_path.stem
     if single_output_dir_text:
         candidate = Path(single_output_dir_text).expanduser()
@@ -336,6 +432,14 @@ def remove_background_view() -> ResponseReturnValue:
     )
 
     if not result.success:
+        LOGGER.error(
+            "Background removal failed for uploaded image",
+            extra={
+                "error": result.error,
+                "model_name": model_name,
+                "input_path": str(result.path_in) if result.path_in else None,
+            },
+        )
         shutil.rmtree(temp_dir, ignore_errors=True)
         return _bad_request(
             result.error or "Background removal failed.", runtime_info=runtime_info
@@ -476,8 +580,12 @@ def _serve_registry_item(registry: dict[str, RegistryItem], token: str, *, as_at
     """Return the file referenced by ``token`` from ``registry``."""
 
     entry = registry.pop(token, None)
-    if entry is None or not entry.path.exists():
+    if entry is None:
         abort(404)
+        raise RuntimeError("Registry entry missing")  # pragma: no cover - satisfies type checkers
+    if not entry.path.exists():
+        abort(404)
+        raise RuntimeError("Registry entry missing")  # pragma: no cover - satisfies type checkers
 
     if entry.delete_after_read:
         @after_this_request
@@ -504,8 +612,12 @@ def download_zip(token: str) -> Response:
 
     with _ZIP_REGISTRY_LOCK:
         item = _ZIP_REGISTRY.pop(token, None)
-    if item is None or not item.path.exists():
+    if item is None:
         abort(404)
+        raise RuntimeError("ZIP entry missing")  # pragma: no cover - satisfies type checkers
+    if not item.path.exists():
+        abort(404)
+        raise RuntimeError("ZIP entry missing")  # pragma: no cover - satisfies type checkers
 
     _cancel_zip_timer(item)
 

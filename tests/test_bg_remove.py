@@ -39,13 +39,16 @@ def _make_image_bytes(color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> by
     (
         (
             (255, 255, 255),
-            tuple((1.0 - mean) / std for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))),
+            tuple(
+                (1.0 - mean) / std
+                for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), strict=False)
+            ),
         ),
         (
             (10, 10, 10),
             tuple(
                 ((10 / 255.0) - mean) / std
-                for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), strict=False)
             ),
         ),
     ),

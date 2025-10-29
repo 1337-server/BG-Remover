@@ -202,10 +202,9 @@ def remove_background_view() -> ResponseReturnValue:
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
     defaults.update(DEFAULT_CHECKBOX_OPTIONS)
 
-    ensure_global_session()
-    runtime_info = get_runtime_payload()
-
     if request.method == "GET":
+        ensure_global_session()
+        runtime_info = get_runtime_payload()
         return render_template(
             "image_remove_bg.html",
             defaults=defaults,
@@ -243,7 +242,10 @@ def remove_background_view() -> ResponseReturnValue:
     if process_folder or form.get("folder_path"):
         folder_path = (form.get("folder_path") or "").strip()
         if not folder_path:
-            return _bad_request("A folder path is required when processing folders.")
+            return _bad_request(
+                "A folder path is required when processing folders.",
+                runtime_info=runtime_info,
+            )
 
         output_dir = (form.get("output_dir") or "").strip() or None
 
@@ -262,7 +264,7 @@ def remove_background_view() -> ResponseReturnValue:
                 feather_radius=options["feather_radius"],
             )
         except Exception as exc:  # pragma: no cover - depends on runtime environment
-            return _bad_request(str(exc))
+            return _bad_request(str(exc), runtime_info=runtime_info)
 
         payload = _serialise_results(results)
         payload["selected_format"] = format_spec.key
@@ -297,7 +299,10 @@ def remove_background_view() -> ResponseReturnValue:
 
     file_storage = request.files.get("image_file")
     if not file_storage or file_storage.filename == "":
-        return _bad_request("Please choose an image to upload or provide a folder path.")
+        return _bad_request(
+            "Please choose an image to upload or provide a folder path.",
+            runtime_info=runtime_info,
+        )
 
     filename = secure_filename(file_storage.filename or "image.png")
     temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_"))
@@ -332,7 +337,9 @@ def remove_background_view() -> ResponseReturnValue:
 
     if not result.success:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        return _bad_request(result.error or "Background removal failed.")
+        return _bad_request(
+            result.error or "Background removal failed.", runtime_info=runtime_info
+        )
 
     if json_requested:
         encoded = encode_result_image(result)
@@ -603,11 +610,15 @@ def _create_zip(results: list[RemovalResult]) -> tuple[str, str]:
     return token, download_url
 
 
-def _bad_request(message: str) -> ResponseReturnValue:
-    """Return a consistent JSON error payload."""
+def _bad_request(
+        message: str, *, runtime_info: Mapping[str, Any] | None = None
+) -> ResponseReturnValue:
+    """Return a consistent JSON error payload with optional runtime metadata."""
 
     payload = {"error": message}
-    payload.update(get_runtime_payload())
+    if runtime_info is None:
+        runtime_info = get_runtime_payload()
+    payload.update(runtime_info)
     response = jsonify(payload)
     response.status_code = 400
     return response

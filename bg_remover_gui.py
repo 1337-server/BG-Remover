@@ -13,7 +13,8 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from functools import wraps
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -199,6 +200,62 @@ def _show_fatal_error_dialog(title: str, log_path: Path) -> None:
         root.withdraw()
         messagebox.showerror(title, message)
         root.destroy()
+
+
+def safe_callback(fn):
+    """Return a wrapper that logs callback errors without crashing the UI."""
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        owner = args[0] if args else None
+
+        def handle_exception(exc: Exception) -> None:
+            """Log ``exc`` to the GUI and :data:`LOG_FILE`."""
+
+            tb_text = traceback.format_exc()
+            message = f"❌ {type(exc).__name__}: {exc}"
+            if owner is not None and hasattr(owner, "log_status"):
+                try:
+                    owner.log_status(message, color="red")
+                except Exception:  # pragma: no cover - defensive logging
+                    LOGGER.error(
+                        "Failed to log status message for callback %s.",
+                        fn.__name__,
+                        exc_info=True,
+                    )
+            else:
+                LOGGER.error(message)
+
+            log_path = _write_traceback_to_log(tb_text)
+            LOGGER.error(
+                "Unhandled exception in Tkinter callback %s. Traceback stored at %s.",
+                fn.__name__,
+                log_path,
+                exc_info=True,
+            )
+            print(tb_text, file=sys.stderr, flush=True)
+
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:  # pragma: no cover - runtime safety net
+            handle_exception(exc)
+            return None
+
+        if isinstance(result, Iterator):
+
+            def generator_wrapper() -> Iterator[Any]:
+                try:
+                    for item in result:
+                        yield item
+                except Exception as exc:  # pragma: no cover - runtime safety net
+                    handle_exception(exc)
+                    return
+
+            return generator_wrapper()
+
+        return result
+
+    return wrapper
 
 
 def human_readable_duration(seconds: float) -> str:
@@ -948,6 +1005,7 @@ class BackgroundRemoverApp(tb.Window):
         text_widget.tag_configure("error", foreground=error_color)
         text_widget.configure(state="disabled")
 
+    @safe_callback
     def _on_mode_changed(self) -> None:
         """Switch between single and folder workflows."""
 
@@ -963,6 +1021,7 @@ class BackgroundRemoverApp(tb.Window):
             self.file_button.configure(state="disabled")
             self.process_button.configure(state="disabled")
 
+    @safe_callback
     def _toggle_theme(self) -> None:
         """Toggle between the light and dark ttkbootstrap themes."""
 
@@ -970,6 +1029,7 @@ class BackgroundRemoverApp(tb.Window):
         theme = "darkly" if self._theme_dark else "flatly"
         self.app_style.theme_use(theme)
 
+    @safe_callback
     def _on_format_selected(self, _event: Any) -> None:
         """Synchronise the output format variable with the dropdown."""
 
@@ -977,6 +1037,7 @@ class BackgroundRemoverApp(tb.Window):
         if 0 <= index < len(OUTPUT_FORMATS):
             self.output_format_var.set(OUTPUT_FORMATS[index].key)
 
+    @safe_callback
     def _on_model_selected(self, _event: Any) -> None:
         """Synchronise the chosen model key."""
 
@@ -985,6 +1046,7 @@ class BackgroundRemoverApp(tb.Window):
         if 0 <= index < len(keys):
             self.model_var.set(keys[index])
 
+    @safe_callback
     def _sync_alpha_controls(self) -> None:
         """Enable or disable alpha matting controls based on the checkbox."""
 
@@ -992,6 +1054,7 @@ class BackgroundRemoverApp(tb.Window):
         for widget in self.alpha_spinboxes:
             widget.configure(state=state)
 
+    @safe_callback
     def _choose_single_image(self) -> None:
         """Prompt the user to choose an image file."""
 
@@ -1011,6 +1074,7 @@ class BackgroundRemoverApp(tb.Window):
         self._display_preview(Path(path), self.single_preview, max_size=400)
         self.output_message.set("Ready to process.")
 
+    @safe_callback
     def _process_single_image(self) -> None:
         """Run background removal for the selected image."""
 
@@ -1105,6 +1169,7 @@ class BackgroundRemoverApp(tb.Window):
         else:
             self._image_preview = photo
 
+    @safe_callback
     def _choose_folder(self) -> None:
         """Prompt the user to select a folder for batch processing."""
 
@@ -1119,6 +1184,7 @@ class BackgroundRemoverApp(tb.Window):
         self._update_folder_summary()
         self._append_log(f"Folder selected: {folder}")
 
+    @safe_callback
     def _choose_output_folder(self) -> None:
         """Prompt the user to choose a custom output destination."""
 
@@ -1156,6 +1222,7 @@ class BackgroundRemoverApp(tb.Window):
             if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 yield path
 
+    @safe_callback
     def _update_folder_summary(self) -> None:
         """Refresh the folder summary and output location details."""
 
@@ -1186,6 +1253,7 @@ class BackgroundRemoverApp(tb.Window):
         else:
             self.selected_output_folder.set(f"Default: {output_root}")
 
+    @safe_callback
     def _start_batch(self) -> None:
         """Launch a worker thread for batch processing."""
         if self._folder_worker and self._folder_worker.is_alive():
@@ -1241,6 +1309,7 @@ class BackgroundRemoverApp(tb.Window):
         )
         self._folder_worker.start()
 
+    @safe_callback
     def _cancel_batch(self) -> None:
         """Signal the background worker to cancel processing."""
 
@@ -1249,6 +1318,7 @@ class BackgroundRemoverApp(tb.Window):
             self._append_log("Cancellation requested. Finishing current image…")
             self.cancel_batch_button.configure(state="disabled")
 
+    @safe_callback
     def _process_event_queue(self) -> None:
         """Handle events emitted from worker threads."""
 
@@ -1336,12 +1406,30 @@ class BackgroundRemoverApp(tb.Window):
         self._folder_worker = None
         self._folder_cancel_event.clear()
 
-    def _append_log(self, message: str) -> None:
+    def log_status(self, message: str, *, color: str | None = None) -> None:
+        """Expose a safe way to append coloured messages to the status log."""
+
+        self._append_log(message, color=color)
+
+    def _append_log(
+        self,
+        message: str,
+        *,
+        tag: str | None = None,
+        color: str | None = None,
+    ) -> None:
         """Safely append ``message`` to the log console from any thread."""
+
+        effective_tag = tag
+        if color and effective_tag is None:
+            sanitized = "".join(ch for ch in color if ch.isalnum()) or "custom"
+            effective_tag = f"color_{sanitized}"
 
         def resolve_tag(text: str) -> str:
             """Return the tag name used to style ``text`` in the log."""
 
+            if effective_tag is not None:
+                return effective_tag
             lowered = text.casefold()
             if "✖" in text or "⚠" in text or "failed" in lowered or "error" in lowered:
                 return "error"
@@ -1354,7 +1442,10 @@ class BackgroundRemoverApp(tb.Window):
                 text_widget = getattr(self.log_console, "text", None)
                 if text_widget is not None:
                     text_widget.configure(state="normal")
-                    text_widget.insert(END, message + "\n", resolve_tag(message))
+                    tag_name = resolve_tag(message)
+                    if color and tag_name:
+                        text_widget.tag_configure(tag_name, foreground=color)
+                    text_widget.insert(END, message + "\n", tag_name)
                     text_widget.see(END)
                     text_widget.configure(state="disabled")
                 else:

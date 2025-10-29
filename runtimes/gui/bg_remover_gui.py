@@ -127,6 +127,7 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_original_name: str | None = None
         self._preview_saved_path: Path | None = None
         self._preview_canvas_image: int | None = None
+        self._preview_display_override: Image.Image | None = None
         self.preview_zoom_var = tb.DoubleVar(value=100.0)
 
         self._build_ui()
@@ -258,20 +259,49 @@ class BackgroundRemoverApp(tb.Window):
 
         preview_frame = tb.Labelframe(top_frame, text="Preview", padding=10)
         preview_frame.pack(side=RIGHT, fill=BOTH, expand=True, padx=(12, 0))
-        preview_frame.rowconfigure(1, weight=1)
+        preview_frame.rowconfigure(2, weight=1)
         preview_frame.columnconfigure(0, weight=1)
 
+        toolbar = tb.Frame(preview_frame)
+        toolbar.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, 4))
+        self.preview_fill_button = tb.Button(
+            toolbar,
+            text="Background Fill",
+            command=self._preview_fill_background,
+            state="disabled",
+        )
+        self.preview_fill_button.pack(side=LEFT, padx=(0, 6))
+        self.preview_clear_button = tb.Button(
+            toolbar,
+            text="Background Clear",
+            command=self._preview_clear_background,
+            state="disabled",
+        )
+        self.preview_clear_button.pack(side=LEFT)
+
         self.preview_info = tb.Label(preview_frame, text="No preview available yet.", anchor="w")
-        self.preview_info.grid(row=0, column=0, columnspan=3, sticky="we")
+        self.preview_info.grid(row=1, column=0, columnspan=3, sticky="we")
 
         canvas_container = tb.Frame(preview_frame)
-        canvas_container.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(8, 8))
+        canvas_container.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(8, 8))
         canvas_container.rowconfigure(0, weight=1)
         canvas_container.columnconfigure(0, weight=1)
 
         self.preview_canvas = Canvas(canvas_container, highlightthickness=0, background="#111827")
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
         self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+
+        self.preview_overlay_frame = tb.Frame(canvas_container, bootstyle="dark")
+        self.preview_overlay_label = tb.Label(
+            self.preview_overlay_frame,
+            text="Processing…",
+            anchor="center",
+            font=("Helvetica", 14, "bold"),
+            bootstyle="light",
+            padding=20,
+        )
+        self.preview_overlay_label.pack(expand=True, fill=BOTH)
+        self.preview_overlay_frame.place_forget()
 
         self.preview_scroll_y = tb.Scrollbar(
             canvas_container,
@@ -285,7 +315,7 @@ class BackgroundRemoverApp(tb.Window):
             orient="horizontal",
             command=self.preview_canvas.xview,
         )
-        self.preview_scroll_x.grid(row=2, column=0, columnspan=3, sticky="we")
+        self.preview_scroll_x.grid(row=3, column=0, columnspan=3, sticky="we")
 
         self.preview_canvas.configure(
             xscrollcommand=self.preview_scroll_x.set,
@@ -293,7 +323,7 @@ class BackgroundRemoverApp(tb.Window):
         )
 
         zoom_controls = tb.Frame(preview_frame)
-        zoom_controls.grid(row=3, column=0, columnspan=3, sticky="we")
+        zoom_controls.grid(row=4, column=0, columnspan=3, sticky="we")
         tb.Label(zoom_controls, text="Zoom").pack(side=LEFT)
         self.preview_zoom_slider = tb.Scale(
             zoom_controls,
@@ -308,7 +338,7 @@ class BackgroundRemoverApp(tb.Window):
         self.preview_zoom_value.pack(side=LEFT)
 
         action_frame = tb.Frame(preview_frame)
-        action_frame.grid(row=4, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        action_frame.grid(row=5, column=0, columnspan=3, sticky="we", pady=(8, 0))
         self.save_button = tb.Button(
             action_frame,
             text="Save",
@@ -360,12 +390,18 @@ class BackgroundRemoverApp(tb.Window):
         tb.Entry(output_frame, textvariable=self.single_output_var, width=60).pack(side=LEFT, padx=(0, 8))
         tb.Button(output_frame, text="Browse", command=self._choose_single_output).pack(side=LEFT)
 
-        tb.Button(
+        self.single_process_button = tb.Button(
             parent,
             text="Process Image",
             bootstyle="primary",
             command=self._process_single,
-        ).pack(pady=(10, 0))
+        )
+        self.single_process_button.pack(pady=(10, 0))
+
+        self.single_spinner = tb.Progressbar(parent, mode="indeterminate", length=220)
+        self.single_spinner.pack(fill="x", pady=(6, 0))
+        self.single_spinner.stop()
+        self.single_spinner.pack_forget()
 
     def _build_batch_tab(self, parent: tb.Frame) -> None:
         """Create widgets for batch folder processing."""
@@ -386,12 +422,18 @@ class BackgroundRemoverApp(tb.Window):
         tb.Entry(output_frame, textvariable=self.batch_output_var, width=60).pack(side=LEFT, padx=(0, 8))
         tb.Button(output_frame, text="Browse", command=self._choose_batch_output).pack(side=LEFT)
 
-        tb.Button(
+        self.batch_process_button = tb.Button(
             parent,
             text="Process Folder",
             bootstyle="primary",
             command=self._process_batch,
-        ).pack(pady=(10, 10))
+        )
+        self.batch_process_button.pack(pady=(10, 10))
+
+        self.batch_spinner = tb.Progressbar(parent, mode="indeterminate", length=220)
+        self.batch_spinner.pack(fill="x", pady=(0, 10))
+        self.batch_spinner.stop()
+        self.batch_spinner.pack_forget()
 
         progress_frame = tb.Labelframe(parent, text="Batch Progress", padding=6)
         progress_frame.pack(fill=BOTH, expand=True)
@@ -444,6 +486,7 @@ class BackgroundRemoverApp(tb.Window):
             values=sorted(MODEL_SPECS.keys()),
             textvariable=self.model_var,
             width=40,
+            state="readonly",
         )
         model_combo.grid(row=0, column=1, sticky="we", padx=8)
         self._add_tooltip(
@@ -785,6 +828,20 @@ class BackgroundRemoverApp(tb.Window):
         for widget in self.alpha_controls:
             widget.configure(state=state)
 
+    def _update_preview_controls(self) -> None:
+        """Synchronize preview-related button states with available data."""
+
+        has_preview = self._preview_image is not None
+        has_color = bool((self.settings.get("background_color") or "").strip())
+        has_saved = self._preview_saved_path is not None and self._preview_saved_path.exists()
+        self.save_button.configure(state="normal" if has_preview else "disabled")
+        self.discard_button.configure(state="normal" if has_preview else "disabled")
+        self.view_full_button.configure(state="normal" if has_saved else "disabled")
+        fill_state = "normal" if has_preview and has_color else "disabled"
+        clear_state = "normal" if has_preview and self._preview_display_override else "disabled"
+        self.preview_fill_button.configure(state=fill_state)
+        self.preview_clear_button.configure(state=clear_state)
+
     def _refresh_badge(self) -> None:
         """Update the provider badge and tooltip."""
 
@@ -803,6 +860,34 @@ class BackgroundRemoverApp(tb.Window):
 
         self._update_setting("background_color", "")
         self.color_label.configure(text=self._background_label_text())
+        self._update_preview_controls()
+
+    def _preview_fill_background(self) -> None:
+        """Display the current preview composited with the configured background color."""
+
+        if not self._preview_image:
+            return
+        rgb_color = _hex_to_rgb(self.settings.get("background_color"))
+        if not rgb_color:
+            messagebox.showinfo(
+                "No background color",
+                "Set a background fill color in Advanced Settings before previewing the fill.",
+            )
+            return
+        preview_rgba = self._preview_image.convert("RGBA")
+        filled_background = Image.new("RGBA", preview_rgba.size, (*rgb_color, 255))
+        self._preview_display_override = Image.alpha_composite(filled_background, preview_rgba)
+        self._render_preview_image()
+        self._update_preview_controls()
+
+    def _preview_clear_background(self) -> None:
+        """Restore the preview to the transparent version generated by processing."""
+
+        if not self._preview_image:
+            return
+        self._preview_display_override = None
+        self._render_preview_image()
+        self._update_preview_controls()
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -819,6 +904,7 @@ class BackgroundRemoverApp(tb.Window):
         self._update_setting("device", self.device_var.get())
         self.providers = detect_providers(self._provider_hints())
         self._refresh_badge()
+        self._update_preview_controls()
 
     def _choose_background_color(self) -> None:
         """Display a color chooser dialog and store the result."""
@@ -827,6 +913,7 @@ class BackgroundRemoverApp(tb.Window):
         if hex_value:
             self._update_setting("background_color", hex_value)
             self.color_label.configure(text=self._background_label_text())
+            self._update_preview_controls()
 
     def _on_model_dir_change(self) -> None:
         """Persist model directory text edits into settings."""
@@ -991,6 +1078,7 @@ class BackgroundRemoverApp(tb.Window):
             return
         output_path = self._determine_single_output(path)
         self._log(f"Starting processing for {path.name}…")
+        self._set_processing_state(True, "single")
         threading.Thread(target=self._run_single, args=(path, output_path), daemon=True).start()
 
     def _run_single(self, input_path: Path, output_path: Path) -> None:
@@ -1019,11 +1107,13 @@ class BackgroundRemoverApp(tb.Window):
                     input_path.name,
                 ),
             )
+            self.after(0, lambda: self._set_processing_state(False, "single"))
         except Exception as error:
             LOGGER.exception("Single image processing failed")
             message = str(error)
             self.after(0, lambda: self._log(f"{input_path.name} failed ✗ — Reason: {message}", error=True))
             self.after(0, lambda: messagebox.showerror("Processing failed", message))
+            self.after(0, lambda: self._set_processing_state(False, "single"))
 
     def _load_source_image(self, path: Path) -> Image.Image:
         """Return a freshly loaded RGBA image from ``path``."""
@@ -1054,14 +1144,13 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_original_name = None
         self._preview_saved_path = None
         self._preview_canvas_image = None
+        self._preview_display_override = None
         self.preview_canvas.delete("all")
         self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
         self.preview_zoom_var.set(100.0)
         self.preview_zoom_value.configure(text="100%")
         self.preview_info.configure(text="No preview available yet.")
-        self.save_button.configure(state="disabled")
-        self.discard_button.configure(state="disabled")
-        self.view_full_button.configure(state="disabled")
+        self._update_preview_controls()
 
     def _render_preview_image(self) -> None:
         """Render the in-memory preview image respecting the zoom slider."""
@@ -1074,9 +1163,10 @@ class BackgroundRemoverApp(tb.Window):
         zoom_value = max(25.0, min(400.0, float(self.preview_zoom_var.get())))
         self.preview_zoom_var.set(zoom_value)
         scale = zoom_value / 100.0
-        width = max(1, int(self._preview_image.width * scale))
-        height = max(1, int(self._preview_image.height * scale))
-        resized = self._preview_image.resize((width, height), Image.LANCZOS)
+        source_image = self._preview_display_override or self._preview_image
+        width = max(1, int(source_image.width * scale))
+        height = max(1, int(source_image.height * scale))
+        resized = source_image.resize((width, height), Image.LANCZOS)
         self._preview_photo = ImageTk.PhotoImage(resized)
         self.preview_canvas.delete("all")
         self._preview_canvas_image = self.preview_canvas.create_image(
@@ -1127,12 +1217,12 @@ class BackgroundRemoverApp(tb.Window):
             return
 
         self._preview_saved_path = self._preview_output_path
-        self.view_full_button.configure(state="normal")
         original_name = self._preview_original_name or "Image"
         self._log(f"{original_name} processed successfully ✓")
         self.preview_info.configure(
             text=f"Saved to {self._preview_output_path}",
         )
+        self._update_preview_controls()
 
     def _on_preview_discard(self) -> None:
         """Discard the current preview image and reset controls."""
@@ -1170,13 +1260,12 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_format_hint = format_hint
         self._preview_original_name = original_name
         self._preview_saved_path = None
+        self._preview_display_override = None
         self.preview_zoom_var.set(100.0)
         self.preview_info.configure(text=f"Preview ready: {original_name}")
-        self.save_button.configure(state="normal")
-        self.discard_button.configure(state="normal")
-        self.view_full_button.configure(state="disabled")
         self._render_preview_image()
         self._log("Preview generated successfully ✔")
+        self._update_preview_controls()
 
     def _process_batch(self) -> None:
         """Validate inputs and start batch processing."""
@@ -1193,6 +1282,7 @@ class BackgroundRemoverApp(tb.Window):
             output_dir = None
         self._reset_batch_progress()
         self._log(f"Starting processing for {path.name}…")
+        self._set_processing_state(True, "batch")
         threading.Thread(target=self._run_batch, args=(path, output_dir), daemon=True).start()
 
     def _reset_batch_progress(self) -> None:
@@ -1228,11 +1318,13 @@ class BackgroundRemoverApp(tb.Window):
             self.after(0, lambda: self._log(summary))
             if report.failures:
                 self.after(0, lambda: messagebox.showerror("Batch finished with errors", summary))
+            self.after(0, lambda: self._set_processing_state(False, "batch"))
         except Exception as error:
             LOGGER.exception("Batch processing failed")
             message = str(error)
             self.after(0, lambda: self._log(f"Batch failed ✗ — Reason: {message}", error=True))
             self.after(0, lambda: messagebox.showerror("Processing failed", message))
+            self.after(0, lambda: self._set_processing_state(False, "batch"))
 
     def _on_batch_entry(self, entry: ReportEntry) -> None:
         """Schedule UI updates for batch progress entries."""
@@ -1250,6 +1342,42 @@ class BackgroundRemoverApp(tb.Window):
         else:
             log_message = f"{entry.path_in.name} failed ✗ — Reason: {details}"
         self._log(log_message, error=not entry.success)
+
+    def _set_processing_state(self, active: bool, context: str) -> None:
+        """Toggle interactive widgets and visual indicators for processing state."""
+
+        spinners = {
+            "single": getattr(self, "single_spinner", None),
+            "batch": getattr(self, "batch_spinner", None),
+        }
+        pack_options = {
+            "single": {"fill": "x", "pady": (6, 0)},
+            "batch": {"fill": "x", "pady": (0, 10)},
+        }
+        target_spinner = spinners.get(context)
+        if active:
+            if target_spinner is not None:
+                target_spinner.pack(**pack_options.get(context, {"fill": "x"}))
+                target_spinner.start(10)
+            self.preview_overlay_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.preview_overlay_frame.lift()
+            self.single_process_button.configure(state="disabled")
+            self.batch_process_button.configure(state="disabled")
+            self.save_button.configure(state="disabled")
+            self.discard_button.configure(state="disabled")
+            self.view_full_button.configure(state="disabled")
+            self.preview_fill_button.configure(state="disabled")
+            self.preview_clear_button.configure(state="disabled")
+        else:
+            for spinner in spinners.values():
+                if spinner is not None:
+                    spinner.stop()
+                    if spinner.winfo_manager():
+                        spinner.pack_forget()
+            self.preview_overlay_frame.place_forget()
+            self.single_process_button.configure(state="normal")
+            self.batch_process_button.configure(state="normal")
+            self._update_preview_controls()
 
 
 def main() -> None:

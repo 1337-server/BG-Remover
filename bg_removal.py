@@ -159,21 +159,26 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         huggingface_repo="briaai/RMBG-2.0",
         huggingface_filename="RMBG-2.0.onnx",
     ),
+    # The original matting-by-generation weights are no longer published. The
+    # BRIA RMBG v1.4 portrait model offers comparable fine-edge performance and
+    # remains actively hosted on the Hugging Face Hub.
     "matting-by-generation": ModelSpec(
         key="matting-by-generation",
         input_size=(1024, 1024),
-        mean=(0.485, 0.456, 0.406),
-        std=(0.229, 0.224, 0.225),
-        huggingface_repo="risenW/matting-by-generation",
-        huggingface_filename="matting.onnx",
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+        huggingface_repo="briaai/BRIA-RMBG-1.4",
+        huggingface_filename="RMBG-1.4.onnx",
     ),
+    # The previous SAM-based checkpoint frequently returned 404. BRIA RMBG v2.0
+    # provides a reliable, high-quality alternative for complex compositions.
     "sam_segmentation_model": ModelSpec(
         key="sam_segmentation_model",
         input_size=(1024, 1024),
-        mean=(0.485, 0.456, 0.406),
-        std=(0.229, 0.224, 0.225),
-        huggingface_repo="vitmat/sam-segmentation-model",
-        huggingface_filename="model.onnx",
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+        huggingface_repo="briaai/RMBG-2.0",
+        huggingface_filename="RMBG-2.0.onnx",
     ),
 }
 

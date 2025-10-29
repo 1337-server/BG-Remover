@@ -148,6 +148,15 @@ python -m compileall main.py app.py bg_removal.py tests
 
 ---
 
+### 📦 Deployment and executable builds
+
+Need a zero-dependency distribution for end users? Follow the
+[deployment guide](DEPLOYMENT.md) to package the Flask UI into a standalone executable with
+PyInstaller. The walkthrough covers environment setup, the new `scripts/build_executable.py` helper,
+and validation steps to make sure the bundled app serves the UI correctly.
+
+---
+
 ### 📂 Project layout
 
 * `app.py` – Flask application, routes, and dev-server entry point.

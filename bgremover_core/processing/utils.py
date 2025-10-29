@@ -143,6 +143,9 @@ def _apply_alpha_matting(
     erode = int(max(0, min(30, erode_size)))
 
     mask_array = np.asarray(mask, dtype=np.uint8)
+    # Ensure the mask array can be modified in place for thresholding operations.
+    if not mask_array.flags.writeable:
+        mask_array = mask_array.copy()
     luminance = np.asarray(image.convert("L"), dtype=np.uint8)
     mask_array[luminance >= fg] = 255
     mask_array[luminance <= bg] = 0

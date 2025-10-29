@@ -128,9 +128,9 @@ class CollapsibleSection(tb.Frame):
             text=f"{arrow} {title}",
             command=self.toggle,
         )
-        self.toggle_button.pack(fill="x", pady=2)
-        self.toggle_button.configure(anchor="w")
 
+        self.toggle_button.configure(style="TButton", padding=(5, 2))
+        self.toggle_button.pack(fill="x", anchor="w")
         self.content = tb.Frame(self)
         if start_open:
             self.content.grid(row=1, column=0, sticky="ew")

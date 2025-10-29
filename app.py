@@ -90,6 +90,9 @@ REMOVAL_MODEL_OPTIONS = [
 _REMOVAL_MODEL_LOOKUP: dict[str, str] = {
     option["key"]: option["model_name"] for option in REMOVAL_MODEL_OPTIONS
 }
+_REMOVAL_MODEL_LABEL_LOOKUP: dict[str, str] = {
+    option["key"]: option["label"] for option in REMOVAL_MODEL_OPTIONS
+}
 DEFAULT_REMOVAL_MODEL_KEY = REMOVAL_MODEL_OPTIONS[0]["key"]
 DEFAULT_SINGLE_OPTIONS: dict[str, Any] = {
     "am_foreground": 240,
@@ -250,6 +253,7 @@ def remove_background_view() -> ResponseReturnValue:
         payload["selection"] = {
             "removal_model": removal_model_key,
             "model_name": model_name,
+            "removal_model_label": _REMOVAL_MODEL_LABEL_LOOKUP.get(removal_model_key),
             "output_directory": output_dir,
             "preview_size": preview_size,
         }
@@ -324,6 +328,7 @@ def remove_background_view() -> ResponseReturnValue:
             "selection": {
                 "removal_model": removal_model_key,
                 "model_name": model_name,
+                "removal_model_label": _REMOVAL_MODEL_LABEL_LOOKUP.get(removal_model_key),
                 "preview_size": preview_size,
                 "output_directory": str(persistent_output_dir) if persistent_output_dir else None,
             },

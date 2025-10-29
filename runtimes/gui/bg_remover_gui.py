@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import webbrowser
 from pathlib import Path
-from tkinter import colorchooser, filedialog, messagebox
+from tkinter import Canvas, colorchooser, filedialog, messagebox
 from typing import Any
 
 import ttkbootstrap as tb
@@ -119,9 +120,18 @@ class BackgroundRemoverApp(tb.Window):
         self._tooltips: dict[object, ToolTip] = {}
 
         self.providers = detect_providers(self._provider_hints())
-        self._build_ui()
-        self._refresh_badge()
         self._preview_image: Image.Image | None = None
+        self._preview_photo: ImageTk.PhotoImage | None = None
+        self._preview_output_path: Path | None = None
+        self._preview_format_hint: str | None = None
+        self._preview_original_name: str | None = None
+        self._preview_saved_path: Path | None = None
+        self._preview_canvas_image: int | None = None
+        self.preview_zoom_var = tb.DoubleVar(value=100.0)
+
+        self._build_ui()
+        self._clear_preview_state()
+        self._refresh_badge()
 
     # ------------------------------------------------------------------
     # Settings helpers
@@ -207,7 +217,13 @@ class BackgroundRemoverApp(tb.Window):
         container = tb.Frame(self, padding=20)
         container.pack(fill=BOTH, expand=True)
 
-        header = tb.Frame(container)
+        top_frame = tb.Frame(container)
+        top_frame.pack(fill=BOTH, expand=True)
+
+        control_frame = tb.Frame(top_frame)
+        control_frame.pack(side=LEFT, fill=BOTH, expand=True)
+
+        header = tb.Frame(control_frame)
         header.pack(fill=BOTH, expand=False)
 
         tb.Label(header, text="Background Remover", font=("Helvetica", 20, "bold")).pack(side=LEFT)
@@ -216,7 +232,7 @@ class BackgroundRemoverApp(tb.Window):
         self.badge.pack(side=RIGHT)
         self._add_tooltip(self.badge, "Providers: detecting…")
 
-        notebook = tb.Notebook(container, bootstyle="tabs")
+        notebook = tb.Notebook(control_frame, bootstyle="tabs")
         notebook.pack(fill=BOTH, expand=True, pady=(20, 10))
 
         self.single_tab = tb.Frame(notebook, padding=10)
@@ -227,12 +243,90 @@ class BackgroundRemoverApp(tb.Window):
         notebook.add(self.batch_tab, text="Batch Folder")
         self._build_batch_tab(self.batch_tab)
 
-        advanced_frame = tb.Frame(container)
+        advanced_frame = tb.Frame(control_frame)
         advanced_frame.pack(fill=BOTH, expand=False, pady=(0, 10))
         self._build_advanced_panel(advanced_frame)
 
+        preview_frame = tb.Labelframe(top_frame, text="Preview", padding=10)
+        preview_frame.pack(side=RIGHT, fill=BOTH, expand=True, padx=(12, 0))
+        preview_frame.rowconfigure(1, weight=1)
+        preview_frame.columnconfigure(0, weight=1)
+
+        self.preview_info = tb.Label(preview_frame, text="No preview available yet.", anchor="w")
+        self.preview_info.grid(row=0, column=0, columnspan=3, sticky="we")
+
+        canvas_container = tb.Frame(preview_frame)
+        canvas_container.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(8, 8))
+        canvas_container.rowconfigure(0, weight=1)
+        canvas_container.columnconfigure(0, weight=1)
+
+        self.preview_canvas = Canvas(canvas_container, highlightthickness=0, background="#111827")
+        self.preview_canvas.grid(row=0, column=0, sticky="nsew")
+        self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+
+        self.preview_scroll_y = tb.Scrollbar(
+            canvas_container,
+            orient="vertical",
+            command=self.preview_canvas.yview,
+        )
+        self.preview_scroll_y.grid(row=0, column=1, sticky="ns")
+
+        self.preview_scroll_x = tb.Scrollbar(
+            preview_frame,
+            orient="horizontal",
+            command=self.preview_canvas.xview,
+        )
+        self.preview_scroll_x.grid(row=2, column=0, columnspan=3, sticky="we")
+
+        self.preview_canvas.configure(
+            xscrollcommand=self.preview_scroll_x.set,
+            yscrollcommand=self.preview_scroll_y.set,
+        )
+
+        zoom_controls = tb.Frame(preview_frame)
+        zoom_controls.grid(row=3, column=0, columnspan=3, sticky="we")
+        tb.Label(zoom_controls, text="Zoom").pack(side=LEFT)
+        self.preview_zoom_slider = tb.Scale(
+            zoom_controls,
+            from_=25,
+            to=400,
+            orient="horizontal",
+            variable=self.preview_zoom_var,
+            command=lambda _: self._on_preview_zoom(),
+        )
+        self.preview_zoom_slider.pack(side=LEFT, fill=BOTH, expand=True, padx=6)
+        self.preview_zoom_value = tb.Label(zoom_controls, text="100%", width=6)
+        self.preview_zoom_value.pack(side=LEFT)
+
+        action_frame = tb.Frame(preview_frame)
+        action_frame.grid(row=4, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        self.save_button = tb.Button(
+            action_frame,
+            text="Save",
+            bootstyle="success",
+            command=self._on_preview_save,
+            state="disabled",
+        )
+        self.save_button.pack(side=LEFT, padx=(0, 6))
+        self.discard_button = tb.Button(
+            action_frame,
+            text="Discard",
+            bootstyle="secondary",
+            command=self._on_preview_discard,
+            state="disabled",
+        )
+        self.discard_button.pack(side=LEFT, padx=(0, 6))
+        self.view_full_button = tb.Button(
+            action_frame,
+            text="View Full",
+            bootstyle="info",
+            command=self._view_saved_preview,
+            state="disabled",
+        )
+        self.view_full_button.pack(side=LEFT)
+
         log_frame = tb.Labelframe(container, text="Activity Log", padding=10)
-        log_frame.pack(fill=BOTH, expand=True)
+        log_frame.pack(fill=BOTH, expand=True, pady=(12, 0))
         self.log_widget = ScrolledText(log_frame, height=10)
         self.log_widget.pack(fill=BOTH, expand=True)
         self.log_widget.tag_config("error", foreground="#b91c1c")
@@ -941,6 +1035,118 @@ class BackgroundRemoverApp(tb.Window):
             image_to_save = pil_image.convert("RGB")
         save_image_to_path(image_to_save, output_path, format_hint=format_hint)
 
+    def _clear_preview_state(self) -> None:
+        """Reset preview data structures and disable preview controls."""
+
+        self._preview_image = None
+        self._preview_photo = None
+        self._preview_output_path = None
+        self._preview_format_hint = None
+        self._preview_original_name = None
+        self._preview_saved_path = None
+        self._preview_canvas_image = None
+        self.preview_canvas.delete("all")
+        self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
+        self.preview_zoom_var.set(100.0)
+        self.preview_zoom_value.configure(text="100%")
+        self.preview_info.configure(text="No preview available yet.")
+        self.save_button.configure(state="disabled")
+        self.discard_button.configure(state="disabled")
+        self.view_full_button.configure(state="disabled")
+
+    def _render_preview_image(self) -> None:
+        """Render the in-memory preview image respecting the zoom slider."""
+
+        if not self._preview_image:
+            self.preview_canvas.delete("all")
+            self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
+            return
+
+        zoom_value = max(25.0, min(400.0, float(self.preview_zoom_var.get())))
+        self.preview_zoom_var.set(zoom_value)
+        scale = zoom_value / 100.0
+        width = max(1, int(self._preview_image.width * scale))
+        height = max(1, int(self._preview_image.height * scale))
+        resized = self._preview_image.resize((width, height), Image.LANCZOS)
+        self._preview_photo = ImageTk.PhotoImage(resized)
+        self.preview_canvas.delete("all")
+        self._preview_canvas_image = self.preview_canvas.create_image(
+            0,
+            0,
+            anchor="nw",
+            image=self._preview_photo,
+        )
+        self.preview_canvas.configure(scrollregion=(0, 0, width, height))
+        self.preview_zoom_value.configure(text=f"{int(zoom_value)}%")
+
+    def _on_preview_zoom(self) -> None:
+        """Handle zoom slider changes by re-rendering the preview image."""
+
+        if not self._preview_image:
+            self.preview_zoom_var.set(100.0)
+            self.preview_zoom_value.configure(text="100%")
+            return
+        self._render_preview_image()
+
+    def _on_preview_canvas_resize(self, _event: Any) -> None:
+        """Update the canvas scroll region after a resize event."""
+
+        if self._preview_canvas_image is not None:
+            bbox = self.preview_canvas.bbox(self._preview_canvas_image)
+            if bbox:
+                self.preview_canvas.configure(scrollregion=bbox)
+
+    def _on_preview_save(self) -> None:
+        """Persist the preview image using the configured output path."""
+
+        if (
+            not self._preview_image
+            or not self._preview_output_path
+            or not self._preview_format_hint
+        ):
+            return
+        try:
+            self._save_processed_image(
+                self._preview_image,
+                self._preview_output_path,
+                self._preview_format_hint,
+            )
+        except Exception as error:  # pragma: no cover - GUI feedback
+            error_message = str(error)
+            self._log(f"Failed to save image ✗ — Reason: {error_message}", error=True)
+            messagebox.showerror("Save failed", error_message)
+            return
+
+        self._preview_saved_path = self._preview_output_path
+        self.view_full_button.configure(state="normal")
+        original_name = self._preview_original_name or "Image"
+        self._log(f"{original_name} processed successfully ✓")
+        self.preview_info.configure(
+            text=f"Saved to {self._preview_output_path}",
+        )
+
+    def _on_preview_discard(self) -> None:
+        """Discard the current preview image and reset controls."""
+
+        if not self._preview_image:
+            return
+        self._log("❌ Preview discarded without saving.")
+        self._clear_preview_state()
+
+    def _view_saved_preview(self) -> None:
+        """Open the saved preview image in the default system viewer."""
+
+        if not self._preview_saved_path or not self._preview_saved_path.exists():
+            messagebox.showerror(
+                "Image not saved",
+                "Save the preview before opening it in an external viewer.",
+            )
+            return
+        try:
+            webbrowser.open(self._preview_saved_path.as_uri())
+        except Exception as error:  # pragma: no cover - GUI feedback
+            messagebox.showerror("Unable to open image", str(error))
+
     def _show_preview(
         self,
         pil_image: Image.Image,
@@ -948,59 +1154,19 @@ class BackgroundRemoverApp(tb.Window):
         format_hint: str,
         original_name: str,
     ) -> None:
-        """Display a modal preview window for ``pil_image`` prior to saving."""
+        """Render ``pil_image`` inside the inline preview panel."""
 
         self._preview_image = pil_image
-        preview_win = tb.Toplevel(self)
-        preview_win.title("Preview Processed Image")
-        preview_win.transient(self)
-        preview_win.grab_set()
-        preview_win.resizable(True, True)
-
-        container = tb.Frame(preview_win, padding=12)
-        container.pack(fill=BOTH, expand=True)
-
-        display_image = pil_image.copy()
-        display_image.thumbnail((720, 720))
-        image_preview = ImageTk.PhotoImage(display_image)
-        image_label = tb.Label(container, image=image_preview)
-        image_label.image = image_preview  # type: ignore[attr-defined]
-        image_label.pack(padx=4, pady=(0, 12))
-
-        def save_image() -> None:
-            """Save the processed image and close the preview."""
-
-            try:
-                self._save_processed_image(pil_image, output_path, format_hint)
-            except Exception as error:  # pragma: no cover - GUI feedback
-                error_message = str(error)
-                self._log(f"Failed to save image ✗ — Reason: {error_message}", error=True)
-                messagebox.showerror("Save failed", error_message)
-                return
-            self._log(f"{original_name} processed successfully ✓")
-            self._preview_image = None
-            preview_win.destroy()
-
-        def cancel() -> None:
-            """Discard the processed image and close the preview."""
-
-            self._preview_image = None
-            self._log("❌ Preview closed without saving.")
-            preview_win.destroy()
-
-        buttons = tb.Frame(container)
-        buttons.pack(fill=BOTH, expand=False)
-        tb.Button(buttons, text="Save", command=save_image, bootstyle="success").pack(
-            side=LEFT,
-            padx=(0, 6),
-        )
-        tb.Button(buttons, text="Discard", command=cancel, bootstyle="secondary").pack(
-            side=RIGHT,
-            padx=(6, 0),
-        )
-
-        preview_win.protocol("WM_DELETE_WINDOW", cancel)
-        preview_win.focus_set()
+        self._preview_output_path = output_path
+        self._preview_format_hint = format_hint
+        self._preview_original_name = original_name
+        self._preview_saved_path = None
+        self.preview_zoom_var.set(100.0)
+        self.preview_info.configure(text=f"Preview ready: {original_name}")
+        self.save_button.configure(state="normal")
+        self.discard_button.configure(state="normal")
+        self.view_full_button.configure(state="disabled")
+        self._render_preview_image()
         self._log("Preview generated successfully ✔")
 
     def _process_batch(self) -> None:

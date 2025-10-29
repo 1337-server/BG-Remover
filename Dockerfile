@@ -3,7 +3,8 @@ FROM python:3.12-slim
 ARG RUNTIME=cli
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    MODEL_DIR=/models
+    MODEL_DIR=/models \
+    RUNTIME=${RUNTIME}
 
 WORKDIR /app
 
@@ -23,12 +24,24 @@ RUN mkdir -p ${MODEL_DIR}
 
 EXPOSE 8080
 
-RUN if [ "$RUNTIME" = "flask" ]; then \
-        echo 'gunicorn "runtimes.flask_app.app:create_app()" --bind 0.0.0.0:8080' > /app/entrypoint.sh; \
-    elif [ "$RUNTIME" = "gui" ]; then \
-        echo 'python -m runtimes.gui.bg_remover_gui' > /app/entrypoint.sh; \
-    else \
-        echo 'python -m runtimes.cli.bgr_cli --help' > /app/entrypoint.sh; \
-    fi && chmod +x /app/entrypoint.sh
+RUN cat <<'EOF' > /app/entrypoint.sh
+#!/bin/sh
+# Entrypoint dispatches runtime-specific commands based on the RUNTIME environment variable.
+set -e
+
+case "${RUNTIME:-cli}" in
+    flask)
+        exec gunicorn "runtimes.flask_app.app:create_app()" --bind 0.0.0.0:8080
+        ;;
+    gui)
+        exec python -m runtimes.gui.bg_remover_gui
+        ;;
+    *)
+        exec python -m runtimes.cli.bgr_cli --help
+        ;;
+esac
+EOF
+
+RUN chmod +x /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]

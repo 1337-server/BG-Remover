@@ -1104,8 +1104,24 @@ class BackgroundRemoverApp(tb.Window):
                     save_to_disk=True,
                     **options["kwargs"],
                 )
+            except (FileNotFoundError, OSError, RuntimeError) as error:
+                # Surface model loading and execution issues to the user with
+                # actionable messaging while persisting the full traceback for
+                # diagnostics.
+                traceback_text = traceback.format_exc()
+                log_path = _write_traceback_to_log(traceback_text)
+                print(traceback_text, file=sys.stderr)
+                LOGGER.error("Model error while processing %s", path, exc_info=error)
+                reason = str(error) or error.__class__.__name__
+                self.output_message.set(f"Model error: {reason}")
+                self.log_status(f"❌ Model error — {reason}", color="red")
+                self.log_status(f"See {log_path} for details.", color="red")
+                return
             except Exception as exc:  # pragma: no cover - UI level reporting.
                 LOGGER.exception("Failed to process single image %s", path)
+                traceback_text = traceback.format_exc()
+                _write_traceback_to_log(traceback_text)
+                print(traceback_text, file=sys.stderr)
                 self.output_message.set("Failed to process image.")
                 self._append_log(f"Error processing {path.name}: {exc}")
                 return

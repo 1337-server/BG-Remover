@@ -20,6 +20,7 @@ import os
 import shutil
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -107,45 +108,72 @@ class ModelSpec:
     """Descriptor describing an ONNX segmentation model."""
 
     key: str
-    url: str
-    checksum_md5: str
     input_size: tuple[int, int]
     mean: tuple[float, float, float]
     std: tuple[float, float, float]
+    checksum_md5: str | None = None
+    url: str | None = None
+    huggingface_repo: str | None = None
+    huggingface_filename: str | None = None
+    huggingface_revision: str = "main"
 
 
 MODEL_SPECS: dict[str, ModelSpec] = {
     "isnet-general-use": ModelSpec(
         key="isnet-general-use",
         url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
-        checksum_md5="fc16ebd8b0c10d971d3513d564d01e29",
         input_size=(1024, 1024),
         mean=(0.5, 0.5, 0.5),
         std=(1.0, 1.0, 1.0),
+        checksum_md5="fc16ebd8b0c10d971d3513d564d01e29",
     ),
     "u2net": ModelSpec(
         key="u2net",
         url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx",
-        checksum_md5="60024c5c889badc19c04ad937298a77b",
         input_size=(320, 320),
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
+        checksum_md5="60024c5c889badc19c04ad937298a77b",
     ),
     "u2net_human_seg": ModelSpec(
         key="u2net_human_seg",
         url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net_human_seg.onnx",
-        checksum_md5="c09ddc2e0104f800e3e1bb4652583d1f",
         input_size=(320, 320),
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
+        checksum_md5="c09ddc2e0104f800e3e1bb4652583d1f",
     ),
     "isnet-anime": ModelSpec(
         key="isnet-anime",
-        url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-anime.onnx",
-        checksum_md5="6f184e756bb3bd901c8849220a83e38e",
         input_size=(1024, 1024),
         mean=(0.485, 0.456, 0.406),
         std=(1.0, 1.0, 1.0),
+        checksum_md5="6f184e756bb3bd901c8849220a83e38e",
+        url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-anime.onnx",
+    ),
+    "briaai/RMBG-2.0": ModelSpec(
+        key="briaai/RMBG-2.0",
+        input_size=(1024, 1024),
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+        huggingface_repo="briaai/RMBG-2.0",
+        huggingface_filename="RMBG-2.0.onnx",
+    ),
+    "matting-by-generation": ModelSpec(
+        key="matting-by-generation",
+        input_size=(1024, 1024),
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        huggingface_repo="risenW/matting-by-generation",
+        huggingface_filename="matting.onnx",
+    ),
+    "sam_segmentation_model": ModelSpec(
+        key="sam_segmentation_model",
+        input_size=(1024, 1024),
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        huggingface_repo="vitmat/sam-segmentation-model",
+        huggingface_filename="model.onnx",
     ),
 }
 
@@ -275,16 +303,122 @@ def _compute_mask(array: np.ndarray, original_size: tuple[int, int]) -> Image.Im
     return image
 
 
-def _verify_md5(path: Path, expected: str) -> bool:
-    """Return ``True`` when the file at ``path`` matches ``expected``."""
+def _verify_md5(path: Path, expected: str | None) -> bool:
+    """Return ``True`` when the file at ``path`` matches ``expected``.
+
+    When ``expected`` is ``None`` or empty the check is reduced to
+    verifying the file exists. Some community hosted models do not
+    publish checksums, so we prefer opportunistic validation rather than
+    blocking the download entirely.
+    """
 
     if not path.exists():
         return False
+    if not expected:
+        return True
     checksum = hashlib.md5()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             checksum.update(chunk)
     return checksum.hexdigest() == expected.lower()
+
+
+def _read_token_file(path: Path) -> str | None:
+    """Return the first non-empty line from ``path`` when present."""
+
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    lines = [line.strip() for line in contents.splitlines() if line.strip()]
+    if not lines:
+        return None
+    return lines[0]
+
+
+def _resolve_huggingface_token() -> str | None:
+    """Return an authentication token for Hugging Face downloads when available."""
+
+    for variable in ("HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"):
+        token = os.environ.get(variable)
+        if token:
+            cleaned = token.strip()
+            if cleaned:
+                return cleaned
+
+    home = Path.home()
+    candidate_paths = (
+        home / ".huggingface" / "token",
+        home / ".cache" / "huggingface" / "token",
+    )
+    for token_path in candidate_paths:
+        token = _read_token_file(token_path)
+        if token:
+            return token
+    return None
+
+
+def _download_model_from_url(spec: ModelSpec, destination: Path) -> Path:
+    """Download ``spec`` using a direct HTTP request."""
+
+    if not spec.url:
+        raise ValueError(f"No download URL configured for model {spec.key}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; br-remover/1.0; +https://github.com/your-org/br-remover)",
+        "Accept": "application/octet-stream",
+    }
+    return _download_model_via_http(spec, spec.url, destination, headers)
+
+
+def _download_model_from_huggingface(spec: ModelSpec, destination: Path) -> Path:
+    """Download ``spec`` from the Hugging Face Hub."""
+
+    if not spec.huggingface_repo or not spec.huggingface_filename:
+        raise ValueError(f"Incomplete Hugging Face configuration for model {spec.key}")
+    revision = spec.huggingface_revision or "main"
+    url = (
+        "https://huggingface.co/"
+        f"{spec.huggingface_repo}/resolve/{revision}/{spec.huggingface_filename}"
+        "?download=1"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; br-remover/1.0; +https://github.com/your-org/br-remover)",
+        "Accept": "application/octet-stream",
+    }
+    token = _resolve_huggingface_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        return _download_model_via_http(spec, url, destination, headers)
+    except RuntimeError as error:
+        if "HTTP Error 401" in str(error):
+            raise RuntimeError(
+                f"Failed to download {spec.key} from Hugging Face: authentication is required. "
+                "Provide a token via the HUGGINGFACEHUB_API_TOKEN or HF_API_TOKEN environment variables."
+            ) from error
+        raise
+
+
+def _download_model_via_http(
+    spec: ModelSpec, url: str, destination: Path, headers: Mapping[str, str]
+) -> Path:
+    """Download ``spec`` from ``url`` into ``destination`` using ``headers``."""
+
+    tmp_path = destination.with_suffix(".tmp")
+    request = urllib.request.Request(url, headers=dict(headers))
+    try:
+        with contextlib.ExitStack() as stack:
+            response = stack.enter_context(urllib.request.urlopen(request))
+            with stack.enter_context(tmp_path.open("wb")) as buffer:
+                shutil.copyfileobj(response, buffer)
+    except urllib.error.HTTPError as error:
+        tmp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Failed to download {spec.key} from {url}: {error}") from error
+    if not _verify_md5(tmp_path, spec.checksum_md5):
+        tmp_path.unlink(missing_ok=True)
+        raise ValueError(f"Checksum mismatch for model {spec.key}")
+    tmp_path.replace(destination)
+    return destination
 
 
 def _download_model(spec: ModelSpec) -> Path:
@@ -294,19 +428,15 @@ def _download_model(spec: ModelSpec) -> Path:
     if _verify_md5(destination, spec.checksum_md5):
         LOGGER.debug("Model %s already present at %s", spec.key, destination)
         return destination
-    LOGGER.info("Fetching model %s from %s", spec.key, spec.url)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with contextlib.ExitStack() as stack:
-        response = stack.enter_context(urllib.request.urlopen(spec.url))
-        tmp_path = destination.with_suffix(".tmp")
-        with stack.enter_context(tmp_path.open("wb")) as buffer:
-            shutil.copyfileobj(response, buffer)
-    if not _verify_md5(tmp_path, spec.checksum_md5):
-        tmp_path.unlink(missing_ok=True)
-        raise ValueError(f"Checksum mismatch for model {spec.key}")
-    tmp_path.replace(destination)
-    LOGGER.info("Model %s stored at %s", spec.key, destination)
-    return destination
+    if spec.huggingface_repo and spec.huggingface_filename:
+        LOGGER.info("Fetching model %s from Hugging Face repo %s", spec.key, spec.huggingface_repo)
+        path = _download_model_from_huggingface(spec, destination)
+    else:
+        LOGGER.info("Fetching model %s from %s", spec.key, spec.url)
+        path = _download_model_from_url(spec, destination)
+    LOGGER.info("Model %s stored at %s", spec.key, path)
+    return path
 
 
 class BackgroundRemovalSession:

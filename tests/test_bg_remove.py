@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -274,6 +275,105 @@ def test_remove_bg_folder_parallel_propagates_errors(
     assert "boom" in failure_result.error
     assert failure_result.path_out is None
 
+
+@pytest.mark.parametrize(
+    ("file_count", "cpu_count", "expected_workers"),
+    ((1, 4, 1), (6, 4, 4)),
+)
+def test_remove_bg_folder_scales_thread_pool(
+    file_count: int, cpu_count: int, expected_workers: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify ``remove_bg_folder`` tailors the thread pool to workload and CPU capacity."""
+
+    source_dir = tmp_path / "input"
+    source_dir.mkdir()
+    output_dir = tmp_path / "output"
+
+    for index in range(file_count):
+        path = source_dir / f"image_{index}.png"
+        Image.new("RGBA", (2, 2), color=(index, index, index, 255)).save(path, "PNG")
+
+    monkeypatch.setattr(bg_remove.os, "cpu_count", lambda: cpu_count)
+    monkeypatch.setattr(bg_remove, "ensure_global_session", lambda model_name=bg_remove.DEFAULT_MODEL_NAME: object())
+
+    format_spec = bg_remove.get_output_format_spec("png")
+
+    def fake_remove_bg_file(source: Path, destination: Path, **_: object) -> bg_remove.RemovalResult:
+        return bg_remove.RemovalResult(
+            image=None,
+            format_spec=format_spec,
+            elapsed_ms=0.0,
+            path_in=source,
+            path_out=destination,
+        )
+
+    monkeypatch.setattr(bg_remove, "remove_bg_file", fake_remove_bg_file)
+
+    captured_workers: dict[str, int | None] = {"value": None}
+
+    class ImmediateFuture:
+        """Simple future implementation executing work synchronously for test assertions."""
+
+        def __init__(self, func: Callable[..., bg_remove.RemovalResult], *args: object, **kwargs: object) -> None:
+            try:
+                self._result = func(*args, **kwargs)
+                self._exception: Exception | None = None
+            except Exception as exc:  # pragma: no cover - defensive path
+                self._result = None
+                self._exception = exc
+
+        def result(self) -> bg_remove.RemovalResult:
+            if self._exception is not None:
+                raise self._exception
+            return self._result
+
+    class DummyExecutor:
+        """Test double mirroring :class:`ThreadPoolExecutor` initialisation semantics."""
+
+        def __init__(self, *_, max_workers: int | None = None, **__: object) -> None:
+            captured_workers["value"] = max_workers
+
+        def __enter__(self) -> DummyExecutor:
+            return self
+
+        def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object | None) -> bool:
+            return False
+
+        def submit(
+            self,
+            func: Callable[..., bg_remove.RemovalResult],
+            *args: object,
+            **kwargs: object,
+        ) -> ImmediateFuture:
+            return ImmediateFuture(func, *args, **kwargs)
+
+    monkeypatch.setattr(bg_remove, "ThreadPoolExecutor", DummyExecutor)
+
+    results = bg_remove.remove_bg_folder(source_dir, output_dir)
+
+    assert captured_workers["value"] == expected_workers
+    assert len(results) == file_count
+
+
+def test_remove_bg_folder_avoids_thread_pool_for_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure no executor is constructed when there are no images to process."""
+
+    source_dir = tmp_path / "input"
+    source_dir.mkdir()
+
+    monkeypatch.setattr(bg_remove, "ensure_global_session", lambda model_name=bg_remove.DEFAULT_MODEL_NAME: object())
+
+    class FailingExecutor:
+        def __init__(self, *args: object, **kwargs: object) -> None:  # pragma: no cover - safeguard
+            raise AssertionError("Executor should not be created for empty workloads")
+
+    monkeypatch.setattr(bg_remove, "ThreadPoolExecutor", FailingExecutor)
+
+    results = bg_remove.remove_bg_folder(source_dir, tmp_path / "output")
+
+    assert results == []
 
 def test_download_model_from_huggingface(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Ensure Hugging Face hosted models download through the hub helper."""

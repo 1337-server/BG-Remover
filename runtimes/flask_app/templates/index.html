@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Background Remover{% endblock %}
+{% block content %}
+  <div class="card shadow-sm mb-4">
+    <div class="card-body d-flex justify-content-between align-items-center">
+      <div>
+        <h1 class="h4 mb-1">Remove backgrounds with a single click</h1>
+        <p class="text-muted mb-0">Upload an image, choose a model, and download a transparent result.</p>
+      </div>
+      <div class="text-end">
+        <span class="badge-pill {{ 'bg-success text-white' if badge_label == 'GPU' else 'bg-secondary text-white' }}" data-bs-toggle="tooltip" data-bs-placement="left" title="{{ providers | join(', ') }} providers available">
+          {{ badge_label }}
+        </span>
+        <div class="small text-muted">Models cached in {{ model_dir }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form method="post" enctype="multipart/form-data" class="row g-3">
+        <div class="col-12">
+          <label for="image" class="form-label">Image file</label>
+          <input
+            class="form-control"
+            type="file"
+            id="image"
+            name="image"
+            accept="image/png,image/jpeg,image/webp"
+            required
+            data-bs-toggle="tooltip"
+            data-bs-placement="top"
+            title="Select a PNG, JPG, or WebP image. The result will be delivered as a transparent PNG."
+          />
+        </div>
+
+        <div class="col-md-6">
+          <label for="model" class="form-label">Model</label>
+          <select
+            class="form-select"
+            id="model"
+            name="model_key"
+            data-bs-toggle="tooltip"
+            data-bs-placement="top"
+            title="Choose a model optimised for general scenes, portraits, or illustrations."
+          >
+            {% for key in model_options %}
+              <option value="{{ key }}" {% if key == form.model_key %}selected{% endif %}>{{ key }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-md-6">
+          <label for="feather" class="form-label">Edge feather radius</label>
+          <input
+            type="number"
+            min="0"
+            max="50"
+            step="1"
+            class="form-control"
+            id="feather"
+            name="feather_radius"
+            value="{{ form.feather_radius }}"
+            data-bs-toggle="tooltip"
+            data-bs-placement="top"
+            title="Increase for softer edges, decrease for sharper cut-outs."
+          />
+          <div class="form-text">Range: 0 (sharp) – 50 (soft).</div>
+        </div>
+
+        <div class="col-12">
+          <label for="model_dir" class="form-label">Model directory</label>
+          <input
+            type="text"
+            class="form-control"
+            id="model_dir"
+            name="model_dir"
+            value="{{ form.model_dir }}"
+            data-bs-toggle="tooltip"
+            data-bs-placement="top"
+            title="Override where ONNX models are stored. Useful for shared caches or network volumes."
+          />
+        </div>
+
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary">Remove background</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.forEach((tooltipTriggerEl) => {
+      new bootstrap.Tooltip(tooltipTriggerEl);
+    });
+  </script>
+{% endblock %}

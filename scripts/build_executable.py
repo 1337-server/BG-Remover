@@ -1,4 +1,4 @@
-"""Helpers for producing a standalone executable for the background remover UI (optimized for multi-core builds)."""
+"""Helpers for producing a standalone background remover executable."""
 from __future__ import annotations
 
 import argparse
@@ -26,8 +26,8 @@ def _build_pyinstaller_command(
     """Return the PyInstaller command for bundling ``entry_point`` with optimized settings."""
 
     add_data_sep = ";" if os.name == "nt" else ":"
-    templates_dir = PROJECT_ROOT / "templates"
-    static_dir = PROJECT_ROOT / "static"
+    templates_dir = PROJECT_ROOT / "runtimes" / "flask_app" / "templates"
+    static_dir = PROJECT_ROOT / "runtimes" / "flask_app" / "static"
 
     command = [
         sys.executable,
@@ -126,7 +126,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--entry-point",
-        default=str(PROJECT_ROOT / "app.py"),
+        default=str(PROJECT_ROOT / "runtimes" / "gui" / "bg_remover_gui.py"),
         help="Path to the Python entry point to bundle.",
     )
     parser.add_argument(

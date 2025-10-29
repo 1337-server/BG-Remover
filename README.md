@@ -1,221 +1,123 @@
-## 🖼️ Background Remover (U²-Net ONNX)
+# Background Remover
 
-This project combines a rich command-line tool and a small Flask UI to remove image backgrounds using
-direct ONNX Runtime sessions powered by the U²-Net family of models. It can clean up single images,
-entire folders, or uploaded files, and exports in multiple formats (PNG, WebP, JPEG) with transparency
-preserved whenever the format allows it.
+Unified tooling for removing image backgrounds with ONNX Runtime. The project now separates a framework-agnostic core from dedicated runtimes so the CLI, Flask app, and ttkbootstrap GUI can share the same pipeline, configuration, and logging logic.
 
----
+## Repository layout
 
-### 🚀 Features
-
-* ✅ **ONNX Runtime-powered masks** with optional alpha matting for detailed hair and fur handling.
-* ✅ **Solid background fallback** (colour-key) plus configurable feathering when OpenCV is available.
-* ✅ **Single-image CLI** and **folder batch mode** that respect EXIF orientation and reuse one model session.
-* ✅ **Flexible exports** with selectable PNG, WebP, or JPEG output (alpha preserved when supported).
-* ✅ **Multiple removal models** covering general scenes, portraits, products, and anime-style artwork.
-* ✅ **Web interface** built with Flask featuring upload + server-folder workflows, ZIP downloads, previews, and guided help.
-* ✅ **Desktop GUI** powered by ttkbootstrap with single-image and cancellable folder batch processing.
-* ✅ Runs entirely on CPU, auto-orients input files, limits oversized images to keep RAM usage stable, and caches downloaded weights.
-
-### 🎯 Model catalogue
-
-The application automatically fetches the required ONNX weights when they are
-first used. General-purpose defaults rely on the IS-Net family, while the
-advanced options now point to actively maintained BRIA releases to avoid the
-previous 404 errors:
-
-| UI option | Model key | Source |
-|-----------|-----------|--------|
-| General | `isnet-general-use` | GitHub release (danielgatis/rembg) |
-| High-quality General | `briaai/RMBG-2.0` | Hugging Face (`briaai/RMBG-2.0`) |
-| Portrait Matting | `matting-by-generation` | Hugging Face (`briaai/BRIA-RMBG-1.4`) |
-| Complex Scene | `sam_segmentation_model` | Hugging Face (`briaai/RMBG-2.0`) |
-| Human | `u2net_human_seg` | GitHub release (danielgatis/rembg) |
-| Object | `u2net` | GitHub release (danielgatis/rembg) |
-| Anime | `isnet-anime` | GitHub release (danielgatis/rembg) |
-
----
-
-### 📦 Installation
-
-1. Clone this repository.
-2. Create and activate a virtual environment (PowerShell shown below):
-
-   ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\activate
-   ```
-
-   > Tip: run `scripts\clean_venv.ps1` to recreate the environment from scratch.
-
-3. Install the pinned dependency set (CPU-only ONNX Runtime build):
-
-   ```powershell
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-
-The first run of either the CLI or web service initialises a single ONNX Runtime session and caches the
-U²-Net / ISNet weights automatically in `~/.u2net`.
-
----
-
-### 🚦 Quick start
-
-The commands below assume Windows PowerShell, but the same steps work on other platforms with minor
-syntax tweaks.
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install --upgrade pip
-pip install -r requirements.txt
-python app.py
+```
+.
+├── bgremover_core/
+│   ├── config.py
+│   ├── io/
+│   ├── models/
+│   └── processing/
+├── runtimes/
+│   ├── cli/
+│   ├── flask_app/
+│   └── gui/
+├── scripts/
+├── tests/
+├── Dockerfile
+├── requirements.txt
+└── README.md
 ```
 
-Troubleshooting tips:
+The `bgremover_core` package exposes the shared pipeline (`processing.pipeline.remove_background`), filesystem helpers, model specifications, and configuration helpers. Each runtime imports exclusively from this core layer.
 
-* Delete stale virtual environments with `scripts\clean_venv.ps1` when upgrading dependencies.
+## Quickstart
 
----
+### Prerequisites
 
-### 🧠 Command-line usage
+* Python 3.12+
+* `pip install -r requirements.txt`
+* Optional GPU acceleration requires `onnxruntime-gpu` and NVIDIA drivers.
 
-Run the CLI with:
+### CLI
 
-```bash
-python main.py --input path/to/image_or_folder --output optional/output/dir \
-  --model human --format webp --alpha-matting --am-foreground 240 --am-background 10 \
-  --am-erode 10 --colorkey-tolerance 14 --feather-radius 3 --recursive
+```
+python -m runtimes.cli.bgr_cli remove --input path/to/image.png --output result.png
 ```
 
-Key behaviour:
+Batch mode processes an entire folder and prints a summary table:
 
-* Passing a **file** writes to `./output/<name>.<format>` (or to `--output` if given).
-* Passing a **folder** produces results under `./output` (or the directory from `--output`).
-* Use `--alpha-matting` + thresholds for tricky edges, `--model` to pick between general, human,
-  object, or anime-focused weights, `--no-colorkey-fallback` to disable the solid-colour helper, and
-  `--recursive` to process nested folders.
-* Specify `--format [png|webp|jpg]` to control the export type; unsupported values raise a clear
-  validation error.
-
----
-
-### 🌐 Flask web interface
-
-Start the web UI once the dependencies are installed:
-
-```bash
-python app.py
-# or
-python -m app
+```
+python -m runtimes.cli.bgr_cli remove --input ./photos --batch
 ```
 
-Both entry points run the standard Flask development server on `0.0.0.0:5000`. The
-interface processes each upload end-to-end and returns the final result once the
-background removal is complete—no streaming or WebSocket connection is required.
+Key options:
 
-Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
+* `--model <key>` – one of `isnet-general-use`, `u2net`, `u2net_human_seg`, `isnet-anime`, `briaai/RMBG-2.0`, `matting-by-generation`, `sam_segmentation_model`.
+* `--provider cuda|cpu|directml` – hint the preferred execution provider; defaults to automatic detection favouring CUDA.
+* `--model-dir <path>` – override the ONNX model cache (persists when `--persist-config` is supplied).
+* `--feather-radius` – control post-processing softness (0–50 px).
 
-* **Single Image** tab – upload an image, receive the processed file once complete, request alternate
-  formats, or fetch JSON payloads. Preview size, feathering, and destination directory can be tuned
-  before submitting.
-* **Folder Processing** tab – supply a server-side folder, optional output directory, recursive mode,
-  alpha-matting settings, ZIP bundle downloads, and preview-size controls. Processed batches can be
-  fetched as individual files or as an on-demand ZIP archive.
+Exit status is `0` when every image succeeds and non-zero otherwise.
 
-The Flask app initialises a single ONNX Runtime session on startup so repeated requests remain fast. The
-UI header displays the active CPU execution provider so you can confirm the model is ready before
-processing uploads.
+### Flask web app
 
----
-
-### 🪟 Desktop GUI
-
-Launch the ttkbootstrap-based desktop client to work with local files:
-
-```bash
-python bg_remover_gui.py
+```
+python -m runtimes.flask_app.app
 ```
 
-Key capabilities:
+The app factory exposes `create_app()` for WSGI or Gunicorn deployments. The landing page offers tooltips for each option, a GPU/CPU badge that lists the active providers, and a model directory override field that applies only to the current session.
 
-* **Single-image mode** (default) – choose an image file, preview the foreground mask, and export the
-  processed result without blocking the interface.
-* **Folder mode** – point the app at a directory and it will enumerate supported images (PNG, JPG,
-  WebP, and more), display the file count, and process them in a background thread with a live
-  progress bar, ETA, and log console.
-* **Safe exports** – each batch is written to an `output/` subfolder inside the chosen directory to
-  preserve the original assets. Existing files can be skipped automatically.
-* **Cancellable runs** – stop an in-progress folder job with the *Cancel Batch* button; the UI remains
-  responsive while work continues in the background thread.
+### GUI
 
-Toggle *Folder Batch* mode via the radio buttons to reveal the folder workflow controls. While a batch
-is running the file picker is disabled, the current image name and thumbnail are shown, and progress
-updates are appended to the footer console. All advanced options (model selection, alpha matting,
-colour-key fallback, etc.) mirror those exposed in the Flask UI.
-
-> **Tip:** The first time you launch the GUI it downloads the selected model weights to
-> `~/.u2net`. Future runs reuse the cached files so processing starts immediately.
-
-#### Packaging the desktop app
-
-Bundle the Tkinter interface with the optimized helper script in `scripts/build_executable.py`:
-
-```bash
-python scripts/build_executable.py --entry-point bg_remover_gui.py --name BackgroundRemoverGUI
+```
+python -m runtimes.gui.bg_remover_gui
 ```
 
-The wrapper enables PyInstaller's multi-core build mode, automatically includes the `static/` and
-`templates/` assets, and compresses the output with UPX when the packer is installed. Pass
-`--onefile` to create a single-binary build or `--clean` to discard existing `build/` and `dist/`
-artifacts before compiling; use `--no-upx` if antivirus software objects to the compressed output.
+The GUI mirrors the CLI options with single-image and batch tabs. It shows a coloured pill indicating GPU or CPU execution providers, allows selecting and persisting a custom model directory, and logs status lines for each processed file (failures render in red and trigger a message box).
 
-The GUI now wraps its startup sequence in a safe handler that logs uncaught exceptions to
-`error.log` beside the script or bundled executable. If a packaged run fails you will also see a
-message box pointing to that log file for the full traceback.
+Batch mode defaults to an `output` sibling next to the input directory when no destination is selected.
 
----
+## Configuration & environment variables
 
-### 🧪 Tests
+`bgremover_core.config.load_config()` merges persisted settings with environment variables:
 
-The suite includes service-level regression tests. Run them with:
+* `MODEL_DIR` – custom cache directory for ONNX models (default: `~/.cache/bg-remover/models`).
+* `BGR_DEFAULT_MODEL` – fallback model key when none is supplied.
+* `BGR_PROVIDER_HINTS` – comma-separated provider hints (e.g. `CUDAExecutionProvider,CPUExecutionProvider`).
+* `BGR_LOGLEVEL` – root log level (`INFO`, `DEBUG`, etc.).
 
-```bash
-pytest
+`persist_config()` writes settings to `~/.bgremover.json`. The GUI provides a “Save” action, while the CLI exposes `--persist-config`.
+
+## Model catalogue
+
+| Model key | Input size | Notes |
+|-----------|------------|-------|
+| `isnet-general-use` | 1024×1024 | General purpose |
+| `u2net_human_seg` | 320×320 | Portrait focused |
+| `u2net` | 320×320 | Object isolation |
+| `isnet-anime` | 1024×1024 | Illustration/anime |
+| `briaai/RMBG-2.0` | 1024×1024 | High-quality general scenes |
+| `matting-by-generation` | 1024×1024 | Portrait matting variant |
+| `sam_segmentation_model` | 1024×1024 | Alias of BRIA 2.0 |
+| `sam_vit_b_01ec64_encoder` / `decoder` | 1024×1024 | Segment Anything weights |
+
+Weights download automatically on first use. Hugging Face downloads honour `HUGGINGFACEHUB_API_TOKEN` or `HF_API_TOKEN` when private repos are required.
+
+## Logging
+
+`init_logging()` configures structured console logging and writes `error.log` in the current working directory (or alongside the packaged executable). GUI status entries mirror these logs and colourise failures.
+
+## Migration guide
+
+* Old modules such as `bg_removal.py`, `main.py`, and `app.py` have been replaced by the `bgremover_core` package and the runtime-specific entry points under `runtimes/`.
+* CLI invocation is now `python -m runtimes.cli.bgr_cli remove ...`.
+* Flask app factory lives at `runtimes.flask_app.app:create_app`.
+* GUI entry point is `python -m runtimes.gui.bg_remover_gui`.
+
+## Testing
+
+Run the consolidated test suite with:
+
+```
+pytest -q
 ```
 
-Static analysis helpers are included:
+The new tests cover provider detection, session creation, pipeline happy/error paths, CLI exit codes, Flask routes, and GUI helper logic.
 
-```bash
-ruff check .
-mypy app.py bg_removal.py main.py
-python -m compileall main.py app.py bg_removal.py tests
-```
+## Docker
 
----
-
-### 📦 Deployment and executable builds
-
-Need a zero-dependency distribution for end users? Follow the
-[deployment guide](DEPLOYMENT.md) to package the Flask UI into a standalone executable with
-PyInstaller. The walkthrough covers environment setup, the new `scripts/build_executable.py` helper,
-and validation steps to make sure the bundled app serves the UI correctly.
-
----
-
-### 📂 Project layout
-
-* `app.py` – Flask application, routes, and dev-server entry point.
-* `bg_removal.py` – ONNX Runtime session management plus background removal helpers.
-* `main.py` – CLI entry point for batch processing.
-* `templates/` – Base template + background removal form.
-* `tests/` – Pytest-based regression tests for the service utilities.
-
----
-
-### 🧰 Credits
-
-* **Model:** [U²-Net – Qin et al., Pattern Recognition 2020](https://github.com/xuebinqin/U-2-Net)
-* **Background removal engine:** [U²-Net – Qin et al., Pattern Recognition 2020](https://github.com/xuebinqin/U-2-Net)
+See `deployment.md` for runtime-specific build arguments, compose examples, and GPU notes.

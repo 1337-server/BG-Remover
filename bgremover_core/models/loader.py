@@ -290,12 +290,12 @@ def _download_model(
     """Ensure ``spec`` exists under ``model_dir`` and return the path."""
 
     destination = model_dir / _build_model_filename(spec)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     if _verify_md5(destination, spec.checksum_md5):
         _update_download_status(model_dir, spec.key, state=DOWNLOAD_AVAILABLE, path=destination)
         return destination
 
     model_dir.mkdir(parents=True, exist_ok=True)
-    destination.parent.mkdir(parents=True, exist_ok=True)
 
     attempts = 0
     while attempts < max_attempts:

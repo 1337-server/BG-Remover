@@ -12,6 +12,17 @@ from PIL import Image
 import bg_removal as bg_remove
 
 
+def _use_temporary_models_dir(
+    monkeypatch: pytest.MonkeyPatch, directory: Path
+) -> Path:
+    """Point the model cache to ``directory`` for the duration of a test."""
+
+    original_dir = bg_remove.get_models_directory()
+    bg_remove.set_models_directory(directory)
+    monkeypatch.addfinalizer(lambda: bg_remove.set_models_directory(original_dir))
+    return directory
+
+
 @pytest.fixture()
 def large_rgba_image(tmp_path: Path) -> Path:
     """Return a sizeable RGBA image saved to disk for streaming tests."""
@@ -324,7 +335,11 @@ def test_remove_bg_folder_scales_thread_pool(
         Image.new("RGBA", (2, 2), color=(index, index, index, 255)).save(path, "PNG")
 
     monkeypatch.setattr(bg_remove.os, "cpu_count", lambda: cpu_count)
-    monkeypatch.setattr(bg_remove, "ensure_global_session", lambda model_name=bg_remove.DEFAULT_MODEL_NAME: object())
+    monkeypatch.setattr(
+        bg_remove,
+        "ensure_global_session",
+        lambda model_name=bg_remove.DEFAULT_MODEL_NAME: object(),
+    )
 
     format_spec = bg_remove.get_output_format_spec("png")
 
@@ -344,7 +359,12 @@ def test_remove_bg_folder_scales_thread_pool(
     class ImmediateFuture:
         """Simple future implementation executing work synchronously for test assertions."""
 
-        def __init__(self, func: Callable[..., bg_remove.RemovalResult], *args: object, **kwargs: object) -> None:
+        def __init__(
+            self,
+            func: Callable[..., bg_remove.RemovalResult],
+            *args: object,
+            **kwargs: object,
+        ) -> None:
             try:
                 self._result = func(*args, **kwargs)
                 self._exception: Exception | None = None
@@ -366,7 +386,12 @@ def test_remove_bg_folder_scales_thread_pool(
         def __enter__(self) -> DummyExecutor:
             return self
 
-        def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object | None) -> bool:
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: object | None,
+        ) -> bool:
             return False
 
         def submit(
@@ -393,7 +418,11 @@ def test_remove_bg_folder_avoids_thread_pool_for_empty_directory(
     source_dir = tmp_path / "input"
     source_dir.mkdir()
 
-    monkeypatch.setattr(bg_remove, "ensure_global_session", lambda model_name=bg_remove.DEFAULT_MODEL_NAME: object())
+    monkeypatch.setattr(
+        bg_remove,
+        "ensure_global_session",
+        lambda model_name=bg_remove.DEFAULT_MODEL_NAME: object(),
+    )
 
     class FailingExecutor:
         def __init__(self, *args: object, **kwargs: object) -> None:  # pragma: no cover - safeguard
@@ -409,7 +438,7 @@ def test_download_model_from_huggingface(monkeypatch: pytest.MonkeyPatch, tmp_pa
     """Ensure Hugging Face hosted models download through the hub helper."""
 
     spec = bg_remove.MODEL_SPECS["matting-by-generation"]
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
 
     assert spec.huggingface_filename is not None
 
@@ -433,7 +462,7 @@ def test_download_model_from_huggingface_uses_token(monkeypatch: pytest.MonkeyPa
     """Attach Hugging Face tokens from the environment when provided."""
 
     spec = bg_remove.MODEL_SPECS["sam_segmentation_model"]
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
     monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "secret")
 
     captured_headers: dict[str, str] = {}
@@ -458,7 +487,7 @@ def test_download_model_from_huggingface_reports_auth_issue(
     """Surface a helpful message when Hugging Face access is denied."""
 
     spec = bg_remove.MODEL_SPECS["briaai/RMBG-2.0"]
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
 
     def fake_download(
         spec_arg: bg_remove.ModelSpec, url: str, destination: Path, headers: dict[str, str]
@@ -507,8 +536,7 @@ def test_ensure_models_downloaded_defers_until_requested(
 ) -> None:
     """Ensure downloads are not triggered until a session requests a model."""
 
-    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
 
     def raise_prefetch(spec: bg_remove.ModelSpec) -> None:
         raise AssertionError("Prefetch should not run during deferral test")
@@ -535,8 +563,7 @@ def test_ensure_models_downloaded_prefetches_requested_models(
 ) -> None:
     """Schedule background downloads for explicitly requested models."""
 
-    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
 
     scheduled: list[str] = []
 
@@ -565,8 +592,7 @@ def test_download_model_retries_transient_failure(
         checksum_md5=None,
     )
 
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
-    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(bg_remove, "_verify_md5", lambda path, checksum: path.exists())
 
     attempts: list[int] = []
@@ -610,8 +636,7 @@ def test_download_model_records_failure_after_retries(
         checksum_md5=None,
     )
 
-    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
-    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
+    _use_temporary_models_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(bg_remove, "_verify_md5", lambda path, checksum: False)
     monkeypatch.setattr(bg_remove.time, "sleep", lambda value: None)
 

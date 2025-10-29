@@ -70,9 +70,32 @@ class ModelDownloadError(RuntimeError):
 
 
 DEFAULT_MODEL_NAME = "isnet-general-use"
-MODELS_DIRECTORY = Path(__file__).resolve().parent / "models"
-MODEL_DOWNLOAD_ROOT = MODELS_DIRECTORY
-MODEL_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+MODELS_DIRECTORY = Path("./models")
+
+
+def get_models_directory() -> Path:
+    """Return the directory used to cache downloaded ONNX models."""
+
+    return MODELS_DIRECTORY
+
+
+def set_models_directory(path: Path | str) -> Path:
+    """Update the model cache directory and return the resolved path."""
+
+    global MODELS_DIRECTORY
+    resolved = Path(path).expanduser()
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        raise RuntimeError(f"Unable to prepare models directory {resolved}: {exc}") from exc
+
+    if resolved != MODELS_DIRECTORY:
+        MODELS_DIRECTORY = resolved
+        with _DOWNLOAD_STATUS_LOCK:
+            _DOWNLOAD_STATUSES.clear()
+        _PREFETCH_THREADS.clear()
+        reset_session_cache()
+    return MODELS_DIRECTORY
 
 
 class DownloadState(Enum):
@@ -468,7 +491,8 @@ def _schedule_prefetch(spec: ModelSpec) -> None:
     """Start a background thread to download ``spec`` when not already cached."""
 
     filename = _build_model_filename(spec)
-    destination = MODEL_DOWNLOAD_ROOT / filename
+    models_dir = get_models_directory()
+    destination = models_dir / filename
     existing = get_download_statuses().get(spec.key)
     if existing and existing.state is DownloadState.AVAILABLE:
         return
@@ -492,7 +516,8 @@ def _schedule_prefetch(spec: ModelSpec) -> None:
 def ensure_models_downloaded(prefetch: bool | Iterable[str] = True) -> dict[str, DownloadStatus]:
     """Ensure the models directory exists and optionally prefetch weights."""
 
-    MODELS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    models_dir = get_models_directory()
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     if isinstance(prefetch, bool):
         prefetch_keys = {DEFAULT_MODEL_NAME} if prefetch else set()
@@ -506,8 +531,7 @@ def ensure_models_downloaded(prefetch: bool | Iterable[str] = True) -> dict[str,
     statuses: dict[str, DownloadStatus] = {}
     for spec in MODEL_SPECS.values():
         filename = _build_model_filename(spec)
-        destination = MODEL_DOWNLOAD_ROOT / filename
-        relative_destination = Path("models") / filename
+        destination = models_dir / filename
         if _verify_md5(destination, spec.checksum_md5):
             status = _update_download_status(
                 spec.key,
@@ -515,7 +539,12 @@ def ensure_models_downloaded(prefetch: bool | Iterable[str] = True) -> dict[str,
                 path=destination,
                 error=None,
             )
-            print(f"[✓] {spec.key} available at ./{relative_destination.as_posix()}")
+            try:
+                relative_path = destination.relative_to(Path.cwd())
+                display_path = f"./{relative_path.as_posix()}"
+            except ValueError:
+                display_path = str(destination.resolve())
+            print(f"[✓] {spec.key} available at {display_path}")
         else:
             status = _update_download_status(
                 spec.key,
@@ -666,7 +695,8 @@ def _download_model(
 ) -> Path:
     """Download the ONNX model defined by ``spec`` when needed."""
 
-    destination = MODEL_DOWNLOAD_ROOT / _build_model_filename(spec)
+    models_dir = get_models_directory()
+    destination = models_dir / _build_model_filename(spec)
     if _verify_md5(destination, spec.checksum_md5):
         LOGGER.debug("Model %s already present at %s", spec.key, destination)
         _update_download_status(spec.key, state=DownloadState.AVAILABLE, path=destination, error=None)
@@ -917,6 +947,17 @@ def get_session_context() -> SessionContext | None:
     """Return the cached global session context, if initialised."""
 
     return _GLOBAL_SESSION
+
+
+def reset_session_cache() -> None:
+    """Clear cached ONNX Runtime sessions."""
+
+    global _GLOBAL_SESSION
+    with _SESSION_CACHE_LOCK:
+        _SESSION_CACHE.clear()
+    with _GLOBAL_SESSION_LOCK:
+        _GLOBAL_SESSION = None
+    _load_session.cache_clear()
 
 
 def get_output_format_spec(value: str | None) -> OutputFormat:

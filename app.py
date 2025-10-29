@@ -406,20 +406,25 @@ def remove_background_view() -> ResponseReturnValue:
 
     persistent_output_dir: Path | None = None
     single_output_dir_text = _get_stripped(form_data.get("single_output_dir"))
-    output_base = temp_dir / input_path.stem
+    temp_output_base = temp_dir / input_path.stem
     if single_output_dir_text:
         candidate = Path(single_output_dir_text).expanduser()
         if not candidate.is_absolute():
             candidate = Path.cwd() / candidate
         persistent_output_dir = candidate
-        output_base = candidate / input_path.stem
-
+    output_base = (
+        persistent_output_dir / input_path.stem
+        if persistent_output_dir is not None
+        else temp_output_base
+    )
     output_path = format_spec.normalise_filename(output_base)
     download_name = f"{input_path.stem}_no_bg{format_spec.extension}"
 
+    save_to_disk = not json_requested or persistent_output_dir is not None
+
     result = remove_bg_file(
         input_path,
-        output_path,
+        output_path if save_to_disk else None,
         output_format=format_spec.key,
         model_name=model_name,
         alpha_matting=options["alpha_matting"],
@@ -429,6 +434,7 @@ def remove_background_view() -> ResponseReturnValue:
         colorkey_tolerance=options["colorkey_tolerance"],
         feather_radius=options["feather_radius"],
         retain_image=True,
+        save_to_disk=save_to_disk,
     )
 
     if not result.success:

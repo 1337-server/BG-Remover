@@ -17,6 +17,56 @@ def _make_image_bytes(color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> by
     return buffer.getvalue()
 
 
+@pytest.mark.parametrize(
+    ("color", "expected"),
+    (
+        (
+            (255, 255, 255),
+            tuple((1.0 - mean) / std for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))),
+        ),
+        (
+            (10, 10, 10),
+            tuple(
+                ((10 / 255.0) - mean) / std
+                for mean, std in zip((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ),
+        ),
+    ),
+)
+def test_normalise_image_uses_fixed_scale(color: tuple[int, int, int], expected: tuple[float, ...]) -> None:
+    """Verify that normalisation divides by the configured scale for bright and dark inputs."""
+
+    spec = bg_remove.ModelSpec(
+        key="test",
+        input_size=(4, 4),
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+    )
+    image = Image.new("RGB", (2, 2), color=color)
+    tensor = bg_remove._normalise_image(image, spec)
+    assert tensor.shape == (1, 3, 4, 4)
+    for index, expected_value in enumerate(expected):
+        assert tensor[0, index, 0, 0] == pytest.approx(expected_value, rel=1e-5)
+
+
+def test_normalise_image_honours_custom_scale() -> None:
+    """Ensure models that override ``normalisation_scale`` divide by the bespoke constant."""
+
+    spec = bg_remove.ModelSpec(
+        key="custom-scale",
+        input_size=(2, 2),
+        mean=(0.0, 0.0, 0.0),
+        std=(1.0, 1.0, 1.0),
+        normalisation_scale=1.0,
+    )
+    image = Image.new("RGB", (2, 2), color=(128, 64, 32))
+    tensor = bg_remove._normalise_image(image, spec)
+    assert tensor.shape == (1, 3, 2, 2)
+    expected_values = (128.0, 64.0, 32.0)
+    for index, expected_value in enumerate(expected_values):
+        assert tensor[0, index, 0, 0] == pytest.approx(expected_value, rel=1e-6)
+
+
 def test_get_output_format_spec_handles_extensions() -> None:
     spec = bg_remove.get_output_format_spec(".PNG")
     assert spec.key == "png"

@@ -123,6 +123,7 @@ class ModelSpec:
     input_size: tuple[int, int]
     mean: tuple[float, float, float]
     std: tuple[float, float, float]
+    normalisation_scale: float = 255.0  #: Divisor applied before mean/std normalisation.
     checksum_md5: str | None = None
     url: str | None = None
     huggingface_repo: str | None = None
@@ -310,10 +311,10 @@ def _normalise_image(image: Image.Image, spec: ModelSpec) -> np.ndarray:
 
     rgb_image = image.convert("RGB").resize(spec.input_size, Image.Resampling.LANCZOS)
     rgb_array = np.asarray(rgb_image, dtype=np.float32)
-    max_value = float(np.max(rgb_array))
-    if max_value <= 0:
-        max_value = 1.0
-    rgb_array /= max_value
+    scale = spec.normalisation_scale if spec.normalisation_scale > 0 else 1.0
+    # Preserve relative luminance by scaling with the model-defined range rather than
+    # the brightest pixel in the current image.
+    rgb_array /= scale
     normalised = np.zeros_like(rgb_array, dtype=np.float32)
     for index in range(3):
         normalised[:, :, index] = (rgb_array[:, :, index] - spec.mean[index]) / spec.std[index]

@@ -357,9 +357,3 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
   };
 };
 
-// If Alpine loaded before app.js we start it manually so bindings are applied once
-// the component factory becomes available.
-if (window.Alpine) {
-  console.log('✅ Starting Alpine manually from app.js');
-  window.Alpine.start();
-}

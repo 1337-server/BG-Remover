@@ -2,7 +2,10 @@
 (() => {
   'use strict';
 
-  const storageKey = 'bg-remover-theme';
+  const themeStorageKey = 'bg-remover-theme';
+  const previewBackgroundStorageKey = 'bg-remover-preview-background';
+  // Track the most recently applied preview background colour for quick reapplication.
+  let previewBackgroundCurrentHex = null;
   const root = document.documentElement;
 
   const prefersDarkMediaQuery = typeof window.matchMedia === 'function'
@@ -14,7 +17,7 @@
    * @returns {('light'|'dark')} The preferred theme name.
    */
   const resolvePreferredTheme = () => {
-    const stored = window.localStorage ? localStorage.getItem(storageKey) : null;
+    const stored = window.localStorage ? localStorage.getItem(themeStorageKey) : null;
     if (stored === 'light' || stored === 'dark') {
       return stored;
     }
@@ -35,7 +38,7 @@
     root.classList.toggle('dark', resolved === 'dark');
     root.style.colorScheme = resolved;
     if (persist && window.localStorage) {
-      localStorage.setItem(storageKey, resolved);
+      localStorage.setItem(themeStorageKey, resolved);
     }
     return resolved;
   };
@@ -77,7 +80,7 @@
 
   if (prefersDarkMediaQuery) {
     prefersDarkMediaQuery.addEventListener('change', (event) => {
-      const stored = window.localStorage ? localStorage.getItem(storageKey) : null;
+      const stored = window.localStorage ? localStorage.getItem(themeStorageKey) : null;
       if (stored !== 'light' && stored !== 'dark') {
         const applied = applyTheme(event.matches ? 'dark' : 'light', false);
         syncThemeToggle(applied);
@@ -687,8 +690,9 @@
   /**
    * Update the checkerboard backdrop colour in the preview container.
    * @param {string} hexValue - The selected hexadecimal colour.
+   * @param {boolean} persist - Whether to persist the colour for future previews.
    */
-  const applyPreviewBackgroundColor = (hexValue) => {
+  const applyPreviewBackgroundColor = (hexValue, persist = true) => {
     if (!previewContainer) {
       return;
     }
@@ -696,8 +700,15 @@
     previewContainer.style.setProperty('--checkerboard-color', normalisedHex);
     previewContainer.style.setProperty('--checkerboard-pattern-color', normalisedHex);
     previewContainer.style.setProperty('--checkerboard-solid-color', normalisedHex);
+    previewBackgroundCurrentHex = normalisedHex;
+    if (previewBackgroundInput && previewBackgroundInput.value !== normalisedHex) {
+      previewBackgroundInput.value = normalisedHex;
+    }
     if (previewBackgroundValue) {
       previewBackgroundValue.textContent = normalisedHex.toUpperCase();
+    }
+    if (persist && window.localStorage) {
+      localStorage.setItem(previewBackgroundStorageKey, normalisedHex);
     }
   };
 
@@ -713,12 +724,19 @@
       computedStyle.getPropertyValue('--checkerboard-color');
     const fallbackHex = normaliseHex(previewBackgroundInput.value);
     const existingHex = resolveToHex(existingColor, fallbackHex);
-    const startingHex = normaliseHex(existingHex);
+    let startingHex = normaliseHex(existingHex);
+
+    if (window.localStorage) {
+      const storedValue = localStorage.getItem(previewBackgroundStorageKey);
+      if (typeof storedValue === 'string' && storedValue.trim()) {
+        startingHex = normaliseHex(storedValue);
+      }
+    }
     previewBackgroundInput.value = startingHex;
-    applyPreviewBackgroundColor(startingHex);
+    applyPreviewBackgroundColor(startingHex, false);
 
     const handleBackgroundChange = (event) => {
-      applyPreviewBackgroundColor(event.target.value);
+      applyPreviewBackgroundColor(event.target.value, true);
     };
 
     previewBackgroundInput.addEventListener('input', handleBackgroundChange);
@@ -861,6 +879,21 @@
           }
         }
         applyPreviewSize();
+
+        let restoredPreviewBackground = null;
+        if (window.localStorage) {
+          const storedPreviewBackground = localStorage.getItem(previewBackgroundStorageKey);
+          if (typeof storedPreviewBackground === 'string' && storedPreviewBackground.trim()) {
+            restoredPreviewBackground = storedPreviewBackground;
+          }
+        }
+        // Fall back to the last applied value when storage is unavailable.
+        if (!restoredPreviewBackground && typeof previewBackgroundCurrentHex === 'string') {
+          restoredPreviewBackground = previewBackgroundCurrentHex;
+        }
+        if (restoredPreviewBackground) {
+          applyPreviewBackgroundColor(restoredPreviewBackground, false);
+        }
 
         if (singleResult) {
           singleResult.removeAttribute('hidden');

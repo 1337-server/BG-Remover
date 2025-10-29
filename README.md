@@ -159,6 +159,20 @@ colour-key fallback, etc.) mirror those exposed in the Flask UI.
 > **Tip:** The first time you launch the GUI it downloads the selected model weights to
 > `~/.u2net`. Future runs reuse the cached files so processing starts immediately.
 
+#### Packaging the desktop app
+
+Rebuild the Tkinter executable with PyInstaller once dependencies are installed:
+
+```bash
+pyinstaller --noconfirm --windowed --name BackgroundRemoverGUI \
+  --add-data "static:static" --add-data "templates:templates" bg_remover_gui.py
+```
+
+The GUI now wraps its startup sequence in a safe handler that logs uncaught exceptions to
+`error.log` beside the script or bundled executable. If a packaged run fails you will also see a
+message box pointing to that log file for the full traceback. Delete `dist/` + `build/` between
+rebuilds to avoid stale assets.
+
 ---
 
 ### 🧪 Tests

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import time
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,79 @@ def test_encode_result_image_returns_data_url(monkeypatch: pytest.MonkeyPatch) -
     result = bg_remove.remove_background_bytes(_make_image_bytes())
     data_url = bg_remove.encode_result_image(result)
     assert data_url.startswith("data:image/png;base64,")
+
+
+def test_remove_bg_folder_parallel_preserves_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure batch processing returns results matching the discovery order."""
+
+    source_dir = tmp_path / "input"
+    source_dir.mkdir()
+    output_dir = tmp_path / "output"
+
+    for index in range(3):
+        path = source_dir / f"image_{index}.png"
+        Image.new("RGBA", (index + 2, index + 2), color=(255, index, 0, 255)).save(path, "PNG")
+
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    session_calls: set[int] = set()
+
+    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+        session_calls.add(id(session))
+        if image.size == (4, 4):
+            time.sleep(0.05)
+        return Image.new("L", image.size, color=255)
+
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(bg_remove, "_predict_mask", fake_predict)
+
+    results = bg_remove.remove_bg_folder(source_dir, output_dir)
+
+    expected_order = [path.name for path in bg_remove._iter_input_files(source_dir, recursive=False)]
+    assert [result.path_in.name for result in results] == expected_order
+    assert len(session_calls) == 1
+    for result in results:
+        assert result.path_out is not None
+        assert result.path_out.exists()
+
+
+def test_remove_bg_folder_parallel_propagates_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify batch failures bubble up while successful work persists."""
+
+    source_dir = tmp_path / "input"
+    source_dir.mkdir()
+    output_dir = tmp_path / "output"
+
+    success_path = source_dir / "success.png"
+    failure_path = source_dir / "failure.png"
+    Image.new("RGBA", (2, 2), color=(0, 255, 0, 255)).save(success_path, "PNG")
+    Image.new("RGBA", (3, 3), color=(255, 0, 0, 255)).save(failure_path, "PNG")
+
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+        if image.size == (3, 3):
+            raise RuntimeError("boom")
+        return Image.new("L", image.size, color=255)
+
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(bg_remove, "_predict_mask", fake_predict)
+
+    results = bg_remove.remove_bg_folder(source_dir, output_dir)
+
+    assert (output_dir / success_path.name).exists()
+
+    success_result = next(result for result in results if result.path_in == success_path)
+    failure_result = next(result for result in results if result.path_in == failure_path)
+
+    assert success_result.success
+    assert failure_result.error is not None
+    assert "boom" in failure_result.error
+    assert failure_result.path_out is None
 
 
 def test_download_model_from_huggingface(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -737,12 +738,16 @@ def remove_background_bytes(
     use_colorkey_fallback: bool = True,
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
+    session: BackgroundRemovalSession | None = None,
 ) -> RemovalResult:
     """Remove the background from raw ``data`` and return the processed result."""
 
+    # Reuse ``session`` when provided so large batch jobs avoid repeated
+    # initialisation overhead and share ONNX runtime state across threads.
+
     format_spec = get_output_format_spec(output_format)
-    session = ensure_global_session(model_name)
-    model_key = getattr(getattr(session, "spec", None), "key", model_name)
+    active_session = session if session is not None else ensure_global_session(model_name)
+    model_key = getattr(getattr(active_session, "spec", None), "key", model_name)
 
     LOGGER.info(
         "Starting background removal request",
@@ -768,7 +773,7 @@ def remove_background_bytes(
     error: str | None = None
     output_image: Image.Image | None = None
     try:
-        mask_image = _predict_mask(processed_input, session)
+        mask_image = _predict_mask(processed_input, active_session)
         mask_l = cast(Image.Image, ImageOps.exif_transpose(mask_image)).convert("L")
         mask_image.close()
         mask_l.load()
@@ -913,8 +918,12 @@ def remove_bg_file(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
     retain_image: bool = False,
+    session: BackgroundRemovalSession | None = None,
 ) -> RemovalResult:
     """Remove the background from ``input_path`` and write the result to ``output``."""
+
+    # Allow callers to inject a pre-created session so batch processing can share
+    # the same inference instance when running concurrently.
 
     source_path = Path(input_path)
     with source_path.open("rb") as stream:
@@ -930,6 +939,7 @@ def remove_bg_file(
         use_colorkey_fallback=use_colorkey_fallback,
         colorkey_tolerance=colorkey_tolerance,
         feather_radius=feather_radius,
+        session=session,
     )
     destination: Path | None = None
     if result.success:
@@ -958,6 +968,10 @@ def remove_bg_folder(
 ) -> list[RemovalResult]:
     """Process every supported image found under ``input_dir``."""
 
+    # The folder workflow submits each image to a shared executor so that
+    # background removal can be parallelised while retaining deterministic
+    # ordering of the returned results.
+
     source_dir = Path(input_dir)
     if not source_dir.is_dir():
         raise NotADirectoryError(f"Input directory does not exist: {source_dir}")
@@ -965,26 +979,39 @@ def remove_bg_folder(
     output_root = _resolve_output_directory(output_dir, source_dir)
     format_spec = get_output_format_spec(output_format)
 
+    session = ensure_global_session(model_name)
+
+    submitted: list[tuple[Path, Future[RemovalResult]]] = []
+    with ThreadPoolExecutor() as executor:
+        for source in _iter_input_files(source_dir, recursive):
+            relative = source.relative_to(source_dir) if recursive else Path(source.name)
+            destination = format_spec.normalise_filename(output_root / relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            future = executor.submit(
+                remove_bg_file,
+                source,
+                destination,
+                output_format=format_spec.key,
+                model_name=model_name,
+                alpha_matting=alpha_matting,
+                am_foreground=am_foreground,
+                am_background=am_background,
+                am_erode=am_erode,
+                use_colorkey_fallback=use_colorkey_fallback,
+                colorkey_tolerance=colorkey_tolerance,
+                feather_radius=feather_radius,
+                retain_image=False,
+                session=session,
+            )
+            submitted.append((relative, future))
+
     results: list[RemovalResult] = []
-    for source in _iter_input_files(source_dir, recursive):
-        relative = source.relative_to(source_dir) if recursive else Path(source.name)
-        destination = format_spec.normalise_filename(output_root / relative)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        result = remove_bg_file(
-            source,
-            destination,
-            output_format=format_spec.key,
-            model_name=model_name,
-            alpha_matting=alpha_matting,
-            am_foreground=am_foreground,
-            am_background=am_background,
-            am_erode=am_erode,
-            use_colorkey_fallback=use_colorkey_fallback,
-            colorkey_tolerance=colorkey_tolerance,
-            feather_radius=feather_radius,
-            retain_image=False,
-        )
-        results.append(result)
+    for relative, future in submitted:
+        try:
+            results.append(future.result())
+        except Exception:
+            LOGGER.error("Background removal failed for %s", relative, exc_info=True)
+            raise
     return results
 
 

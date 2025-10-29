@@ -76,7 +76,26 @@ a sample image to confirm background removal completes without errors and the UI
 > **Note:** The first run downloads the necessary ONNX model weights to the user's profile directory.
 > Subsequent launches reuse the cached files and start significantly faster.
 
-## 5. Distribute to end users
+## 5. Package the desktop GUI (optional)
+
+Prefer a native-feeling desktop app instead of the Flask web server? Reuse the same helper script with a
+different entry point:
+
+```bash
+python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui
+```
+
+The generated bundle contains the ttkbootstrap-powered interface with single-image and batch folder
+workflows. At runtime it creates an `output/` subfolder inside whichever directory you process to keep
+the original images untouched.
+
+All command-line flags described above continue to work—for example pass `--onefile` to emit a
+single-binary distribution or `--no-clean` during iterative testing.
+
+After building, double-click the executable (or run it from a terminal) to open the GUI window directly
+without starting a local web server.
+
+## 6. Distribute to end users
 
 Share the contents of `dist/br-remover/` (or the single binary when using `--onefile`) with your users.
 Provide the startup command above and highlight that the application serves the UI via a local web

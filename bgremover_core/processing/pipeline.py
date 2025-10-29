@@ -85,7 +85,12 @@ class PipelineError(RuntimeError):
 
 @dataclass(slots=True)
 class ProcessingOptions:
-    """Container describing advanced image processing preferences."""
+    """Container describing advanced image processing preferences.
+
+    The ``mask_blur`` attribute represents a direct Gaussian blur radius applied
+    to the alpha mask. When zero the pipeline falls back to the ``smoothing``
+    ratio for backwards compatibility with earlier front-ends.
+    """
 
     resize_mode: str = "stretch"
     feather_radius: int = 3
@@ -94,6 +99,7 @@ class ProcessingOptions:
     background_threshold: int = 10
     erode_size: int = 10
     smoothing: float = 0.0
+    mask_blur: float = 0.0
     edge_refinement: bool = False
     background_color: tuple[int, int, int] | None = None
     output_format: str = "PNG"
@@ -107,6 +113,12 @@ class ProcessingOptions:
         resize_mode = str(kwargs.get("resize_mode") or kwargs.get("input_resize") or "stretch")
         alpha_matting = bool(kwargs.get("alpha_matting", False))
         smoothing = _coerce_float(kwargs.get("smoothing"), default=0.0, minimum=0.0, maximum=1.0)
+        mask_blur = _coerce_float(
+            kwargs.get("mask_blur") or kwargs.get("mask_blur_radius"),
+            default=0.0,
+            minimum=0.0,
+            maximum=25.0,
+        )
         edge_refinement = bool(kwargs.get("edge_refinement", False))
         foreground_threshold = _coerce_int(
             kwargs.get("foreground_threshold")
@@ -150,6 +162,7 @@ class ProcessingOptions:
             background_threshold=background_threshold,
             erode_size=erode_size,
             smoothing=smoothing,
+            mask_blur=mask_blur,
             edge_refinement=edge_refinement,
             background_color=background_color,
             output_format=output_format,
@@ -281,6 +294,7 @@ def remove_background(
             background_threshold=options.background_threshold,
             erode_size=options.erode_size,
             smoothing=options.smoothing,
+            mask_blur=options.mask_blur,
             edge_refinement=options.edge_refinement,
         )
         result_image = apply_mask_to_image(pil_image, mask, feather_radius=options.feather_radius)
@@ -317,6 +331,7 @@ def _process_single_path(
             background_threshold=options.background_threshold,
             erode_size=options.erode_size,
             smoothing=options.smoothing,
+            mask_blur=options.mask_blur,
             edge_refinement=options.edge_refinement,
         )
         result_image = apply_mask_to_image(pil_image, mask, feather_radius=options.feather_radius)

@@ -112,6 +112,8 @@ def _prepare_config(base: Config, model_dir: str | None, provider_choice: str | 
 
 
 def _options_from_request(config: Config) -> dict[str, Any]:
+    """Return sanitised processing options parsed from the active request."""
+
     form = request.form
     model_key = form.get("model_key") or config.default_model
     try:
@@ -130,6 +132,13 @@ def _options_from_request(config: Config) -> dict[str, Any]:
     model_dir = form.get("model_dir")
     remember = _parse_bool(form.get("remember_preferences"), default=True)
 
+    alpha_matting = _parse_bool(form.get("alpha_matting"))
+    try:
+        mask_blur_value = float(form.get("mask_blur", 0))
+    except (TypeError, ValueError):
+        mask_blur_value = 0.0
+    mask_blur = int(max(0.0, min(25.0, mask_blur_value)))
+
     options = {
         "model_key": model_key,
         "feather_radius": feather_radius,
@@ -141,8 +150,22 @@ def _options_from_request(config: Config) -> dict[str, Any]:
         "provider_choice": provider_choice,
         "model_dir": model_dir,
         "remember": remember,
+        "alpha_matting": alpha_matting,
+        "mask_blur": mask_blur,
     }
     return options
+
+
+def _pipeline_kwargs(options: dict[str, Any]) -> dict[str, Any]:
+    """Return keyword arguments forwarded to the processing pipeline."""
+
+    forwarded: dict[str, Any] = {
+        "alpha_matting": bool(options.get("alpha_matting", False)),
+        "mask_blur": float(options.get("mask_blur", 0.0)),
+    }
+    if not options.get("transparent", True) and options.get("background_color"):
+        forwarded["background_color"] = options["background_color"]
+    return forwarded
 
 
 def _resolve_output_directory(store: ResultStore, subdir: str) -> Path:
@@ -163,13 +186,6 @@ def _determine_output_meta(format_name: str) -> tuple[str, str]:
             return "image/webp", "webp"
         case _:
             return "image/png", "png"
-
-
-def _apply_background(image: Image.Image, rgb: tuple[int, int, int] | None, transparent: bool) -> Image.Image:
-    if transparent or rgb is None:
-        return image
-    background = Image.new("RGBA", image.size, (*rgb, 255))
-    return Image.alpha_composite(background, image)
 
 
 def _prepare_result_name(original: str, suffix: str, preserve: bool, identifier: str) -> str:
@@ -202,14 +218,15 @@ def _process_image(upload, *, config: Config, store: ResultStore, options: dict[
         raise PipelineError(f"Unsupported image format: {error}") from error
 
     array = np.asarray(image)
+    processing_kwargs = _pipeline_kwargs(options)
     result_array = remove_background(
         array,
         options["model_key"],
         config=config,
         feather_radius=options["feather_radius"],
+        **processing_kwargs,
     )
     result_image = Image.fromarray(result_array)
-    result_image = _apply_background(result_image, options["background_color"], options["transparent"])
 
     mime_type, suffix = _determine_output_meta(options["output_format"])
     if mime_type != "image/png":
@@ -330,6 +347,7 @@ def batch_process() -> Response:
                 model_key=options["model_key"],
                 config=active_config,
                 feather_radius=options["feather_radius"],
+                **_pipeline_kwargs(options),
             )
             report = future.result()
 

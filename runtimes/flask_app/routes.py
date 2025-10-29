@@ -28,7 +28,7 @@ from PIL import Image, UnidentifiedImageError
 from bgremover_core import Config, load_config, remove_background
 from bgremover_core.config import persist_config
 from bgremover_core.models.loader import detect_providers
-from bgremover_core.models.specs import MODEL_SPECS
+from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
 from bgremover_core.processing.pipeline import PipelineError, process_folder
 
 from .services import ResultRecord, ResultStore, ensure_filename, total_size
@@ -198,6 +198,52 @@ def _prepare_result_name(original: str, suffix: str, preserve: bool, identifier:
     return ensure_filename(candidate)
 
 
+def _format_float_triplet(values: tuple[float, float, float]) -> str:
+    """Return ``values`` formatted for human friendly display."""
+
+    formatted = []
+    for value in values:
+        text = f"{value:.3f}".rstrip("0").rstrip(".")
+        formatted.append(text or "0")
+    return ", ".join(formatted)
+
+
+def _spec_weight_source(spec: ModelSpec) -> str | None:
+    """Return a description of where ``spec`` downloads its weights from."""
+
+    if spec.url:
+        return spec.url
+    if spec.huggingface_repo and spec.huggingface_filename:
+        revision = spec.huggingface_revision or "main"
+        if revision and revision != "main":
+            return f"{spec.huggingface_repo}@{revision}/{spec.huggingface_filename}"
+        return f"{spec.huggingface_repo}/{spec.huggingface_filename}"
+    if spec.local_filename:
+        return spec.local_filename
+    return None
+
+
+def _serialise_model_specs() -> dict[str, dict[str, str]]:
+    """Return frontend friendly metadata extracted from :data:`MODEL_SPECS`."""
+
+    serialised: dict[str, dict[str, str]] = {}
+    for key in sorted(MODEL_SPECS):
+        spec = MODEL_SPECS[key]
+        details: dict[str, str] = {
+            "Input size": f"{spec.input_size[0]} × {spec.input_size[1]}",
+            "Normalisation mean": _format_float_triplet(spec.mean),
+            "Normalisation std": _format_float_triplet(spec.std),
+            "Scale": f"{spec.normalisation_scale:g}",
+        }
+        weight_source = _spec_weight_source(spec)
+        if weight_source:
+            details["Weight source"] = weight_source
+        if spec.checksum_md5:
+            details["Checksum (MD5)"] = spec.checksum_md5
+        serialised[key] = details
+    return serialised
+
+
 def _serialise_options(options: dict[str, Any]) -> dict[str, Any]:
     serialisable: dict[str, Any] = {}
     for key, value in options.items():
@@ -292,7 +338,9 @@ def index() -> Response:
         "badge_label": badge_label,
         "providers": provider_list,
         "model_options": sorted(MODEL_SPECS.keys()),
+        "default_model": config.default_model,
         "model_dir": str(config.model_dir),
+        "model_specs": _serialise_model_specs(),
         "current_year": datetime.now(UTC).year,
     }
     return render_template("index.html", **context)

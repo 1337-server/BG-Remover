@@ -72,5 +72,17 @@
       </label>
       <p class="field-help">Persists model directory and provider choice server-side.</p>
     </label>
+    <div class="field md:col-span-2" x-show="activeModelSpecsEntries().length">
+      <span class="field-label">Model profile</span>
+      <p class="field-help">Inspect the normalisation and download details for the selected neural network.</p>
+      <dl class="mt-3 grid gap-2 sm:grid-cols-2">
+        <template x-for="[label, value] in activeModelSpecsEntries()" :key="label">
+          <div class="rounded border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-800/40 px-3 py-2 text-sm">
+            <dt class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400" x-text="label"></dt>
+            <dd class="mt-1 font-medium text-slate-900 dark:text-slate-100 break-words" x-text="value"></dd>
+          </div>
+        </template>
+      </dl>
+    </div>
   </div>
 </section>

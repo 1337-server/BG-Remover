@@ -25,8 +25,16 @@
         document.documentElement.classList.remove('dark');
       }
     </script>
-    <script src="{{ url_for('webui.static', filename='js/app.js') }}" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.4/dist/cdn.min.js" defer></script>
+    <script src="{{ url_for('webui.static', filename='js/app.js') }}"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.4/dist/cdn.min.js"></script>
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        if (window.bgrApp && window.Alpine) {
+          console.log('✅ bgrApp detected, starting Alpine...');
+          window.Alpine.start();
+        }
+      });
+    </script>
   </head>
   <body class="bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100 min-h-full">
     <div

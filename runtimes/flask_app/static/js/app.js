@@ -31,6 +31,7 @@ function readStoredSettings() {
  * @returns {object} Alpine component descriptor consumed by the UI templates.
  */
 window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels, defaultModelDir) {
+  console.log('✅ bgrApp registered globally:', typeof window.bgrApp);
   const normalizedProviders = Array.isArray(providerList) ? providerList : [];
   const normalizedModels = Array.isArray(availableModels) ? availableModels : [];
   const normalizedModelDir = defaultModelDir || '';
@@ -355,3 +356,4 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
     },
   };
 };
+

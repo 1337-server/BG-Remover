@@ -9,7 +9,7 @@ import pytest
 
 from bgremover_core.models import loader
 from bgremover_core.models.loader import BackgroundRemovalSession, detect_providers, get_session
-from bgremover_core.models.specs import MODEL_SPECS
+from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
 
 
 def test_detect_providers_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,3 +59,42 @@ def test_get_session_uses_custom_model_dir(monkeypatch: pytest.MonkeyPatch, tmp_
     assert isinstance(session, BackgroundRemovalSession)
     assert session.spec.key == spec.key
     assert session.inner.get_providers() == ["CPUExecutionProvider"]
+
+
+def test_download_with_nested_local_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Model downloads should succeed when local filenames include subdirectories."""
+
+    spec = ModelSpec(
+        key="dummy-model",
+        input_size=(1, 1),
+        mean=(0.0, 0.0, 0.0),
+        std=(1.0, 1.0, 1.0),
+        url="https://example.com/dummy.onnx",
+        local_filename="nested/model.onnx",
+    )
+
+    class DummyResponse:
+        """Minimal response object emulating ``requests`` streaming downloads."""
+
+        status_code = 200
+
+        def __enter__(self) -> "DummyResponse":
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 1024):
+            yield b"dummy-weights"
+
+    monkeypatch.setattr(loader.requests, "get", lambda *_args, **_kwargs: DummyResponse())
+
+    model_dir = tmp_path / "models"
+    path = loader._download_model(spec, model_dir)
+
+    assert path == model_dir / "nested/model.onnx"
+    assert path.exists()
+    assert path.read_bytes() == b"dummy-weights"

@@ -217,6 +217,7 @@ class FolderTaskOptions:
     """Container describing configuration shared with the worker thread."""
 
     folder: Path
+    output_root: Path
     output_format: str
     model_key: str
     recursive: bool
@@ -274,10 +275,10 @@ class FolderProcessor(threading.Thread):
                 yield item
 
     def run(self) -> None:  # noqa: D401 - inherited behaviour documented above.
-        # Saving occurs inside a dedicated "output" sub-folder to keep
-        # original images untouched. Adjust ``output_root`` here if a
-        # different export layout is preferred.
-        output_root = self.options.folder / "output"
+        # Saving occurs inside a dedicated ``output_root`` folder to keep
+        # original images untouched. The location is user-configurable via
+        # :class:`FolderTaskOptions`.
+        output_root = self.options.output_root
         output_root.mkdir(parents=True, exist_ok=True)
 
         sources = list(self._iter_sources())
@@ -462,6 +463,7 @@ class BackgroundRemoverApp(tb.Window):
         self._folder_cancel_event = threading.Event()
         self._single_worker: threading.Thread | None = None
         self.event_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        self._output_folder_override: Path | None = None
         self._image_preview: ImageTk.PhotoImage | None = None
         self._result_preview: ImageTk.PhotoImage | None = None
         self.alpha_spinboxes: list[tb.Spinbox] = []
@@ -479,6 +481,9 @@ class BackgroundRemoverApp(tb.Window):
         self.mode_var = tb.StringVar(value="single")
         self.selected_file = tb.StringVar(value="No image selected")
         self.selected_folder = tb.StringVar(value="No folder selected")
+        self.selected_output_folder = tb.StringVar(
+            value="Select a folder to choose the output location."
+        )
         self.folder_summary = tb.StringVar(value="")
         self.progress_var = tb.DoubleVar(value=0.0)
         self.progress_text = tb.StringVar(value="Waiting to start")
@@ -813,7 +818,7 @@ class BackgroundRemoverApp(tb.Window):
             parent,
             text=(
                 "Process every supported image in a folder. Results are saved to an "
-                '"output" sub-folder beside your originals.'
+                '"output" folder beside your originals.'
             ),
             bootstyle="secondary",
             wraplength=420,
@@ -840,6 +845,32 @@ class BackgroundRemoverApp(tb.Window):
             justify=LEFT,
         )
         folder_label.pack(side=LEFT, padx=10)
+
+        output_row = tb.Frame(parent)
+        output_row.pack(fill=BOTH, pady=5)
+
+        self.output_button = tb.Button(
+            output_row,
+            text="Select output folder",
+            command=self._choose_output_folder,
+            bootstyle="secondary-outline",
+        )
+        self.output_button.pack(side=LEFT)
+        ToolTip(
+            self.output_button,
+            (
+                "Choose where processed images should be saved. Leave unset to use the "
+                "default output folder beside the selected input folder."
+            ),
+        )
+
+        output_label = tb.Label(
+            output_row,
+            textvariable=self.selected_output_folder,
+            wraplength=420,
+            justify=LEFT,
+        )
+        output_label.pack(side=LEFT, padx=10)
 
         summary_label = tb.Label(parent, textvariable=self.folder_summary, bootstyle="info")
         summary_label.pack(anchor=W, pady=5)
@@ -1055,11 +1086,31 @@ class BackgroundRemoverApp(tb.Window):
             return
         folder = Path(path)
         self.selected_folder.set(str(folder))
-        sources = list(self._scan_folder(folder, self.recursive_var.get()))
-        self.folder_summary.set(
-            f"Found {len(sources)} image(s) · Output: {folder / 'output'}"
-        )
+        self._output_folder_override = None
+        self._update_folder_summary()
         self._append_log(f"Folder selected: {folder}")
+
+    def _choose_output_folder(self) -> None:
+        """Prompt the user to choose a custom output destination."""
+
+        from tkinter import filedialog
+
+        folder_text = self.selected_folder.get()
+        folder = Path(folder_text)
+        if not folder.exists():
+            Messagebox.show_warning(
+                "Select a folder to process before choosing an output destination.",
+                "Background Remover",
+            )
+            return
+
+        path = filedialog.askdirectory(title="Choose an output folder")
+        if not path:
+            return
+
+        self._output_folder_override = Path(path)
+        self._append_log(f"Output folder selected: {self._output_folder_override}")
+        self._update_folder_summary()
 
     def _scan_folder(self, folder: Path, recursive: bool) -> Iterable[Path]:
         """Yield supported image files inside ``folder``."""
@@ -1076,6 +1127,36 @@ class BackgroundRemoverApp(tb.Window):
             if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 yield path
 
+    def _update_folder_summary(self) -> None:
+        """Refresh the folder summary and output location details."""
+
+        folder_text = self.selected_folder.get()
+        try:
+            folder = Path(folder_text)
+        except Exception:
+            self.folder_summary.set("")
+            self.selected_output_folder.set(
+                "Select a folder to choose the output location."
+            )
+            return
+
+        if not folder.exists():
+            self.folder_summary.set("")
+            self.selected_output_folder.set(
+                "Select a folder to choose the output location."
+            )
+            return
+
+        sources = list(self._scan_folder(folder, self.recursive_var.get()))
+        output_root = self._output_folder_override or (folder.parent / "output")
+        self.folder_summary.set(
+            f"Found {len(sources)} image(s) · Output: {output_root}"
+        )
+        if self._output_folder_override:
+            self.selected_output_folder.set(f"Custom: {output_root}")
+        else:
+            self.selected_output_folder.set(f"Default: {output_root}")
+
     def _start_batch(self) -> None:
         """Launch a worker thread for batch processing."""
         if self._folder_worker and self._folder_worker.is_alive():
@@ -1091,8 +1172,12 @@ class BackgroundRemoverApp(tb.Window):
             )
             return
 
+        output_root = self._output_folder_override or (folder.parent / "output")
+        self._update_folder_summary()
+
         options = FolderTaskOptions(
             folder=folder,
+            output_root=output_root,
             output_format=self.output_format_var.get(),
             model_key=self.model_var.get(),
             recursive=self.recursive_var.get(),
@@ -1114,14 +1199,7 @@ class BackgroundRemoverApp(tb.Window):
         self.batch_preview.configure(image="")
         self.batch_preview.image = None
 
-        # 🧩 safely clear log_console — no 'state' calls
-        try:
-            if hasattr(self.log_console, "delete"):
-                self.log_console.delete("1.0", END)
-            elif hasattr(self.log_console, "configure") and "text" in self.log_console.keys():
-                self.log_console.configure(text="")
-        except Exception as e:
-            print(f"[LOG CLEAR ERROR]: {e}")
+        self._clear_log()
 
         self._folder_cancel_event.clear()
         self.cancel_batch_button.configure(state="normal")
@@ -1226,19 +1304,70 @@ class BackgroundRemoverApp(tb.Window):
         self._folder_cancel_event.clear()
 
     def _append_log(self, message: str):
-        try:
-            # Some ttkbootstrap widgets don't support 'state'
-            if hasattr(self.log_console, "insert"):
-                self.log_console.insert("end", message + "\n")
-                if hasattr(self.log_console, "see"):
-                    self.log_console.see("end")
-            elif hasattr(self.log_console, "configure") and "text" in self.log_console.keys():
-                current = self.log_console["text"]
-                self.log_console.configure(text=current + "\n" + message)
-            else:
-                print(f"[LOG]: {message}")
-        except Exception as e:
-            print(f"[LOG ERROR]: {e}")
+        """Safely append ``message`` to the log console from any thread."""
+
+        def write_to_log() -> None:
+            try:
+                widget = self.log_console
+                if hasattr(widget, "configure"):
+                    try:
+                        widget.configure(state="normal")
+                    except Exception:
+                        pass
+
+                if hasattr(widget, "insert"):
+                    widget.insert(END, message + "\n")
+                    if hasattr(widget, "see"):
+                        widget.see(END)
+                elif hasattr(widget, "configure") and "text" in widget.keys():
+                    current = widget["text"]
+                    separator = "\n" if current else ""
+                    widget.configure(text=current + separator + message)
+                else:
+                    print(f"[LOG]: {message}")
+
+                if hasattr(widget, "configure"):
+                    try:
+                        widget.configure(state="disabled")
+                    except Exception:
+                        pass
+            except Exception as exc:
+                print(f"[LOG ERROR]: {exc}")
+
+        if threading.current_thread() is threading.main_thread():
+            write_to_log()
+        else:
+            self.after(0, write_to_log)
+
+    def _clear_log(self) -> None:
+        """Clear all content from the log console safely."""
+
+        def clear_console() -> None:
+            try:
+                widget = self.log_console
+                if hasattr(widget, "configure"):
+                    try:
+                        widget.configure(state="normal")
+                    except Exception:
+                        pass
+
+                if hasattr(widget, "delete"):
+                    widget.delete("1.0", END)
+                elif hasattr(widget, "configure") and "text" in widget.keys():
+                    widget.configure(text="")
+
+                if hasattr(widget, "configure"):
+                    try:
+                        widget.configure(state="disabled")
+                    except Exception:
+                        pass
+            except Exception as exc:
+                print(f"[LOG CLEAR ERROR]: {exc}")
+
+        if threading.current_thread() is threading.main_thread():
+            clear_console()
+        else:
+            self.after(0, clear_console)
 
 
 def main() -> None:

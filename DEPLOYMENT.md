@@ -40,26 +40,70 @@ Run the packaging helper to generate a distributable build:
 python scripts/build_executable.py
 ```
 
-The script performs the following:
+The helper optimizes PyInstaller for this project by reusing cached build artefacts, bundling the
+templates and static assets automatically, and enabling parallel compilation for faster builds. When
+[UPX](https://upx.github.io/) is available it also compresses the output for smaller downloads.
 
-- Reuses the cached PyInstaller workspace for faster incremental builds (pass `--clean` to reset).
-- Invokes PyInstaller on `app.py`, bundling templates and static assets automatically.
-- Enables PyInstaller's parallel build mode to leverage all CPU cores.
-- Compresses the result with [UPX](https://upx.github.io/) when the utility is installed (falls back
-  gracefully if it is missing).
-- Writes the frozen application to `dist/br-remover/` (one-folder layout by default).
+### Build Commands
 
-### Command options
+`scripts/build_executable.py` is a helper script for packaging the Background Remover GUI into a
+standalone executable using PyInstaller. It wraps the recommended options so you can focus on choosing
+the right entry point and output layout for your release.
 
-| Flag | Description |
-|------|-------------|
-| `--name NAME` | Override the executable name (default: `br-remover`). |
-| `--entry-point PATH` | Bundle a different entry point, e.g. `main.py` for CLI-only builds. |
-| `--dist-dir PATH` | Custom output directory for the packaged app. |
-| `--build-dir PATH` | Temporary workspace for PyInstaller. |
-| `--clean` | Remove existing `build/`/`dist/` directories before packaging. |
-| `--onefile` | Produce a single-file binary instead of a folder bundle (startup is slower). |
-| `--no-upx` | Disable UPX compression (helpful when antivirus tools flag the packed binary). |
+```bash
+python scripts/build_executable.py [OPTIONS]
+```
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--name NAME` | Sets the executable name (defaults to `br-remover`). | `--name br-remover-gui` |
+| `--entry-point PATH` | Points PyInstaller at the module to freeze. Use `bg_remover_gui.py` for the desktop GUI or `app.py` for the Flask server. | `--entry-point bg_remover_gui.py` |
+| `--dist-dir PATH` | Directory that receives the finished build. Useful when writing to fast storage. | `--dist-dir /mnt/ssd/dist` |
+| `--build-dir PATH` | Workspace used for intermediate files; can live on a RAM disk for faster I/O. | `--build-dir /mnt/ramdisk/build` |
+| `--clean` | Removes existing build/dist folders before compiling (clears caches). | `--clean` |
+| `--onefile` | Produces a single-file executable instead of a folder bundle. | `--onefile` |
+| `--no-upx` | Skips UPX compression if antivirus tools raise false positives. | `--no-upx` |
+| `--help` | Displays the full CLI usage information. | `--help` |
+
+#### Example build scenarios
+
+- **Basic fast cached build:**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui
+  ```
+
+- **Clean one-file build:**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui --onefile --clean
+  ```
+
+- **Build without UPX compression:**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui --no-upx
+  ```
+
+- **Build using a RAM disk:**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui --build-dir /mnt/ramdisk/build --dist-dir /mnt/ramdisk/dist
+  ```
+
+- **Multi-core optimized build (e.g., Ryzen 9 9950X):**
+
+  ```bash
+  python scripts/build_executable.py --entry-point bg_remover_gui.py --name br-remover-gui
+  ```
+
+  > PyInstaller automatically leverages all available CPU cores because the helper appends `--parallel`.
+
+##### Performance Tips
+
+- Reuse cached build artefacts for quick iterations; only pass `--clean` when dependencies change.
+- Keep UPX compression enabled for smaller binaries unless antivirus software objects (`--no-upx`).
+- Direct the `--build-dir` and `--dist-dir` to a RAM disk or ultra-fast SSD to reduce I/O bottlenecks.
 
 ## 4. Run and verify the bundle
 

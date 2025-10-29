@@ -11,6 +11,22 @@ from PIL import Image
 import bg_removal as bg_remove
 
 
+@pytest.fixture()
+def large_rgba_image(tmp_path: Path) -> Path:
+    """Return a sizeable RGBA image saved to disk for streaming tests."""
+
+    path = tmp_path / "large.png"
+    Image.new("RGBA", (2048, 2048), color=(0, 255, 0, 255)).save(path, "PNG")
+    return path
+
+
+@pytest.fixture()
+def large_rgba_bytes(large_rgba_image: Path) -> bytes:
+    """Return the encoded bytes for the ``large_rgba_image`` fixture."""
+
+    return large_rgba_image.read_bytes()
+
+
 def _make_image_bytes(color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> bytes:
     image = Image.new("RGBA", (4, 4), color=color)
     buffer = io.BytesIO()
@@ -114,6 +130,58 @@ def test_remove_bg_file_writes_to_directory(tmp_path: Path, monkeypatch: pytest.
     assert result.path_out is not None
     assert result.path_out.exists()
     assert result.path_out.suffix == ".png"
+
+
+def test_remove_background_stream_handles_large_image(
+    large_rgba_image: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure streaming removal works for large files without eager byte copies."""
+
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+        return Image.new("L", image.size, color=255)
+
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(bg_remove, "_predict_mask", fake_predict)
+
+    with large_rgba_image.open("rb") as stream:
+        result = bg_remove.remove_background_stream(stream)
+
+    assert result.success
+    assert result.image is not None
+    assert result.image.size == (2048, 2048)
+    result.image.close()
+
+
+def test_large_stream_and_byte_inputs_produce_identical_outputs(
+    large_rgba_image: Path,
+    large_rgba_bytes: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The byte-based and streaming workflows should yield matching results."""
+
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    def fake_predict(image: Image.Image, session: DummySession) -> Image.Image:
+        return Image.new("L", image.size, color=255)
+
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(bg_remove, "_predict_mask", fake_predict)
+
+    with large_rgba_image.open("rb") as stream:
+        stream_result = bg_remove.remove_background_stream(stream)
+    bytes_result = bg_remove.remove_background_bytes(large_rgba_bytes)
+
+    assert stream_result.success
+    assert bytes_result.success
+    assert stream_result.as_bytes() == bytes_result.as_bytes()
+    if stream_result.image:
+        stream_result.image.close()
+    if bytes_result.image:
+        bytes_result.image.close()
 
 
 def test_encode_result_image_returns_data_url(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import base64
 import json
+import queue
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from werkzeug.utils import secure_filename
 
@@ -159,10 +160,180 @@ def total_size(paths: Iterable[Path]) -> int:
     return total
 
 
+@dataclass(slots=True)
+class BatchEvent:
+    """Server-sent event payload emitted during batch processing."""
+
+    event: Literal["started", "item_success", "item_error", "finished"]
+    data: dict[str, Any]
+
+
+@dataclass(slots=True)
+class BatchJobSummary:
+    """Immutable snapshot describing the final state of a batch job."""
+
+    job_id: str
+    output_dir: Path
+    started_at: datetime
+    finished_at: datetime | None
+    total: int
+    successes: int
+    failures: int
+    success_items: list[dict[str, Any]]
+    failure_items: list[dict[str, Any]]
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a serialisable representation of the batch summary."""
+
+        return {
+            "job_id": self.job_id,
+            "output_dir": str(self.output_dir),
+            "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "counts": {
+                "total": self.total,
+                "success": self.successes,
+                "failed": self.failures,
+            },
+            "successes": list(self.success_items),
+            "failures": list(self.failure_items),
+        }
+
+
+class BatchJob:
+    """Background job coordinating folder processing and SSE updates."""
+
+    def __init__(self, job_id: str, output_dir: Path) -> None:
+        self.job_id = job_id
+        self.output_dir = output_dir
+        self.started_at = _now()
+        self.finished_at: datetime | None = None
+        self._events: queue.Queue[BatchEvent | None] = queue.Queue()
+        self._successes: list[dict[str, Any]] = []
+        self._failures: list[dict[str, Any]] = []
+        self._total = 0
+        self._lock = threading.Lock()
+        self._status: Literal["pending", "running", "finished", "failed"] = "pending"
+        self._error_message: str | None = None
+
+    # ------------------------------------------------------------------
+    # Event handling
+    # ------------------------------------------------------------------
+    def publish(self, event: BatchEvent) -> None:
+        """Queue ``event`` for streaming to connected clients."""
+
+        self._events.put(event)
+
+    def event_stream(self):
+        """Yield events until the job signals completion."""
+
+        while True:
+            item = self._events.get()
+            if item is None:
+                break
+            yield item
+
+    def close_stream(self) -> None:
+        """Signal any listeners that the stream has finished."""
+
+        self._events.put(None)
+
+    # ------------------------------------------------------------------
+    # State tracking
+    # ------------------------------------------------------------------
+    @property
+    def status(self) -> Literal["pending", "running", "finished", "failed"]:
+        with self._lock:
+            return self._status
+
+    def mark_started(self, *, total: int | None = None) -> None:
+        """Mark the job as running and optionally record ``total`` items."""
+
+        with self._lock:
+            self._status = "running"
+            if total is not None:
+                self._total = int(total)
+
+    def record_success(self, payload: dict[str, Any]) -> None:
+        """Record a successful item event."""
+
+        with self._lock:
+            self._successes.append(payload)
+
+    def record_failure(self, payload: dict[str, Any]) -> None:
+        """Record a failed item event."""
+
+        with self._lock:
+            self._failures.append(payload)
+
+    def mark_finished(self, *, error: str | None = None) -> None:
+        """Transition the job into its terminal state."""
+
+        with self._lock:
+            self.finished_at = _now()
+            self._status = "failed" if error else "finished"
+            self._error_message = error
+
+    def build_summary(self) -> BatchJobSummary:
+        """Return a :class:`BatchJobSummary` representing the current state."""
+
+        with self._lock:
+            summary = BatchJobSummary(
+                job_id=self.job_id,
+                output_dir=self.output_dir,
+                started_at=self.started_at,
+                finished_at=self.finished_at,
+                total=self._total or (len(self._successes) + len(self._failures)),
+                successes=len(self._successes),
+                failures=len(self._failures),
+                success_items=list(self._successes),
+                failure_items=list(self._failures),
+            )
+        return summary
+
+    @property
+    def error_message(self) -> str | None:
+        with self._lock:
+            return self._error_message
+
+
+class BatchJobManager:
+    """Registry for active and historical batch jobs."""
+
+    def __init__(self) -> None:
+        self._jobs: dict[str, BatchJob] = {}
+        self._lock = threading.Lock()
+
+    def register(self, job: BatchJob) -> BatchJob:
+        """Store ``job`` for later lookup and return it."""
+
+        with self._lock:
+            self._jobs[job.job_id] = job
+        return job
+
+    def get(self, job_id: str) -> BatchJob | None:
+        """Return the job matching ``job_id`` if it exists."""
+
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def summary(self, job_id: str) -> BatchJobSummary | None:
+        """Return the summary for ``job_id`` when available."""
+
+        job = self.get(job_id)
+        if job is None:
+            return None
+        return job.build_summary()
+
+
 __all__ = [
     "ResultRecord",
     "ResultStore",
     "build_data_uri",
     "ensure_filename",
+    "BatchEvent",
+    "BatchJob",
+    "BatchJobManager",
+    "BatchJobSummary",
     "total_size",
 ]

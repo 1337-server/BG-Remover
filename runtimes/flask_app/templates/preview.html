@@ -1,54 +1,90 @@
-<section class="card" id="preview-card">
-  <header class="flex items-center justify-between">
+  <header class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
     <div>
       <h2 class="text-lg font-semibold">Live preview</h2>
       <p class="text-sm text-slate-500 dark:text-slate-400">Processed results appear here with download options.</p>
     </div>
-    <div class="text-sm text-slate-500 dark:text-slate-400" x-show="previewItems.length">
-      <span x-text="previewItems.length"></span> result<span x-show="previewItems.length > 1">s</span>
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Preview background</span>
+      <div class="flex rounded-full bg-slate-100 dark:bg-slate-800 p-1 text-sm">
+        <button
+          type="button"
+          class="rounded-full px-3 py-1"
+          :class="single.backgroundMode === 'none' ? 'bg-white shadow text-slate-900 dark:bg-slate-700 dark:text-slate-100' : 'text-slate-500 hover:text-slate-700 dark:text-slate-300'"
+          @click="setPreviewMode('none')"
+        >None</button>
+        <button
+          type="button"
+          class="rounded-full px-3 py-1"
+          :class="single.backgroundMode === 'fill' ? 'bg-white shadow text-slate-900 dark:bg-slate-700 dark:text-slate-100' : 'text-slate-500 hover:text-slate-700 dark:text-slate-300'"
+          @click="setPreviewMode('fill')"
+        >Fill</button>
+        <button
+          type="button"
+          class="rounded-full px-3 py-1"
+          :class="single.backgroundMode === 'clear' ? 'bg-white shadow text-slate-900 dark:bg-slate-700 dark:text-slate-100' : 'text-slate-500 hover:text-slate-700 dark:text-slate-300'"
+          @click="setPreviewMode('clear')"
+        >Clear</button>
+      </div>
     </div>
   </header>
-  <div class="mt-4 grid gap-4" x-show="previewItems.length">
-    <template x-for="item in previewItems" :key="item.id">
+  <div class="mt-4 space-y-4">
+    <div
+      class="rounded border border-indigo-200 bg-indigo-50 px-4 py-3 text-indigo-700 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-200"
+      x-show="single.isProcessing"
+    >
+      <div class="flex items-center gap-2">
+        <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle class="opacity-25" cx="12" cy="12" r="10"></circle><path class="opacity-75" d="M4 12a8 8 0 018-8"></path></svg>
+        <span x-text="single.statusMessage || 'Processing…'"></span>
+      </div>
+    </div>
+    <div
+      class="rounded border border-rose-300 bg-rose-50 px-4 py-3 text-rose-600 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200"
+      x-show="single.error"
+    >
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h3 class="font-semibold">Processing failed</h3>
+          <p class="text-sm" x-text="single.error?.message || 'An unexpected error occurred.'"></p>
+          <pre class="mt-2 max-h-40 overflow-y-auto rounded bg-white/60 p-2 text-xs text-slate-700 dark:bg-slate-900/60 dark:text-slate-200" x-text="JSON.stringify(single.error, null, 2)"></pre>
+        </div>
+        <button type="button" class="btn-tertiary" @click="copyErrorDetails(single.error)">
+          <span class="material-symbols-rounded text-base">content_copy</span>
+          Copy details
+        </button>
+      </div>
+    </div>
+    <template x-if="previewItems.length">
       <article class="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
         <div class="grid md:grid-cols-2">
           <div class="bg-slate-100 dark:bg-slate-800 p-4">
             <div class="aspect-square overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-white">
-              <img :src="item.preview_data_uri || `/result/${item.id}`" :alt="`Preview ${item.result_name}`" class="h-full w-full object-contain" />
+              <img :src="previewItems[0].preview_url" alt="Preview" class="h-full w-full object-contain" />
             </div>
           </div>
           <div class="p-4 space-y-3">
             <div>
-              <h3 class="font-semibold" x-text="item.result_name"></h3>
-              <p class="text-sm text-slate-500 dark:text-slate-400" x-text="`Original: ${item.original_name}`"></p>
+              <h3 class="font-semibold" x-text="previewItems[0].original_name"></h3>
+              <p class="text-xs text-slate-500 dark:text-slate-400" x-text="previewItems[0].output_path"></p>
             </div>
             <dl class="grid grid-cols-2 gap-2 text-sm">
-              <div><dt class="text-slate-500 dark:text-slate-400">Model</dt><dd x-text="item.options.model_key"></dd></div>
-              <div><dt class="text-slate-500 dark:text-slate-400">Feather</dt><dd x-text="item.options.feather_radius"></dd></div>
-              <div><dt class="text-slate-500 dark:text-slate-400">Format</dt><dd x-text="item.options.output_format"></dd></div>
-              <div><dt class="text-slate-500 dark:text-slate-400">Size</dt><dd x-text="formatBytes(item.size_bytes)"></dd></div>
+              <div><dt class="text-slate-500 dark:text-slate-400">Model</dt><dd x-text="previewItems[0].model_used"></dd></div>
+              <div><dt class="text-slate-500 dark:text-slate-400">Timing</dt><dd x-text="previewItems[0].timings?.total_ms ? `${previewItems[0].timings.total_ms.toFixed(1)} ms` : '-' "></dd></div>
             </dl>
             <div class="flex flex-wrap gap-2 pt-2">
-              <a :href="`/download/${item.id}`" class="btn-secondary">
+              <a :href="previewItems[0].download_url" class="btn-secondary">
                 <span class="material-symbols-rounded text-base">download</span>
                 Download
               </a>
-              <button type="button" class="btn-tertiary" @click="openInNewTab(item.id)">
+              <button type="button" class="btn-tertiary" @click="openInNewTab(previewItems[0].id)">
                 <span class="material-symbols-rounded text-base">open_in_new</span>
                 Open
-              </button>
-              <button type="button" class="btn-tertiary" @click="removePreview(item.id)">
-                <span class="material-symbols-rounded text-base">delete</span>
-                Remove
               </button>
             </div>
           </div>
         </div>
       </article>
     </template>
-  </div>
-  <div class="mt-6" x-show="!previewItems.length">
-    <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center text-slate-500 dark:text-slate-400">
+    <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center text-slate-500 dark:text-slate-400" x-show="!previewItems.length && !single.isProcessing">
       Processed images will appear here.
     </div>
   </div>
@@ -63,4 +99,3 @@
       </template>
     </ul>
   </div>
-</section>

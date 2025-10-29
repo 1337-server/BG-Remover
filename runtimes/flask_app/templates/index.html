@@ -1,187 +1,203 @@
 {% extends "base.html" %}
 {% block title %}Background Remover — Flask UI{% endblock %}
 {% block content %}
-<div class="grid gap-8 lg:grid-cols-2" x-cloak>
-  <div class="space-y-6">
-    <section class="card">
-      <header class="flex items-center justify-between">
-        <div>
-          <h2 class="text-lg font-semibold">Upload images</h2>
-          <p class="text-sm text-slate-500 dark:text-slate-400">Drag and drop multiple images or browse from disk.</p>
-        </div>
-        <button
-          type="button"
-          class="text-sm text-indigo-500 hover:text-indigo-400"
-          @click="resetSelections()"
-        >Reset</button>
-      </header>
-      <form id="process-form" class="mt-4 space-y-4" @submit.prevent="processImages()">
-        <div
-          id="drop-zone"
-          class="drop-zone"
-          @dragover.prevent="isDragging = true"
-          @dragleave.prevent="isDragging = false"
-          @drop.prevent="handleDrop($event)"
-          :class="{ 'ring-2 ring-indigo-400 ring-offset-2': isDragging }"
-        >
-          <div class="flex flex-col items-center justify-center text-center">
-            <span class="material-symbols-rounded text-4xl text-indigo-500">cloud_upload</span>
-            <p class="font-medium mt-2">Drop images here</p>
-            <p class="text-sm text-slate-500 dark:text-slate-400">PNG, JPEG, WebP up to 64 MB total</p>
-            <label
-              for="image-input"
-              class="mt-4 inline-flex items-center gap-2 rounded-full bg-indigo-500 px-4 py-2 text-white shadow hover:bg-indigo-400"
-            >
-              <span class="material-symbols-rounded text-base">folder_open</span>
-              <span>Browse</span>
-            </label>
-            <input id="image-input" name="images" type="file" class="hidden" multiple accept="image/*" @change="updateSelections($event)" />
+<div
+  x-data="bgrApp({ badge_label: {{ badge_label|tojson }}, providers: {{ providers|tojson }}, default_output_dir: {{ default_output_dir|tojson }} })"
+  x-init="init()"
+  x-cloak
+>
+  <div
+    class="mb-6 rounded border border-slate-200 bg-slate-100 px-4 py-2 text-sm text-slate-700 shadow dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+    x-show="toast.visible"
+  >
+    <div class="flex items-center gap-2">
+      <span class="material-symbols-rounded text-base" :class="toast.type === 'error' ? 'text-rose-500' : toast.type === 'success' ? 'text-emerald-500' : 'text-indigo-500'">
+        notification_important
+      </span>
+      <span x-text="toast.message"></span>
+    </div>
+  </div>
+  <div class="grid gap-8 lg:grid-cols-2">
+    <div class="space-y-6">
+      <section class="card">
+        <header class="flex items-center justify-between">
+          <div>
+            <h2 class="text-lg font-semibold">Upload images</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400">Drag and drop an image or browse from disk.</p>
           </div>
-        </div>
-        <div class="selected-files" x-show="selectedFiles.length">
-          <h3 class="text-sm font-medium text-slate-500 dark:text-slate-300">Selected images</h3>
-          <ul class="mt-2 space-y-1 text-sm">
-            <template x-for="file in selectedFiles" :key="file.name">
-              <li class="flex items-center justify-between rounded border border-slate-200 dark:border-slate-700 px-3 py-2">
-                <span x-text="file.name"></span>
-                <span class="text-xs text-slate-500 dark:text-slate-400" x-text="formatBytes(file.size)"></span>
-              </li>
-            </template>
-          </ul>
-        </div>
-        <div class="grid gap-4 md:grid-cols-2">
-          <label class="field">
-            <span class="field-label">Background fill</span>
-            <div class="flex items-center gap-3">
-              <input type="color" name="background_color" x-model="settings.background_color" class="h-10 w-16 rounded border border-slate-300 dark:border-slate-700" @input="persistSettings()" />
-              <label class="inline-flex items-center gap-2 text-sm">
-                <input type="checkbox" name="transparent" value="true" x-model="settings.transparent" @change="persistSettings()" />
-                Transparent
+          <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="clearSingleSelection()">Clear</button>
+        </header>
+        <form class="mt-4 space-y-4" @submit.prevent="submitSingle(false)">
+          <div
+            class="drop-zone"
+            @dragover.prevent
+            @drop.prevent="handleDrop($event)"
+          >
+            <div class="flex flex-col items-center justify-center text-center">
+              <span class="material-symbols-rounded text-4xl text-indigo-500">cloud_upload</span>
+              <p class="mt-2 font-medium">Drop an image here</p>
+              <p class="text-sm text-slate-500 dark:text-slate-400">PNG, JPEG, WebP up to 64 MB</p>
+              <label for="image-input" class="mt-4 inline-flex items-center gap-2 rounded-full bg-indigo-500 px-4 py-2 text-white shadow hover:bg-indigo-400">
+                <span class="material-symbols-rounded text-base">folder_open</span>
+                <span>Browse</span>
               </label>
+              <input id="image-input" type="file" accept="image/*" class="hidden" @change="updateSingleFiles($event)" />
             </div>
-            <p class="field-help">Pick a solid background color or keep transparency.</p>
-          </label>
+          </div>
+          <div x-show="single.files.length" class="rounded border border-slate-200 dark:border-slate-700 p-3">
+            <h3 class="text-sm font-medium text-slate-500 dark:text-slate-300">Selected files</h3>
+            <ul class="mt-2 space-y-1 text-sm">
+              <template x-for="file in single.files" :key="file.name">
+                <li class="flex items-center justify-between rounded border border-slate-200 dark:border-slate-700 px-3 py-2">
+                  <span x-text="file.name"></span>
+                  <span class="text-xs text-slate-500 dark:text-slate-400" x-text="formatBytes(file.size)"></span>
+                </li>
+              </template>
+            </ul>
+          </div>
           <label class="field">
-            <span class="field-label">Output format</span>
-            <select name="output_format" x-model="settings.output_format" @change="persistSettings()" class="input">
-              <option value="PNG">PNG (transparent)</option>
-              <option value="JPEG">JPEG</option>
-              <option value="WEBP">WebP</option>
-            </select>
-            <p class="field-help">Choose the export format for processed images.</p>
+            <span class="field-label flex items-center gap-2">
+              Output directory
+              <span class="material-symbols-rounded text-sm text-slate-400" title="Defaults to ./output when left empty.">info</span>
+            </span>
+            <input
+              type="text"
+              class="input"
+              placeholder="{{ default_output_dir }}"
+              x-model="single.outputDir"
+              @input="settings.output_directory = single.outputDir; persistSettings()"
+            />
+            <p class="field-help">Leave blank to use <code>{{ default_output_dir }}</code>.</p>
           </label>
-        </div>
-        {% include "settings.html" %}
-        <div class="flex flex-wrap items-center justify-between gap-4 pt-2">
-          <div class="text-sm text-slate-500 dark:text-slate-400">Settings persist automatically in this browser.</div>
-          <button type="submit" class="btn-primary" :disabled="isProcessing">
-            <span class="material-symbols-rounded text-base" aria-hidden="true">auto_fix</span>
-            <span x-show="!isProcessing">Process images</span>
-            <span x-show="isProcessing" class="flex items-center gap-2">
+          {% include "settings.html" %}
+          <div class="flex flex-wrap items-center justify-between gap-4 pt-2">
+            <div class="text-sm text-slate-500 dark:text-slate-400">Settings persist automatically in this browser.</div>
+            <button type="submit" class="btn-primary" :disabled="single.isProcessing">
+              <span class="material-symbols-rounded text-base" aria-hidden="true">auto_fix</span>
+              <span x-show="!single.isProcessing">Process image</span>
+              <span x-show="single.isProcessing" class="flex items-center gap-2">
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle class="opacity-25" cx="12" cy="12" r="10"></circle><path class="opacity-75" d="M4 12a8 8 0 018-8"></path></svg>
+                Processing…
+              </span>
+            </button>
+          </div>
+        </form>
+      </section>
+      <section class="card">
+        <header class="flex items-center justify-between">
+          <div>
+            <h2 class="text-lg font-semibold">Folder &amp; batch processing</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400">Upload a ZIP archive to process every image inside.</p>
+          </div>
+          <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetBatch()">Reset</button>
+        </header>
+        <form class="mt-4 space-y-4" @submit.prevent="submitBatch()">
+          <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-slate-800/40 p-5 text-center">
+            <p class="font-medium">Upload a folder as ZIP</p>
+            <p class="text-sm text-slate-500 dark:text-slate-400">Each image uses the same settings.</p>
+            <label for="batch-input" class="mt-4 inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-white hover:bg-slate-800 dark:bg-indigo-500 dark:hover:bg-indigo-400">
+              <span class="material-symbols-rounded text-base">folder_zip</span>
+              <span>Select ZIP</span>
+            </label>
+            <input id="batch-input" type="file" accept="application/zip" class="hidden" @change="updateBatchFile($event)" />
+            <p class="mt-2 text-sm" x-text="batch.fileName || 'No archive selected yet.'"></p>
+          </div>
+          <label class="field">
+            <span class="field-label">Output directory</span>
+            <input type="text" class="input" placeholder="{{ default_output_dir }}" x-model="batch.outputDir" @input="settings.output_directory = batch.outputDir; persistSettings()" />
+            <p class="field-help">Defaults to <code>{{ default_output_dir }}</code> beside the input folder.</p>
+          </label>
+          <button type="submit" class="btn-secondary w-full" :disabled="batch.isProcessing">
+            <span class="material-symbols-rounded text-base" aria-hidden="true">folder_open</span>
+            <span x-show="!batch.isProcessing">Process folder</span>
+            <span x-show="batch.isProcessing" class="flex items-center gap-2">
               <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle class="opacity-25" cx="12" cy="12" r="10"></circle><path class="opacity-75" d="M4 12a8 8 0 018-8"></path></svg>
               Processing…
             </span>
           </button>
-        </div>
-      </form>
-    </section>
-    <section class="card">
-      <header class="flex items-center justify-between">
-        <div>
-          <h2 class="text-lg font-semibold">Folder &amp; batch processing</h2>
-          <p class="text-sm text-slate-500 dark:text-slate-400">Upload a ZIP archive to process every image inside.</p>
-        </div>
-        <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetBatch()">Reset</button>
-      </header>
-      <form id="batch-form" class="mt-4 space-y-4" @submit.prevent="processBatch()">
-        <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-slate-800/40 p-5 text-center">
-          <p class="font-medium">Upload a folder as ZIP</p>
-          <p class="text-sm text-slate-500 dark:text-slate-400">Each image will be processed with the same settings.</p>
-          <label for="batch-input" class="mt-4 inline-flex items-center gap-2 rounded-full bg-slate-900 text-white dark:bg-indigo-500 px-4 py-2 hover:bg-slate-800 dark:hover:bg-indigo-400">
-            <span class="material-symbols-rounded text-base">folder_zip</span>
-            <span>Select ZIP</span>
-          </label>
-          <input id="batch-input" type="file" name="archive" accept="application/zip" class="hidden" @change="updateBatchSelection($event)" />
-          <p class="mt-2 text-sm" x-text="batchFileName || 'No archive selected yet.'"></p>
-        </div>
-        <button type="submit" class="btn-secondary w-full" :disabled="isBatchProcessing">
-          <span class="material-symbols-rounded text-base" aria-hidden="true">folder_open</span>
-          <span x-show="!isBatchProcessing">Process folder</span>
-          <span x-show="isBatchProcessing" class="flex items-center gap-2">
-            <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle class="opacity-25" cx="12" cy="12" r="10"></circle><path class="opacity-75" d="M4 12a8 8 0 018-8"></path></svg>
-            Processing…
-          </span>
-        </button>
-        <div class="batch-summary" x-show="batchSummary">
-          <h3 class="text-sm font-medium text-slate-500 dark:text-slate-300">Last batch summary</h3>
-          <dl class="mt-2 grid grid-cols-2 gap-2 text-sm">
-            <div><dt class="text-slate-500 dark:text-slate-400">Total</dt><dd x-text="batchSummary.total"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Success</dt><dd class="text-emerald-500" x-text="batchSummary.success"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Failed</dt><dd class="text-rose-500" x-text="batchSummary.failed"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Size</dt><dd x-text="formatBytes(batchSummary.size_bytes)"></dd></div>
-          </dl>
-          <a :href="batchSummary.download_url" class="btn-link mt-3 inline-flex items-center gap-2" x-show="batchSummary.download_url">
-            <span class="material-symbols-rounded text-base">download</span>
-            Download ZIP
-          </a>
-        </div>
-      </form>
-    </section>
-  </div>
-  <div class="space-y-6">
-    {% include "preview.html" %}
-  </div>
-</div>
-<section class="card mt-10">
-  <header class="flex items-center justify-between">
-    <div>
-      <h2 class="text-lg font-semibold">Processing history</h2>
-      <p class="text-sm text-slate-500 dark:text-slate-400">Recent results are stored locally on this machine.</p>
+          <div class="space-y-3">
+            <h3 class="text-sm font-semibold text-slate-500 dark:text-slate-300">Live log</h3>
+            <ul class="max-h-48 space-y-2 overflow-y-auto">
+              <template x-for="entry in batch.logs" :key="entry.id">
+                <li :class="entry.class" x-text="entry.message"></li>
+              </template>
+              <li x-show="!batch.logs.length" class="rounded border border-slate-200 px-3 py-2 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                Submit a batch to see progress updates.
+              </li>
+            </ul>
+          </div>
+          <div x-show="batch.summary" class="rounded border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/60">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-semibold text-slate-600 dark:text-slate-200">Job summary</h3>
+              <button type="button" class="text-xs text-indigo-500 hover:text-indigo-400" @click="batch.showSummary = !batch.showSummary">
+                <span x-text="batch.showSummary ? 'Hide' : 'Show'"></span>
+              </button>
+            </div>
+            <div class="mt-3 text-sm" x-show="batch.showSummary">
+              <p><strong>Total:</strong> <span x-text="batch.summary.counts.total"></span></p>
+              <p class="text-emerald-600 dark:text-emerald-300"><strong>Success:</strong> <span x-text="batch.summary.counts.success"></span></p>
+              <p class="text-rose-600 dark:text-rose-300"><strong>Failed:</strong> <span x-text="batch.summary.counts.failed"></span></p>
+              <p class="mt-2"><strong>Output directory:</strong> <span x-text="batch.summary.output_dir"></span></p>
+            </div>
+          </div>
+        </form>
+      </section>
     </div>
-    <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="loadHistory()">Refresh</button>
-  </header>
-  <div class="mt-4 overflow-x-auto">
-    <table class="min-w-full text-left text-sm">
-      <thead>
-        <tr class="text-slate-500 dark:text-slate-400">
-          <th class="py-2 pr-4 font-medium">Result</th>
-          <th class="py-2 pr-4 font-medium">Original</th>
-          <th class="py-2 pr-4 font-medium">Created</th>
-          <th class="py-2 pr-4 font-medium">Size</th>
-          <th class="py-2 font-medium text-right">Actions</th>
-        </tr>
-      </thead>
-      <tbody id="history-body" class="divide-y divide-slate-200 dark:divide-slate-700">
-        <tr x-show="!history.length">
-          <td colspan="5" class="py-6 text-center text-slate-500 dark:text-slate-400">Process an image to populate history.</td>
-        </tr>
-        <template x-for="item in history" :key="item.id">
-          <tr>
-            <td class="py-3 pr-4">
-              <div class="flex items-center gap-3">
-                <div class="h-12 w-12 flex-none overflow-hidden rounded border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800">
-                  <img :src="`/result/${item.id}`" alt="Preview" class="h-full w-full object-cover" x-show="item.mime_type.startsWith('image/')" />
-                  <span class="material-symbols-rounded text-2xl text-slate-400 flex h-full w-full items-center justify-center" x-show="!item.mime_type.startsWith('image/')">folder_zip</span>
-                </div>
-                <div>
-                  <p class="font-medium" x-text="item.result_name"></p>
-                  <p class="text-xs text-slate-500 dark:text-slate-400" x-text="item.options.model_key"></p>
-                </div>
-              </div>
-            </td>
-            <td class="py-3 pr-4 text-sm" x-text="item.original_name"></td>
-            <td class="py-3 pr-4 text-sm" x-text="formatDate(item.created_at)"></td>
-            <td class="py-3 pr-4 text-sm" x-text="formatBytes(item.size_bytes)"></td>
-            <td class="py-3 text-right">
-              <div class="flex justify-end gap-2">
-                <a :href="`/result/${item.id}`" target="_blank" class="btn-link">Preview</a>
-                <a :href="`/download/${item.id}`" class="btn-link">Download</a>
-              </div>
-            </td>
-          </tr>
-        </template>
-      </tbody>
-    </table>
+    <div class="space-y-6">
+      {% include "preview.html" %}
+    </div>
   </div>
-</section>
+  <section class="card mt-10">
+    <header class="flex items-center justify-between">
+      <div>
+        <h2 class="text-lg font-semibold">Processing history</h2>
+        <p class="text-sm text-slate-500 dark:text-slate-400">Recent results are stored locally on this machine.</p>
+      </div>
+      <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="loadHistory()">Refresh</button>
+    </header>
+    <div class="mt-4 overflow-x-auto">
+      <table class="min-w-full text-left text-sm">
+        <thead>
+          <tr class="text-slate-500 dark:text-slate-400">
+            <th class="py-2 pr-4 font-medium">Result</th>
+            <th class="py-2 pr-4 font-medium">Original</th>
+            <th class="py-2 pr-4 font-medium">Created</th>
+            <th class="py-2 pr-4 font-medium">Size</th>
+            <th class="py-2 font-medium text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
+          <tr x-show="!history.length">
+            <td colspan="5" class="py-6 text-center text-slate-500 dark:text-slate-400">Process an image to populate history.</td>
+          </tr>
+          <template x-for="item in history" :key="item.id">
+            <tr>
+              <td class="py-3 pr-4">
+                <div class="flex items-center gap-3">
+                  <div class="h-12 w-12 flex-none overflow-hidden rounded border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800">
+                    <img :src="`/result/${item.id}`" alt="Preview" class="h-full w-full object-cover" x-show="item.mime_type.startsWith('image/')" />
+                    <span class="material-symbols-rounded text-2xl text-slate-400 flex h-full w-full items-center justify-center" x-show="!item.mime_type.startsWith('image/')">folder_zip</span>
+                  </div>
+                  <div>
+                    <p class="font-medium" x-text="item.result_name"></p>
+                    <p class="text-xs text-slate-500 dark:text-slate-400" x-text="item.options.model_key"></p>
+                  </div>
+                </div>
+              </td>
+              <td class="py-3 pr-4 text-sm" x-text="item.original_name"></td>
+              <td class="py-3 pr-4 text-sm" x-text="formatDate(item.created_at)"></td>
+              <td class="py-3 pr-4 text-sm" x-text="formatBytes(item.size_bytes)"></td>
+              <td class="py-3 text-right">
+                <div class="flex justify-end gap-2">
+                  <a :href="`/result/${item.id}`" target="_blank" class="btn-link">Preview</a>
+                  <a :href="`/download/${item.id}`" class="btn-link">Download</a>
+                </div>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
 {% endblock %}

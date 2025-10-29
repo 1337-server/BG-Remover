@@ -1,31 +1,53 @@
-<section class="card">
   <header class="flex items-center justify-between">
     <div>
       <h2 class="text-lg font-semibold">Advanced settings</h2>
-      <p class="text-sm text-slate-500 dark:text-slate-400">Fine tune processing behaviour and runtime preferences.</p>
+      <p class="text-sm text-slate-500 dark:text-slate-400">Tune processing behaviour and runtime preferences.</p>
     </div>
     <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetSettings()">Reset defaults</button>
   </header>
   <div class="mt-4 grid gap-4 md:grid-cols-2">
     <label class="field">
-      <span class="field-label">Model</span>
-      <select name="model_key" class="input" x-model="settings.model_key" @change="persistSettings()">
-        <template x-for="option in modelOptions" :key="option">
-          <option :value="option" x-text="option"></option>
+      <span class="field-label flex items-center gap-2">
+        Model
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="'Only supported models are available.'">info</span>
+      </span>
+      <select
+        name="model_key"
+        class="input"
+        :disabled="!models.length"
+        x-model="settings.model_key"
+        @change="setModel($event.target.value); persistSettings()"
+      >
+        <template x-for="model in models" :key="model.key">
+          <option :value="model.key" x-text="model.display_name"></option>
         </template>
       </select>
-      <p class="field-help">Choose the neural network best suited to your images.</p>
+      <p class="field-help">Choose the neural network best suited to your imagery.</p>
     </label>
     <label class="field">
-      <span class="field-label">Feather radius</span>
+      <span class="field-label flex items-center gap-2">
+        Feather radius
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('feather_radius')">info</span>
+      </span>
       <div class="flex items-center gap-3">
-        <input type="range" min="0" max="50" name="feather_radius" x-model="settings.feather_radius" @input="persistSettings()" class="w-full" />
-        <span class="font-semibold w-10 text-right" x-text="settings.feather_radius"></span>
+        <input
+          type="range"
+          min="0"
+          max="50"
+          name="feather_radius"
+          x-model.number="settings.feather_radius"
+          @input="persistSettings()"
+          class="w-full"
+        />
+        <span class="w-12 text-right font-semibold" x-text="settings.feather_radius"></span>
       </div>
-      <p class="field-help">Softens the mask edges to avoid harsh cut-outs.</p>
+      <p class="field-help text-rose-500" x-text="validationErrors.feather_radius"></p>
     </label>
     <div class="field">
-      <span class="field-label">Device preference</span>
+      <span class="field-label flex items-center gap-2">
+        Device preference
+        <span class="material-symbols-rounded text-sm text-slate-400" title="Select a preferred execution provider when troubleshooting or benchmarking.">info</span>
+      </span>
       <div class="flex flex-wrap gap-3 text-sm">
         <label class="chip"><input type="radio" name="provider" value="auto" x-model="settings.provider" @change="persistSettings()" />Auto</label>
         <label class="chip"><input type="radio" name="provider" value="gpu" x-model="settings.provider" @change="persistSettings()" />GPU</label>
@@ -34,14 +56,134 @@
       <p class="field-help">Override provider selection for troubleshooting and GPU usage.</p>
     </div>
     <label class="field">
-      <span class="field-label">Model directory</span>
-      <input type="text" name="model_dir" class="input" placeholder="~/models" x-model="settings.model_dir" @change="persistSettings()" />
+      <span class="field-label flex items-center gap-2">
+        Model directory
+        <span class="material-symbols-rounded text-sm text-slate-400" title="Where downloaded ONNX models live on the server.">info</span>
+      </span>
+      <input type="text" name="model_dir" class="input" placeholder="~/models" x-model="settings.model_dir" @input="persistSettings()" />
       <p class="field-help">Where downloaded ONNX models are stored on the server.</p>
     </label>
     <label class="field">
-      <span class="field-label">Output subfolder</span>
-      <input type="text" name="output_directory" class="input" placeholder="optional" x-model="settings.output_directory" @change="persistSettings()" />
-      <p class="field-help">Store processed files inside this folder under the server cache.</p>
+      <span class="field-label flex items-center gap-2">
+        Output subfolder
+        <span class="material-symbols-rounded text-sm text-slate-400" title="Additional folder relative to the selected output directory.">info</span>
+      </span>
+      <input type="text" name="output_directory" class="input" placeholder="optional" x-model="settings.output_directory" @input="persistSettings()" />
+      <p class="field-help">Store processed files inside this folder under the output directory.</p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Resize mode
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('resize_mode')">info</span>
+      </span>
+      <select class="input" x-model="settings.resize_mode" @change="persistSettings()">
+        <option value="stretch">Stretch</option>
+        <option value="keep-aspect">Keep aspect</option>
+        <option value="crop">Crop</option>
+        <option value="auto">Auto</option>
+      </select>
+      <p class="field-help">Controls how images resize before inference.</p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Output format
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('output_format')">info</span>
+      </span>
+      <select name="output_format" x-model="settings.output_format" @change="persistSettings()" class="input">
+        <option value="PNG">PNG (transparent)</option>
+        <option value="JPEG">JPEG</option>
+        <option value="WEBP">WebP</option>
+      </select>
+      <p class="field-help">Choose the export format for processed images.</p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Background colour
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('background_color')">info</span>
+      </span>
+      <input type="color" class="h-10 w-16 rounded border border-slate-300 dark:border-slate-700" x-model="settings.background_color" @input="persistSettings()" />
+      <p class="field-help text-rose-500" x-text="validationErrors.background_color"></p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Keep transparency
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('transparent')">info</span>
+      </span>
+      <label class="inline-flex items-center gap-2 text-sm">
+        <input type="checkbox" name="transparent" value="true" x-model="settings.transparent" @change="persistSettings()" />
+        Transparent output
+      </label>
+      <p class="field-help">Disable to force background fill using the selected colour.</p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Alpha matting
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('alpha_matting')">info</span>
+      </span>
+      <label class="inline-flex items-center gap-2 text-sm">
+        <input type="checkbox" name="alpha_matting" value="true" x-model="settings.alpha_matting" @change="persistSettings()" />
+        Enable refined matting
+      </label>
+      <p class="field-help">Improves edge quality for tricky subjects.</p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Edge refinement
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('edge_refinement')">info</span>
+      </span>
+      <label class="inline-flex items-center gap-2 text-sm">
+        <input type="checkbox" name="edge_refinement" value="true" x-model="settings.edge_refinement" @change="persistSettings()" />
+        Sharpen mask edges
+      </label>
+      <p class="field-help">Applies an extra sharpening pass to the alpha channel.</p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Mask blur radius
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('mask_blur')">info</span>
+      </span>
+      <input type="number" name="mask_blur" min="0" max="25" class="input" x-model.number="settings.mask_blur" @change="persistSettings()" />
+      <p class="field-help text-rose-500" x-text="validationErrors.mask_blur"></p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Legacy smoothing
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('smoothing')">info</span>
+      </span>
+      <input type="number" step="0.05" min="0" max="1" class="input" x-model.number="settings.smoothing" @change="persistSettings()" />
+      <p class="field-help text-rose-500" x-text="validationErrors.smoothing"></p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Foreground threshold
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('foreground_threshold')">info</span>
+      </span>
+      <input type="number" min="0" max="255" class="input" x-model.number="settings.foreground_threshold" @change="persistSettings()" />
+      <p class="field-help text-rose-500" x-text="validationErrors.foreground_threshold"></p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Background threshold
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('background_threshold')">info</span>
+      </span>
+      <input type="number" min="0" max="255" class="input" x-model.number="settings.background_threshold" @change="persistSettings()" />
+      <p class="field-help text-rose-500" x-text="validationErrors.background_threshold"></p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Erode size
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('erode_size')">info</span>
+      </span>
+      <input type="number" min="0" max="30" class="input" x-model.number="settings.erode_size" @change="persistSettings()" />
+      <p class="field-help text-rose-500" x-text="validationErrors.erode_size"></p>
+    </label>
+    <label class="field">
+      <span class="field-label flex items-center gap-2">
+        Parallel workers
+        <span class="material-symbols-rounded text-sm text-slate-400" :title="optionTooltip('max_workers')">info</span>
+      </span>
+      <input type="number" min="1" max="16" class="input" x-model.number="settings.max_workers" @change="persistSettings()" />
+      <p class="field-help text-rose-500" x-text="validationErrors.max_workers"></p>
     </label>
     <label class="field">
       <span class="field-label">File naming</span>
@@ -49,20 +191,7 @@
         <input type="checkbox" name="preserve_names" value="true" x-model="settings.preserve_names" @change="persistSettings()" />
         Keep original filenames
       </label>
-      <p class="field-help">When disabled the app adds a unique suffix per export.</p>
-    </label>
-    <label class="field">
-      <span class="field-label">Alpha matting</span>
-      <label class="inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" name="alpha_matting" value="true" x-model="settings.alpha_matting" @change="persistSettings()" />
-        Enable refined matting
-      </label>
-      <p class="field-help">Improves edge quality for tricky hair or fur. (Experimental)</p>
-    </label>
-    <label class="field">
-      <span class="field-label">Mask smoothing</span>
-      <input type="number" name="mask_blur" min="0" max="25" class="input" x-model="settings.mask_blur" @change="persistSettings()" />
-      <p class="field-help">Applies an additional blur pass to the generated alpha mask.</p>
+      <p class="field-help">Disable to append <code>_no_bg</code> for each export.</p>
     </label>
     <label class="field">
       <span class="field-label">Remember settings</span>
@@ -70,13 +199,13 @@
         <input type="checkbox" name="remember_preferences" value="true" x-model="settings.remember_preferences" @change="persistSettings()" />
         Sync settings to config file
       </label>
-      <p class="field-help">Persists model directory and provider choice server-side.</p>
+      <p class="field-help">Persist provider and model directory server-side.</p>
     </label>
-    <div class="field md:col-span-2" x-show="activeModelSpecsEntries().length">
+    <div class="field md:col-span-2" x-show="selectedModelEntries().length">
       <span class="field-label">Model profile</span>
-      <p class="field-help">Inspect the normalisation and download details for the selected neural network.</p>
+      <p class="field-help">Inspect normalisation details for the selected model.</p>
       <dl class="mt-3 grid gap-2 sm:grid-cols-2">
-        <template x-for="[label, value] in activeModelSpecsEntries()" :key="label">
+        <template x-for="[label, value] in selectedModelEntries()" :key="label">
           <div class="rounded border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-800/40 px-3 py-2 text-sm">
             <dt class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400" x-text="label"></dt>
             <dd class="mt-1 font-medium text-slate-900 dark:text-slate-100 break-words" x-text="value"></dd>
@@ -85,4 +214,3 @@
       </dl>
     </div>
   </div>
-</section>

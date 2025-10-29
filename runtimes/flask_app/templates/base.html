@@ -28,29 +28,15 @@
     <script src="{{ url_for('webui.static', filename='js/app.js') }}" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.4/dist/cdn.min.js" defer></script>
     <script>
-      document.addEventListener('DOMContentLoaded', () => {
-        if (window.bgrApp && window.Alpine) {
-          console.log('✅ bgrApp detected, starting Alpine...');
-          window.Alpine.start();
-        }
-      });
+      window.toggleTheme = function toggleTheme() {
+        const element = document.documentElement;
+        const toggled = element.classList.toggle('dark');
+        localStorage.setItem('bgr-theme', toggled ? 'dark' : 'light');
+      };
     </script>
   </head>
   <body class="bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100 min-h-full">
-    <div
-      id="app-root"
-      class="min-h-screen flex flex-col"
-      data-config='{
-        "badge_label": {{ badge_label|tojson }},
-        "providers": {{ providers|tojson }},
-        "model_options": {{ model_options|tojson }},
-        "default_model": {{ default_model|tojson }},
-        "model_dir": {{ model_dir|tojson }},
-        "model_specs": {{ model_specs|tojson }}
-      }'
-      x-data="bgrApp($el.dataset.config)"
-      x-init="init()"
-    >
+    <div id="app-root" class="min-h-screen flex flex-col">
       <header class="border-b border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-900/60 backdrop-blur">
         <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div class="flex items-center gap-3">
@@ -61,17 +47,22 @@
             </div>
           </div>
           <div class="flex items-center gap-4">
-            <div class="flex items-center gap-2">
-              <span class="text-sm text-slate-500 dark:text-slate-400">Runtime</span>
-              <span :class="providerPillClass" x-text="providerPill"></span>
+            <div class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+              <span>Providers:</span>
+              <span class="rounded-full bg-slate-200/70 px-3 py-1 text-xs font-semibold text-slate-700 dark:bg-slate-700/40 dark:text-slate-200">
+                {{ badge_label }}
+              </span>
+              {% if providers %}
+                <span class="text-xs">({{ providers|join(", ") }})</span>
+              {% endif %}
             </div>
             <button
               type="button"
               class="inline-flex items-center gap-2 rounded-full border border-slate-300/70 dark:border-slate-700 px-3 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-800"
-              @click="toggleTheme()"
+              onclick="window.toggleTheme()"
             >
               <span class="material-symbols-rounded text-base" aria-hidden="true">contrast</span>
-              <span x-text="themeLabel"></span>
+              Toggle theme
             </button>
           </div>
         </div>

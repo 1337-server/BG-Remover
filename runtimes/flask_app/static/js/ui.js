@@ -14,7 +14,7 @@
 
   /**
    * Resolve the theme preference based on stored value or system preference.
-   * @returns {('light'|'dark')} The preferred theme name.
+   * returns {('light'|'dark')} The preferred theme name.
    */
   const resolvePreferredTheme = () => {
     const stored = window.localStorage ? localStorage.getItem(themeStorageKey) : null;
@@ -29,8 +29,8 @@
 
   /**
    * Apply the requested theme to the root element and optionally persist it.
-   * @param {('light'|'dark')} theme - Desired theme name.
-   * @param {boolean} persist - Whether to store the preference.
+   * param {('light'|'dark')} theme - Desired theme name.
+   * param {boolean} persist - Whether to store the preference.
    */
   const applyTheme = (theme, persist = true) => {
     const resolved = theme === 'dark' ? 'dark' : 'light';
@@ -49,7 +49,7 @@
 
   /**
    * Update the theme toggle button label and state.
-   * @param {('light'|'dark')} theme - The currently active theme.
+   * param {('light'|'dark')} theme - The currently active theme.
    */
   const syncThemeToggle = (theme) => {
     if (!themeToggle) {
@@ -97,8 +97,8 @@
 
   /**
    * Create and show a toast notification.
-   * @param {string} message - The message to display.
-   * @param {'info'|'success'|'error'} tone - Visual tone for the toast.
+   * param {string} message - The message to display.
+   * param {'info'|'success'|'error'} tone - Visual tone for the toast.
    */
   const showToast = (message, tone = 'info') => {
     if (!toastRegion || typeof message !== 'string' || !message.trim()) {
@@ -613,8 +613,8 @@
 
   /**
    * Convert a numeric colour component to its two-digit hexadecimal representation.
-   * @param {number} component - A colour channel value between 0 and 255.
-   * @returns {string} Two-digit hexadecimal representation.
+   * param {number} component - A colour channel value between 0 and 255.
+   * returns {string} Two-digit hexadecimal representation.
    */
   const componentToHex = (component) => {
     const safeValue = Number.isFinite(component) ? Math.min(Math.max(Math.round(component), 0), 255) : 0;
@@ -623,8 +623,8 @@
 
   /**
    * Convert a CSS rgba()/rgb() string to a hexadecimal colour.
-   * @param {string} colorString - The CSS colour string to convert.
-   * @returns {string | null} The equivalent hexadecimal colour or null if parsing fails.
+   * param {string} colorString - The CSS colour string to convert.
+   * returns {string | null} The equivalent hexadecimal colour or null if parsing fails.
    */
   const rgbaToHex = (colorString) => {
     if (typeof colorString !== 'string') {
@@ -642,9 +642,9 @@
 
   /**
    * Resolve a CSS colour string to a normalised hexadecimal colour.
-   * @param {string} value - The CSS colour string to resolve.
-   * @param {string} fallback - The fallback hexadecimal colour.
-   * @returns {string} A #RRGGBB colour string.
+   * param {string} value - The CSS colour string to resolve.
+   * param {string} fallback - The fallback hexadecimal colour.
+   * returns {string} A #RRGGBB colour string.
    */
   const resolveToHex = (value, fallback) => {
     if (typeof value !== 'string') {
@@ -663,8 +663,8 @@
 
   /**
    * Normalise a hex colour value to the #RRGGBB format.
-   * @param {string} value - The colour value to normalise.
-   * @returns {string} A #RRGGBB colour string.
+   * param {string} value - The colour value to normalise.
+   * returns {string} A #RRGGBB colour string.
    */
   const normaliseHex = (value) => {
     if (typeof value !== 'string') {
@@ -689,8 +689,8 @@
 
   /**
    * Update the checkerboard backdrop colour in the preview container.
-   * @param {string} hexValue - The selected hexadecimal colour.
-   * @param {boolean} persist - Whether to persist the colour for future previews.
+   * param {string} hexValue - The selected hexadecimal colour.
+   * param {boolean} persist - Whether to persist the colour for future previews.
    */
   const applyPreviewBackgroundColor = (hexValue, persist = true) => {
     if (!previewContainer) {

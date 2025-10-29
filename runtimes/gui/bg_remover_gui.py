@@ -1,6 +1,6 @@
 """Tkinter GUI for the background remover runtimes."""
 from __future__ import annotations
-
+import os
 import json
 import logging
 import threading
@@ -110,15 +110,38 @@ class BackgroundRemoverApp(tb.Window):
 
     def __init__(self) -> None:
         super().__init__(themename="flatly")
-        self.title("Background Remover")
-        self.geometry("900x720")
+        self.title("Background Remover - PRO")
+        self.geometry("1920x1080")
         self.resizable(True, True)
 
         self.config = load_config()
         init_logging(self.config.log_level)
         self.settings = self._load_settings(self.config)
         self._tooltips: dict[object, ToolTip] = {}
+        # --- Add this block here ---
 
+        icon_path = Path(os.path.dirname(__file__)) / "bg_icon.ico"
+        logging.info(f"Attempting to load window icon from: {icon_path}")
+
+        try:
+            if icon_path.exists():
+                self.iconbitmap(icon_path)
+                logging.info("Successfully applied .ico icon to GUI window.")
+            else:
+                logging.warning(f"Icon file not found: {icon_path}")
+        except Exception as e:
+            logging.exception(f"Failed to set .ico icon: {e}")
+            try:
+                from tkinter import PhotoImage
+                png_icon = icon_path.with_suffix(".png")
+                if png_icon.exists():
+                    self.iconphoto(False, PhotoImage(file=str(png_icon)))
+                    logging.info("Fallback: applied .png icon successfully.")
+                else:
+                    logging.warning(f"No fallback PNG found at {png_icon}")
+            except Exception as e2:
+                logging.exception(f"Failed to set .png fallback icon: {e2}")
+        # --- End block ---
         self.providers = detect_providers(self._provider_hints())
         self._preview_image: Image.Image | None = None
         self._preview_photo: ImageTk.PhotoImage | None = None

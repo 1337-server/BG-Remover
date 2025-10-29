@@ -17,11 +17,9 @@ import hashlib
 import io
 import logging
 import os
-import shutil
 import threading
 import time
-import urllib.error
-import urllib.request
+from types import SimpleNamespace
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -31,6 +29,17 @@ from typing import IO, Any, cast
 import numpy as np
 import onnxruntime as ort
 from PIL import Image, ImageFilter, ImageOps
+try:  # pragma: no cover - optional dependency fallback
+    import requests  # type: ignore[import]
+except ModuleNotFoundError:  # pragma: no cover - fallback for restricted environments
+    from requests_shim import HTTPError, RequestException, Response, get
+
+    requests = SimpleNamespace(  # type: ignore[assignment]
+        get=get,
+        HTTPError=HTTPError,
+        RequestException=RequestException,
+        Response=Response,
+    )
 
 try:  # pragma: no cover - optional dependency during certain deployments
     import cv2  # type: ignore
@@ -40,7 +49,8 @@ except Exception:  # pragma: no cover - gracefully handle missing OpenCV
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MODEL_NAME = "isnet-general-use"
-MODEL_DOWNLOAD_ROOT = Path.home() / ".u2net"
+MODELS_DIRECTORY = Path(__file__).resolve().parent / "models"
+MODEL_DOWNLOAD_ROOT = MODELS_DIRECTORY
 MODEL_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -308,6 +318,12 @@ def _compute_mask(array: np.ndarray, original_size: tuple[int, int]) -> Image.Im
     return image
 
 
+def _build_model_filename(spec: ModelSpec) -> str:
+    """Return the expected filename for ``spec`` within the models directory."""
+
+    return f"{spec.key}.onnx"
+
+
 def _verify_md5(path: Path, expected: str | None) -> bool:
     """Return ``True`` when the file at ``path`` matches ``expected``.
 
@@ -326,6 +342,29 @@ def _verify_md5(path: Path, expected: str | None) -> bool:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             checksum.update(chunk)
     return checksum.hexdigest() == expected.lower()
+
+
+def ensure_models_downloaded() -> None:
+    """Ensure all configured ONNX models are present locally before runtime."""
+
+    MODELS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    for spec in MODEL_SPECS.values():
+        filename = _build_model_filename(spec)
+        destination = MODELS_DIRECTORY / filename
+        relative_destination = Path("models") / filename
+        if _verify_md5(destination, spec.checksum_md5):
+            print(f"[✓] {spec.key} already downloaded.")
+            continue
+        if not spec.url and not (spec.huggingface_repo and spec.huggingface_filename):
+            print(f"[⚠] {spec.key} missing URL — skipped.")
+            continue
+        print(f"[↓] Downloading {spec.key}...")
+        try:
+            _download_model(spec)
+        except Exception as error:  # pragma: no cover - network dependent
+            print(f"[⚠] Failed to download {spec.key}: {error}")
+            continue
+        print(f"[✓] Saved ./{relative_destination.as_posix()}")
 
 
 def _read_token_file(path: Path) -> str | None:
@@ -410,13 +449,22 @@ def _download_model_via_http(
     """Download ``spec`` from ``url`` into ``destination`` using ``headers``."""
 
     tmp_path = destination.with_suffix(".tmp")
-    request = urllib.request.Request(url, headers=dict(headers))
     try:
         with contextlib.ExitStack() as stack:
-            response = stack.enter_context(urllib.request.urlopen(request))
+            response = stack.enter_context(
+                requests.get(url, headers=dict(headers), stream=True, timeout=60)
+            )
+            try:
+                response.raise_for_status()
+            except requests.HTTPError as error:  # pragma: no cover - exercised in ensure helper
+                tmp_path.unlink(missing_ok=True)
+                raise RuntimeError(f"Failed to download {spec.key} from {url}: {error}") from error
             with stack.enter_context(tmp_path.open("wb")) as buffer:
-                shutil.copyfileobj(response, buffer)
-    except urllib.error.HTTPError as error:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    buffer.write(chunk)
+    except requests.RequestException as error:
         tmp_path.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to download {spec.key} from {url}: {error}") from error
     if not _verify_md5(tmp_path, spec.checksum_md5):
@@ -437,9 +485,11 @@ def _download_model(spec: ModelSpec) -> Path:
     if spec.huggingface_repo and spec.huggingface_filename:
         LOGGER.info("Fetching model %s from Hugging Face repo %s", spec.key, spec.huggingface_repo)
         path = _download_model_from_huggingface(spec, destination)
-    else:
+    elif spec.url:
         LOGGER.info("Fetching model %s from %s", spec.key, spec.url)
         path = _download_model_from_url(spec, destination)
+    else:
+        raise ValueError(f"No download source configured for model {spec.key}")
     LOGGER.info("Model %s stored at %s", spec.key, path)
     return path
 

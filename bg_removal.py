@@ -19,19 +19,24 @@ import logging
 import os
 import threading
 import time
-from types import SimpleNamespace
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any, cast
 
+from enum import Enum
+
 import numpy as np
 import onnxruntime as ort
 from PIL import Image, ImageFilter, ImageOps
+
 try:  # pragma: no cover - optional dependency fallback
     import requests  # type: ignore[import]
 except ModuleNotFoundError:  # pragma: no cover - fallback for restricted environments
+    from types import SimpleNamespace
+
     from requests_shim import HTTPError, RequestException, Response, get
 
     requests = SimpleNamespace(  # type: ignore[assignment]
@@ -52,6 +57,32 @@ DEFAULT_MODEL_NAME = "isnet-general-use"
 MODELS_DIRECTORY = Path(__file__).resolve().parent / "models"
 MODEL_DOWNLOAD_ROOT = MODELS_DIRECTORY
 MODEL_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+class DownloadState(Enum):
+    """Enumeration describing lifecycle states for model downloads."""
+
+    AVAILABLE = "available"
+    PENDING = "pending"
+    IN_PROGRESS = "in-progress"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class DownloadStatus:
+    """Snapshot describing the current state of a model download."""
+
+    key: str
+    state: DownloadState
+    path: Path | None = None
+    error: str | None = None
+    attempts: int = 0
+    updated_at: float = field(default_factory=time.time)
+
+
+_DOWNLOAD_STATUS_LOCK = threading.Lock()
+_DOWNLOAD_STATUSES: dict[str, DownloadStatus] = {}
+_PREFETCH_THREADS: dict[str, threading.Thread] = {}
 
 
 @dataclass(frozen=True)
@@ -121,6 +152,7 @@ class ModelSpec:
     input_size: tuple[int, int]
     mean: tuple[float, float, float]
     std: tuple[float, float, float]
+    normalisation_scale: float = 255.0  #: Divisor applied before mean/std normalisation.
     checksum_md5: str | None = None
     url: str | None = None
     huggingface_repo: str | None = None
@@ -179,6 +211,16 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         std=(0.5, 0.5, 0.5),
         huggingface_repo="briaai/RMBG-1.4",
         huggingface_filename="onnx/model.onnx",
+    ),
+
+    # Alias of the BRIA RMBG v2.0 weights used for the "complex scene" option in the UI.
+    "sam_segmentation_model": ModelSpec(
+        key="sam_segmentation_model",
+        input_size=(1024, 1024),
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+        huggingface_repo="briaai/RMBG-2.0",
+        huggingface_filename="RMBG-2.0.onnx",
     ),
 
     # SAM ViT-B Encoder (Hugging Face)
@@ -298,10 +340,10 @@ def _normalise_image(image: Image.Image, spec: ModelSpec) -> np.ndarray:
 
     rgb_image = image.convert("RGB").resize(spec.input_size, Image.Resampling.LANCZOS)
     rgb_array = np.asarray(rgb_image, dtype=np.float32)
-    max_value = float(np.max(rgb_array))
-    if max_value <= 0:
-        max_value = 1.0
-    rgb_array /= max_value
+    scale = spec.normalisation_scale if spec.normalisation_scale > 0 else 1.0
+    # Preserve relative luminance by scaling with the model-defined range rather than
+    # the brightest pixel in the current image.
+    rgb_array /= scale
     normalised = np.zeros_like(rgb_array, dtype=np.float32)
     for index in range(3):
         normalised[:, :, index] = (rgb_array[:, :, index] - spec.mean[index]) / spec.std[index]
@@ -354,27 +396,119 @@ def _verify_md5(path: Path, expected: str | None) -> bool:
     return checksum.hexdigest() == expected.lower()
 
 
-def ensure_models_downloaded() -> None:
-    """Ensure all configured ONNX models are present locally before runtime."""
+def _update_download_status(
+    key: str,
+    *,
+    state: DownloadState,
+    path: Path | None = None,
+    error: str | None = None,
+    attempts: int | None = None,
+) -> DownloadStatus:
+    """Update the cached download status for ``key`` and return the snapshot."""
+
+    with _DOWNLOAD_STATUS_LOCK:
+        previous = _DOWNLOAD_STATUSES.get(key)
+        resolved_path = path if path is not None else (previous.path if previous else None)
+        resolved_error = error if error is not None else (previous.error if previous else None)
+        resolved_attempts = attempts if attempts is not None else (previous.attempts if previous else 0)
+        status = DownloadStatus(
+            key=key,
+            state=state,
+            path=resolved_path,
+            error=resolved_error,
+            attempts=resolved_attempts,
+            updated_at=time.time(),
+        )
+        _DOWNLOAD_STATUSES[key] = status
+        return status
+
+
+def get_download_statuses() -> dict[str, DownloadStatus]:
+    """Return a shallow copy of the current download status mapping."""
+
+    with _DOWNLOAD_STATUS_LOCK:
+        return dict(_DOWNLOAD_STATUSES)
+
+
+def _prefetch_model(spec: ModelSpec) -> None:
+    """Background worker that downloads ``spec`` without blocking startup."""
+
+    try:
+        _download_model(spec)
+    except Exception as error:  # pragma: no cover - network dependent
+        LOGGER.warning("Background download for %s failed: %s", spec.key, error)
+    finally:
+        with _DOWNLOAD_STATUS_LOCK:
+            thread = _PREFETCH_THREADS.get(spec.key)
+            if thread and thread is threading.current_thread():
+                _PREFETCH_THREADS.pop(spec.key, None)
+
+
+def _schedule_prefetch(spec: ModelSpec) -> None:
+    """Start a background thread to download ``spec`` when not already cached."""
+
+    filename = _build_model_filename(spec)
+    destination = MODEL_DOWNLOAD_ROOT / filename
+    existing = get_download_statuses().get(spec.key)
+    if existing and existing.state is DownloadState.AVAILABLE:
+        return
+
+    with _DOWNLOAD_STATUS_LOCK:
+        thread = _PREFETCH_THREADS.get(spec.key)
+        if thread and thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=_prefetch_model,
+            name=f"prefetch-{spec.key}",
+            args=(spec,),
+            daemon=True,
+        )
+        _PREFETCH_THREADS[spec.key] = thread
+
+    _update_download_status(spec.key, state=DownloadState.IN_PROGRESS, path=destination)
+    thread.start()
+
+
+def ensure_models_downloaded(prefetch: bool | Iterable[str] = True) -> dict[str, DownloadStatus]:
+    """Ensure the models directory exists and optionally prefetch weights."""
 
     MODELS_DIRECTORY.mkdir(parents=True, exist_ok=True)
+
+    if isinstance(prefetch, bool):
+        prefetch_keys = {DEFAULT_MODEL_NAME} if prefetch else set()
+    else:
+        requested = {name for name in prefetch}
+        prefetch_keys = {name for name in requested if name in MODEL_SPECS}
+        missing = requested - prefetch_keys
+        if missing:
+            LOGGER.warning("Ignoring unknown models requested for prefetch: %s", ", ".join(sorted(missing)))
+
+    statuses: dict[str, DownloadStatus] = {}
     for spec in MODEL_SPECS.values():
         filename = _build_model_filename(spec)
-        destination = MODELS_DIRECTORY / filename
+        destination = MODEL_DOWNLOAD_ROOT / filename
         relative_destination = Path("models") / filename
         if _verify_md5(destination, spec.checksum_md5):
-            print(f"[✓] {spec.key} already downloaded.")
-            continue
-        if not spec.url and not (spec.huggingface_repo and spec.huggingface_filename):
-            print(f"[⚠] {spec.key} missing URL — skipped.")
-            continue
-        print(f"[↓] Downloading {spec.key}...")
-        try:
-            _download_model(spec)
-        except Exception as error:  # pragma: no cover - network dependent
-            print(f"[⚠] Failed to download {spec.key}: {error}")
-            continue
-        print(f"[✓] Saved ./{relative_destination.as_posix()}")
+            status = _update_download_status(
+                spec.key,
+                state=DownloadState.AVAILABLE,
+                path=destination,
+                error=None,
+            )
+            print(f"[✓] {spec.key} available at ./{relative_destination.as_posix()}")
+        else:
+            status = _update_download_status(
+                spec.key,
+                state=DownloadState.PENDING,
+                path=destination if destination.exists() else None,
+                error=None,
+            )
+            print(f"[ ] {spec.key} will download on first use.")
+            if spec.key in prefetch_keys:
+                print(f"[~] Prefetching {spec.key} in background…")
+                _schedule_prefetch(spec)
+        statuses[spec.key] = status
+    return statuses
 
 
 def _read_token_file(path: Path) -> str | None:
@@ -484,24 +618,91 @@ def _download_model_via_http(
     return destination
 
 
-def _download_model(spec: ModelSpec) -> Path:
+def _download_model(
+    spec: ModelSpec, *, max_attempts: int = 3, backoff_base: float = 0.5
+) -> Path:
     """Download the ONNX model defined by ``spec`` when needed."""
 
     destination = MODEL_DOWNLOAD_ROOT / f"{spec.key}.onnx"
     if _verify_md5(destination, spec.checksum_md5):
         LOGGER.debug("Model %s already present at %s", spec.key, destination)
+        _update_download_status(spec.key, state=DownloadState.AVAILABLE, path=destination, error=None)
         return destination
+
+    if not (spec.huggingface_repo and spec.huggingface_filename) and not spec.url:
+        message = f"No download source configured for model {spec.key}"
+        _update_download_status(spec.key, state=DownloadState.FAILED, path=destination, error=message)
+        raise ValueError(message)
+
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if spec.huggingface_repo and spec.huggingface_filename:
-        LOGGER.info("Fetching model %s from Hugging Face repo %s", spec.key, spec.huggingface_repo)
-        path = _download_model_from_huggingface(spec, destination)
-    elif spec.url:
-        LOGGER.info("Fetching model %s from %s", spec.key, spec.url)
-        path = _download_model_from_url(spec, destination)
-    else:
-        raise ValueError(f"No download source configured for model {spec.key}")
-    LOGGER.info("Model %s stored at %s", spec.key, path)
-    return path
+    attempts = 0
+    while attempts < max_attempts:
+        attempts += 1
+        _update_download_status(
+            spec.key,
+            state=DownloadState.IN_PROGRESS,
+            path=destination,
+            attempts=attempts,
+        )
+        try:
+            if spec.huggingface_repo and spec.huggingface_filename:
+                LOGGER.info(
+                    "Fetching model %s from Hugging Face repo %s (attempt %s)",
+                    spec.key,
+                    spec.huggingface_repo,
+                    attempts,
+                )
+                path = _download_model_from_huggingface(spec, destination)
+            else:
+                LOGGER.info(
+                    "Fetching model %s from %s (attempt %s)",
+                    spec.key,
+                    spec.url,
+                    attempts,
+                )
+                path = _download_model_from_url(spec, destination)
+        except Exception as error:
+            LOGGER.warning("Attempt %s to download %s failed: %s", attempts, spec.key, error)
+            if attempts >= max_attempts:
+                _update_download_status(
+                    spec.key,
+                    state=DownloadState.FAILED,
+                    path=destination if destination.exists() else None,
+                    error=str(error),
+                    attempts=attempts,
+                )
+                raise
+            _update_download_status(
+                spec.key,
+                state=DownloadState.PENDING,
+                path=destination if destination.exists() else None,
+                error=str(error),
+                attempts=attempts,
+            )
+            delay = backoff_base * (2 ** (attempts - 1))
+            LOGGER.debug(
+                "Retrying download for %s in %.2f seconds (attempt %s of %s)",
+                spec.key,
+                delay,
+                attempts + 1,
+                max_attempts,
+            )
+            time.sleep(delay)
+            continue
+
+        _update_download_status(
+            spec.key,
+            state=DownloadState.AVAILABLE,
+            path=path,
+            error=None,
+            attempts=attempts,
+        )
+        LOGGER.info("Model %s stored at %s", spec.key, path)
+        return path
+
+    # The loop should always return or raise beforehand, but the interpreter
+    # requires an explicit ``raise`` in case logic changes in the future.
+    raise RuntimeError(f"Failed to download {spec.key}")
 
 
 class BackgroundRemovalSession:
@@ -704,17 +905,8 @@ def _feather_alpha(alpha: np.ndarray, radius: int) -> np.ndarray:
     return np.asarray(blurred_image, dtype=np.uint8)
 
 
-def _read_stream(stream: IO[bytes]) -> bytes:
-    """Return the bytes from ``stream`` ensuring a useful error on empties."""
-
-    data = stream.read()
-    if not data:
-        raise ValueError("No image data supplied for background removal.")
-    return data
-
-
-def remove_background_bytes(
-    data: bytes,
+def _remove_background_from_image_loader(
+    loader: Callable[[], Image.Image],
     *,
     output_format: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
@@ -725,12 +917,16 @@ def remove_background_bytes(
     use_colorkey_fallback: bool = True,
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
+    session: BackgroundRemovalSession | None = None,
 ) -> RemovalResult:
-    """Remove the background from raw ``data`` and return the processed result."""
+    """Run the shared removal pipeline using ``loader`` to obtain the source image."""
+
+    # Reuse ``session`` when provided so large batch jobs avoid repeated
+    # initialisation overhead and share ONNX runtime state across threads.
 
     format_spec = get_output_format_spec(output_format)
-    session = ensure_global_session(model_name)
-    model_key = getattr(getattr(session, "spec", None), "key", model_name)
+    active_session = session if session is not None else ensure_global_session(model_name)
+    model_key = getattr(getattr(active_session, "spec", None), "key", model_name)
 
     LOGGER.info(
         "Starting background removal request",
@@ -742,10 +938,6 @@ def remove_background_bytes(
         },
     )
 
-    original = Image.open(io.BytesIO(data))
-    processed_input = cast(Image.Image, ImageOps.exif_transpose(original)).convert("RGBA")
-    original.close()
-
     am_foreground = max(0, min(255, int(am_foreground)))
     am_background = max(0, min(255, int(am_background)))
     am_erode = max(0, min(255, int(am_erode)))
@@ -755,8 +947,10 @@ def remove_background_bytes(
     start_time = time.perf_counter()
     error: str | None = None
     output_image: Image.Image | None = None
+    original: Image.Image | None = None
+    processed_input: Image.Image | None = None
     try:
-        mask_image = _predict_mask(processed_input, session)
+        mask_image = _predict_mask(processed_input, active_session)
         mask_l = cast(Image.Image, ImageOps.exif_transpose(mask_image)).convert("L")
         mask_image.close()
         mask_l.load()
@@ -775,7 +969,11 @@ def remove_background_bytes(
         output_image = None
     finally:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        processed_input.close()
+        if processed_input is not None:
+            processed_input.close()
+        if original is not None:
+            with contextlib.suppress(Exception):
+                original.close()
 
     if error is None:
         LOGGER.info(
@@ -804,6 +1002,58 @@ def remove_background_bytes(
     )
 
 
+def remove_background_bytes(
+    data: bytes,
+    *,
+    output_format: str | None = None,
+    model_name: str = DEFAULT_MODEL_NAME,
+    alpha_matting: bool = False,
+    am_foreground: int = 240,
+    am_background: int = 10,
+    am_erode: int = 10,
+    use_colorkey_fallback: bool = True,
+    colorkey_tolerance: int = 14,
+    feather_radius: int = 3,
+    session: BackgroundRemovalSession | None = None,
+) -> RemovalResult:
+    """Remove the background from raw ``data`` and return the processed result.
+
+    Args:
+        data: Raw image bytes to process. Must not be empty.
+        output_format: Optional key describing the desired output format.
+        model_name: Identifier used to resolve the ONNX session.
+        alpha_matting: Whether alpha matting refinement should be applied.
+        am_foreground: Foreground threshold for alpha matting.
+        am_background: Background threshold for alpha matting.
+        am_erode: Erosion kernel size for alpha matting.
+        use_colorkey_fallback: Whether colour-key fallback is enabled.
+        colorkey_tolerance: Tolerance value used for colour-key fallback.
+        feather_radius: Radius for feathering the alpha channel.
+        session: Optional ONNX runtime session to reuse for inference.
+
+    Returns:
+        RemovalResult: The processed image data and associated metadata.
+    """
+
+    if not data:
+        raise ValueError("No image data supplied for background removal.")
+
+    buffer = io.BytesIO(data)
+    return _remove_background_from_image_loader(
+        lambda: Image.open(buffer),
+        output_format=output_format,
+        model_name=model_name,
+        alpha_matting=alpha_matting,
+        am_foreground=am_foreground,
+        am_background=am_background,
+        am_erode=am_erode,
+        use_colorkey_fallback=use_colorkey_fallback,
+        colorkey_tolerance=colorkey_tolerance,
+        feather_radius=feather_radius,
+        session=session,
+    )
+
+
 def remove_background_stream(
     stream: IO[bytes],
     *,
@@ -817,11 +1067,15 @@ def remove_background_stream(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
 ) -> RemovalResult:
-    """Process ``stream`` by reading its bytes before delegating to ``remove_background_bytes``."""
+    """Process ``stream`` directly without materialising the entire payload."""
 
-    data = _read_stream(stream)
-    return remove_background_bytes(
-        data,
+    try:
+        stream.seek(0)
+    except (AttributeError, OSError):  # pragma: no cover - seek may be unsupported
+        pass
+
+    return _remove_background_from_image_loader(
+        lambda: Image.open(stream),
         output_format=output_format,
         model_name=model_name,
         alpha_matting=alpha_matting,
@@ -901,8 +1155,12 @@ def remove_bg_file(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
     retain_image: bool = False,
+    session: BackgroundRemovalSession | None = None,
 ) -> RemovalResult:
     """Remove the background from ``input_path`` and write the result to ``output``."""
+
+    # Allow callers to inject a pre-created session so batch processing can share
+    # the same inference instance when running concurrently.
 
     source_path = Path(input_path)
     with source_path.open("rb") as stream:
@@ -918,6 +1176,7 @@ def remove_bg_file(
         use_colorkey_fallback=use_colorkey_fallback,
         colorkey_tolerance=colorkey_tolerance,
         feather_radius=feather_radius,
+        session=session,
     )
     destination: Path | None = None
     if result.success:
@@ -946,6 +1205,10 @@ def remove_bg_folder(
 ) -> list[RemovalResult]:
     """Process every supported image found under ``input_dir``."""
 
+    # The folder workflow submits each image to a shared executor so that
+    # background removal can be parallelised while retaining deterministic
+    # ordering of the returned results.
+
     source_dir = Path(input_dir)
     if not source_dir.is_dir():
         raise NotADirectoryError(f"Input directory does not exist: {source_dir}")
@@ -953,26 +1216,39 @@ def remove_bg_folder(
     output_root = _resolve_output_directory(output_dir, source_dir)
     format_spec = get_output_format_spec(output_format)
 
+    session = ensure_global_session(model_name)
+
+    submitted: list[tuple[Path, Future[RemovalResult]]] = []
+    with ThreadPoolExecutor() as executor:
+        for source in _iter_input_files(source_dir, recursive):
+            relative = source.relative_to(source_dir) if recursive else Path(source.name)
+            destination = format_spec.normalise_filename(output_root / relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            future = executor.submit(
+                remove_bg_file,
+                source,
+                destination,
+                output_format=format_spec.key,
+                model_name=model_name,
+                alpha_matting=alpha_matting,
+                am_foreground=am_foreground,
+                am_background=am_background,
+                am_erode=am_erode,
+                use_colorkey_fallback=use_colorkey_fallback,
+                colorkey_tolerance=colorkey_tolerance,
+                feather_radius=feather_radius,
+                retain_image=False,
+                session=session,
+            )
+            submitted.append((relative, future))
+
     results: list[RemovalResult] = []
-    for source in _iter_input_files(source_dir, recursive):
-        relative = source.relative_to(source_dir) if recursive else Path(source.name)
-        destination = format_spec.normalise_filename(output_root / relative)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        result = remove_bg_file(
-            source,
-            destination,
-            output_format=format_spec.key,
-            model_name=model_name,
-            alpha_matting=alpha_matting,
-            am_foreground=am_foreground,
-            am_background=am_background,
-            am_erode=am_erode,
-            use_colorkey_fallback=use_colorkey_fallback,
-            colorkey_tolerance=colorkey_tolerance,
-            feather_radius=feather_radius,
-            retain_image=False,
-        )
-        results.append(result)
+    for relative, future in submitted:
+        try:
+            results.append(future.result())
+        except Exception:
+            LOGGER.error("Background removal failed for %s", relative, exc_info=True)
+            raise
     return results
 
 

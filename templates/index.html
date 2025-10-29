@@ -276,7 +276,15 @@
                 <h3 class="text-lg font-semibold text-[var(--color-text-strong)]">Result</h3>
                 <span class="text-sm text-[var(--color-text-muted)]" id="single-status-text"></span>
               </div>
-              <div class="checkerboard rounded-2xl bg-white/40 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3" id="single-preview-background-controls">
+                <div class="flex items-center gap-2">
+                  <label for="single-preview-background" class="text-sm font-medium text-[var(--color-text-muted)]">Preview background</label>
+                  <input type="color" id="single-preview-background" name="preview_background" class="color-input" value="#94a3b8">
+                  <span class="text-xs font-mono uppercase tracking-wide text-[var(--color-text-muted)]" id="single-preview-background-value" aria-live="polite">#94A3B8</span>
+                </div>
+                <p class="text-xs text-[var(--color-text-muted)]">Adjust the background colour to inspect fine edges.</p>
+              </div>
+              <div class="checkerboard rounded-2xl p-4">
                 <img id="single-preview" alt="Processed preview" class="mx-auto max-h-[420px] w-full rounded-2xl object-contain shadow" />
               </div>
               <div class="flex flex-wrap items-center gap-3">

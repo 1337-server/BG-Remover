@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import logging
 import shutil
 import tempfile
+import threading
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -57,7 +60,21 @@ class RegistryItem:
     download_name: str | None = None
 
 
-_ZIP_REGISTRY: dict[str, Path] = {}
+@dataclass(slots=True)
+class ZipRegistryItem:
+    """Metadata describing scheduled ZIP downloads stored in the registry."""
+
+    path: Path
+    temp_dir: Path
+    created_at: float
+    expiry_timer: threading.Timer | None = None
+
+
+ZIP_REGISTRY_TTL_SECONDS: float = 600.0
+"""Time-to-live for generated ZIP downloads before automatic eviction."""
+
+_ZIP_REGISTRY: dict[str, ZipRegistryItem] = {}
+_ZIP_REGISTRY_LOCK = threading.Lock()
 _FILE_REGISTRY: dict[str, RegistryItem] = {}
 _PREVIEW_REGISTRY: dict[str, RegistryItem] = {}
 
@@ -185,10 +202,9 @@ def remove_background_view() -> ResponseReturnValue:
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
     defaults.update(DEFAULT_CHECKBOX_OPTIONS)
 
-    ensure_global_session()
-    runtime_info = get_runtime_payload()
-
     if request.method == "GET":
+        ensure_global_session()
+        runtime_info = get_runtime_payload()
         return render_template(
             "image_remove_bg.html",
             defaults=defaults,
@@ -226,7 +242,10 @@ def remove_background_view() -> ResponseReturnValue:
     if process_folder or form.get("folder_path"):
         folder_path = (form.get("folder_path") or "").strip()
         if not folder_path:
-            return _bad_request("A folder path is required when processing folders.")
+            return _bad_request(
+                "A folder path is required when processing folders.",
+                runtime_info=runtime_info,
+            )
 
         output_dir = (form.get("output_dir") or "").strip() or None
 
@@ -245,7 +264,7 @@ def remove_background_view() -> ResponseReturnValue:
                 feather_radius=options["feather_radius"],
             )
         except Exception as exc:  # pragma: no cover - depends on runtime environment
-            return _bad_request(str(exc))
+            return _bad_request(str(exc), runtime_info=runtime_info)
 
         payload = _serialise_results(results)
         payload["selected_format"] = format_spec.key
@@ -280,7 +299,10 @@ def remove_background_view() -> ResponseReturnValue:
 
     file_storage = request.files.get("image_file")
     if not file_storage or file_storage.filename == "":
-        return _bad_request("Please choose an image to upload or provide a folder path.")
+        return _bad_request(
+            "Please choose an image to upload or provide a folder path.",
+            runtime_info=runtime_info,
+        )
 
     filename = secure_filename(file_storage.filename or "image.png")
     temp_dir = Path(tempfile.mkdtemp(prefix="bgremove_"))
@@ -315,7 +337,9 @@ def remove_background_view() -> ResponseReturnValue:
 
     if not result.success:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        return _bad_request(result.error or "Background removal failed.")
+        return _bad_request(
+            result.error or "Background removal failed.", runtime_info=runtime_info
+        )
 
     if json_requested:
         encoded = encode_result_image(result)
@@ -376,6 +400,78 @@ def _register_registry_item(
     return token, entry
 
 
+def _delete_zip_artifacts(item: ZipRegistryItem) -> None:
+    """Remove filesystem artefacts for ``item`` without raising exceptions."""
+
+    try:
+        item.path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+    except Exception:
+        LOGGER.debug("Failed to remove ZIP file %s during cleanup", item.path, exc_info=True)
+
+    try:
+        if item.temp_dir.exists():
+            shutil.rmtree(item.temp_dir, ignore_errors=True)
+    except Exception:
+        LOGGER.debug(
+            "Failed to remove ZIP temporary directory %s during cleanup", item.temp_dir, exc_info=True
+        )
+
+
+def _cancel_zip_timer(item: ZipRegistryItem) -> None:
+    """Stop the expiry timer attached to ``item`` when the download is served."""
+
+    timer = item.expiry_timer
+    if timer is not None:
+        item.expiry_timer = None
+        try:
+            timer.cancel()
+        except Exception:
+            LOGGER.debug("Failed to cancel ZIP expiry timer", exc_info=True)
+
+
+def _expire_zip_entry(token: str) -> None:
+    """Remove the ZIP registry entry ``token`` if it is still present."""
+
+    with _ZIP_REGISTRY_LOCK:
+        item = _ZIP_REGISTRY.pop(token, None)
+    if item is None:
+        return
+    _delete_zip_artifacts(item)
+
+
+def _register_zip_entry(zip_path: Path, temp_dir: Path) -> tuple[str, ZipRegistryItem]:
+    """Store a generated ZIP file in the registry and start its expiry timer."""
+
+    token = uuid.uuid4().hex
+    item = ZipRegistryItem(path=zip_path, temp_dir=temp_dir, created_at=time.time())
+    ttl = ZIP_REGISTRY_TTL_SECONDS
+    if ttl <= 0:
+        _delete_zip_artifacts(item)
+        return token, item
+
+    with _ZIP_REGISTRY_LOCK:
+        _ZIP_REGISTRY[token] = item
+    timer = threading.Timer(ttl, _expire_zip_entry, args=(token,))
+    timer.daemon = True
+    item.expiry_timer = timer
+    timer.start()
+    return token, item
+
+
+def _drain_zip_registry() -> None:
+    """Remove all pending ZIP downloads and their backing timers."""
+
+    with _ZIP_REGISTRY_LOCK:
+        pending = list(_ZIP_REGISTRY.values())
+        _ZIP_REGISTRY.clear()
+    for item in pending:
+        _cancel_zip_timer(item)
+        _delete_zip_artifacts(item)
+
+
+atexit.register(_drain_zip_registry)
+
+
 def _serve_registry_item(registry: dict[str, RegistryItem], token: str, *, as_attachment: bool) -> Response:
     """Return the file referenced by ``token`` from ``registry``."""
 
@@ -406,21 +502,24 @@ def _serve_registry_item(registry: dict[str, RegistryItem], token: str, *, as_at
 def download_zip(token: str) -> Response:
     """Serve a generated ZIP archive and clean it up afterwards."""
 
-    path = _ZIP_REGISTRY.pop(token, None)
-    if path is None or not path.exists():
+    with _ZIP_REGISTRY_LOCK:
+        item = _ZIP_REGISTRY.pop(token, None)
+    if item is None or not item.path.exists():
         abort(404)
+
+    _cancel_zip_timer(item)
 
     @after_this_request
     def cleanup(response: Response) -> Response:
-        try:
-            path.unlink(missing_ok=True)  # type: ignore[attr-defined]
-            if path.parent.exists():
-                shutil.rmtree(path.parent, ignore_errors=True)
-        except Exception:
-            pass
+        _delete_zip_artifacts(item)
         return response
 
-    return send_file(path, mimetype="application/zip", as_attachment=True, download_name=path.name)
+    return send_file(
+        item.path,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=item.path.name,
+    )
 
 
 @image_converter_bp.route("/image/remove-bg/file/<token>")
@@ -506,17 +605,20 @@ def _create_zip(results: list[RemovalResult]) -> tuple[str, str]:
             arcname = Path(item.path_out).name
             archive.write(item.path_out, arcname=arcname)
 
-    token = uuid.uuid4().hex
-    _ZIP_REGISTRY[token] = zip_path
+    token, _ = _register_zip_entry(zip_path, temp_dir)
     download_url = url_for("image_converter.download_zip", token=token)
     return token, download_url
 
 
-def _bad_request(message: str) -> ResponseReturnValue:
-    """Return a consistent JSON error payload."""
+def _bad_request(
+        message: str, *, runtime_info: Mapping[str, Any] | None = None
+) -> ResponseReturnValue:
+    """Return a consistent JSON error payload with optional runtime metadata."""
 
     payload = {"error": message}
-    payload.update(get_runtime_payload())
+    if runtime_info is None:
+        runtime_info = get_runtime_payload()
+    payload.update(runtime_info)
     response = jsonify(payload)
     response.status_code = 400
     return response

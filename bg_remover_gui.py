@@ -547,6 +547,7 @@ class BackgroundRemoverApp(tb.Window):
         self.eta_text = tb.StringVar(value="")
         self.current_image_name = tb.StringVar(value="")
         self.output_message = tb.StringVar(value="")
+        self.output_folder_var = tb.StringVar(value="./output")
         self.alpha_matting_var = tb.BooleanVar(value=DEFAULT_ALPHA_MATTING_VALUES["alpha_matting"])
         self.am_foreground_var = tb.IntVar(value=DEFAULT_ALPHA_MATTING_VALUES["am_foreground"])
         self.am_background_var = tb.IntVar(value=DEFAULT_ALPHA_MATTING_VALUES["am_background"])
@@ -850,6 +851,27 @@ class BackgroundRemoverApp(tb.Window):
         )
         file_label.pack(side=LEFT, padx=10)
 
+        output_frame = tb.Labelframe(parent, text="Output Settings", padding=10)
+        output_frame.pack(fill=BOTH, pady=5)
+
+        tb.Label(output_frame, text="Output Folder:").pack(side=LEFT, padx=5)
+        output_entry = tb.Entry(output_frame, textvariable=self.output_folder_var, width=40)
+        output_entry.pack(side=LEFT, padx=5)
+        output_button = tb.Button(
+            output_frame,
+            text="Browse…",
+            command=self._choose_single_output_folder,
+            bootstyle="secondary-outline",
+        )
+        output_button.pack(side=LEFT)
+        ToolTip(
+            output_button,
+            (
+                "Choose where processed images are saved. If none is selected, "
+                "results are written to './output' beside the application."
+            ),
+        )
+
         self.single_preview = tb.Label(parent)
         self.single_preview.pack(pady=10)
 
@@ -1094,7 +1116,16 @@ class BackgroundRemoverApp(tb.Window):
         def worker() -> None:
             self.output_message.set("Processing…")
             options = self._build_common_options()
-            destination = options["output"]
+            try:
+                output_dir = self._resolve_single_output_directory()
+                output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                LOGGER.exception("Failed to prepare output directory for %s", path)
+                self.output_message.set("Failed to process image.")
+                self.log_status(f"❌ Failed to prepare output directory: {exc}", color="red")
+                return
+
+            destination = output_dir
             result = None
             try:
                 result = remove_bg_file(
@@ -1222,6 +1253,31 @@ class BackgroundRemoverApp(tb.Window):
         self._output_folder_override = Path(path)
         self._append_log(f"Output folder selected: {self._output_folder_override}")
         self._update_folder_summary()
+
+    @safe_callback
+    def _choose_single_output_folder(self) -> None:
+        """Prompt the user to select an output directory for single processing."""
+
+        from tkinter import filedialog
+
+        folder = filedialog.askdirectory(title="Select Output Folder")
+        if folder:
+            self.output_folder_var.set(folder)
+            self.log_status(f"📁 Output folder set to: {folder}")
+        else:
+            self.log_status("⚠️ No output folder selected; using ./output", color="yellow")
+
+    def _resolve_single_output_directory(self) -> Path:
+        """Return the resolved directory for single-image exports."""
+
+        raw_value = (self.output_folder_var.get() or "").strip()
+        if not raw_value:
+            raw_value = "./output"
+            self.output_folder_var.set(raw_value)
+        candidate = Path(raw_value).expanduser()
+        if not candidate.is_absolute():
+            candidate = _runtime_directory() / candidate
+        return candidate
 
     def _scan_folder(self, folder: Path, recursive: bool) -> Iterable[Path]:
         """Yield supported image files inside ``folder``."""

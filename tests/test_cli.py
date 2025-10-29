@@ -78,3 +78,44 @@ def test_cli_batch_failure(
     assert exit_code == 1
     stdout, _ = capsys.readouterr()
     assert "fail" in stdout
+
+
+def test_cli_batch_handles_non_numeric_elapsed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ensure batch mode renders summaries when elapsed time is missing."""
+
+    input_dir = tmp_path / "images"
+    input_dir.mkdir()
+
+    class DummyReport:
+        total = 1
+        successes = 1
+        failures = 0
+
+        @staticmethod
+        def to_rows() -> list[dict[str, object | None]]:
+            return [
+                {
+                    "input": str(input_dir / "image.png"),
+                    "output": None,
+                    "success": True,
+                    "elapsed_ms": "N/A",
+                    "error": None,
+                }
+            ]
+
+    monkeypatch.setattr(bgr_cli, "load_config", lambda: Config(model_dir=tmp_path))
+    monkeypatch.setattr(bgr_cli, "process_folder", lambda *_, **__: DummyReport())
+
+    exit_code = bgr_cli.main([
+        "remove",
+        "--input",
+        str(input_dir),
+        "--batch",
+    ])
+    assert exit_code == 0
+    stdout, _ = capsys.readouterr()
+    assert "- ms" in stdout

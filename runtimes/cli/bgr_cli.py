@@ -122,16 +122,18 @@ def _handle_single(args: argparse.Namespace, config: Config) -> int:
         return 1
 
 
-def _format_row(entry: dict[str, str | float | None]) -> str:
-    status = STATUS_SUCCESS if entry["success"] else STATUS_FAILURE
-    input_text = entry["input"] or ""
-    output_text = entry["output"] or ""
-    timing = (
-        f"{entry['elapsed_ms']:.1f}"
-        if isinstance(entry["elapsed_ms"], (int | float))
-        else "-"
-    )
-    error = entry["error"] or ""
+def _format_row(entry: dict[str, object | None]) -> str:
+    """Return a formatted CLI table row for a batch processing entry."""
+
+    status = STATUS_SUCCESS if entry.get("success") else STATUS_FAILURE
+    input_text = str(entry.get("input") or "")
+    output_text = str(entry.get("output") or "")
+    elapsed = entry.get("elapsed_ms")
+    if isinstance(elapsed, (int, float)):
+        timing = f"{float(elapsed):.1f}"
+    else:
+        timing = "-"
+    error = str(entry.get("error") or "")
     return f"{status} | {input_text} | {output_text} | {timing} ms | {error}"
 
 

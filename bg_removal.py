@@ -1014,8 +1014,26 @@ def remove_background_bytes(
     use_colorkey_fallback: bool = True,
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
+    session: BackgroundRemovalSession | None = None,
 ) -> RemovalResult:
-    """Remove the background from raw ``data`` and return the processed result."""
+    """Remove the background from raw ``data`` and return the processed result.
+
+    Args:
+        data: Raw image bytes to process. Must not be empty.
+        output_format: Optional key describing the desired output format.
+        model_name: Identifier used to resolve the ONNX session.
+        alpha_matting: Whether alpha matting refinement should be applied.
+        am_foreground: Foreground threshold for alpha matting.
+        am_background: Background threshold for alpha matting.
+        am_erode: Erosion kernel size for alpha matting.
+        use_colorkey_fallback: Whether colour-key fallback is enabled.
+        colorkey_tolerance: Tolerance value used for colour-key fallback.
+        feather_radius: Radius for feathering the alpha channel.
+        session: Optional ONNX runtime session to reuse for inference.
+
+    Returns:
+        RemovalResult: The processed image data and associated metadata.
+    """
 
     if not data:
         raise ValueError("No image data supplied for background removal.")
@@ -1032,6 +1050,7 @@ def remove_background_bytes(
         use_colorkey_fallback=use_colorkey_fallback,
         colorkey_tolerance=colorkey_tolerance,
         feather_radius=feather_radius,
+        session=session,
     )
 
 

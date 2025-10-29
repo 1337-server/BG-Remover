@@ -9,8 +9,37 @@
    * @param {object} config - Payload passed from the template.
    * @returns {object} Alpine component state definition.
    */
+  /**
+   * Normalise configuration payloads originating from Alpine templates.
+   * Accepts JSON strings, DOM elements carrying dataset metadata, or plain objects.
+   *
+   * @param {(string|Element|object|null)} config - Raw payload from ``x-data``.
+   * @returns {object} Normalised configuration object.
+   */
+  function parseConfigPayload(config) {
+    if (!config) {
+      return {};
+    }
+    if (typeof config === 'string') {
+      try {
+        return JSON.parse(config);
+      } catch (error) {
+        console.warn('Failed to parse model options config payload.', error);
+        return {};
+      }
+    }
+    if (config instanceof Element) {
+      var encoded = config.dataset ? config.dataset.modelOptionsConfig || config.dataset.modelOptions || '' : '';
+      return parseConfigPayload(encoded);
+    }
+    if (typeof config === 'object') {
+      return config;
+    }
+    return {};
+  }
+
   function createModelOptionsState(config) {
-    var safeConfig = config && typeof config === 'object' ? config : {};
+    var safeConfig = parseConfigPayload(config);
     var initialValues = safeConfig.initialValues && typeof safeConfig.initialValues === 'object'
       ? safeConfig.initialValues
       : {};
@@ -168,4 +197,10 @@
       return createModelOptionsState(config);
     });
   });
+
+  if (!window.modelOptionsForm) {
+    window.modelOptionsForm = function modelOptionsForm(config) {
+      return createModelOptionsState(config);
+    };
+  }
 })();

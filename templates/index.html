@@ -61,24 +61,22 @@
 
         <div class="space-y-6">
           <section id="panel-single" class="tab-panel space-y-6" data-tab-panel="single" role="tabpanel" aria-labelledby="tab-single">
-            <!-- modelOptionsForm initialises every reactive property in static/js/ui.js so Alpine bindings stay defined. -->
+            <!-- modelOptionsForm initialises every reactive property so Alpine bindings stay defined for dynamic schemas. -->
             <form
               id="single-form"
               enctype="multipart/form-data"
               class="space-y-6"
               novalidate
               data-help-container
-              x-data="modelOptionsForm({{
-                {
-                  'configs': model_configs,
-                  'lookup': removal_model_lookup,
-                  'initialKey': defaults.removal_model,
-                  'initialValues': defaults.model_options,
-                  'initialModelName': defaults.model_options_model_name,
-                  'idPrefix': 'single'
-                }
-                | tojson
-              }})"
+              data-model-options-config='{{ {
+                "configs": model_configs,
+                "lookup": removal_model_lookup,
+                "initialKey": defaults.removal_model,
+                "initialValues": defaults.model_options,
+                "initialModelName": defaults.model_options_model_name,
+                "idPrefix": "single"
+              } | tojson | safe }}'
+              x-data="modelOptionsForm($el.dataset.modelOptionsConfig)"
             >
               <div
                 class="alert hidden rounded-2xl border border-red-400 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200"
@@ -394,17 +392,15 @@
               class="space-y-6"
               novalidate
               data-help-container
-              x-data="modelOptionsForm({{
-                {
-                  'configs': model_configs,
-                  'lookup': removal_model_lookup,
-                  'initialKey': defaults.removal_model,
-                  'initialValues': defaults.model_options,
-                  'initialModelName': defaults.model_options_model_name,
-                  'idPrefix': 'folder'
-                }
-                | tojson
-              }})"
+              data-model-options-config='{{ {
+                "configs": model_configs,
+                "lookup": removal_model_lookup,
+                "initialKey": defaults.removal_model,
+                "initialValues": defaults.model_options,
+                "initialModelName": defaults.model_options_model_name,
+                "idPrefix": "folder"
+              } | tojson | safe }}'
+              x-data="modelOptionsForm($el.dataset.modelOptionsConfig)"
             >
               <input type="hidden" name="process_folder" value="on">
               <label class="flex items-center gap-2 text-sm font-medium text-[var(--color-text-muted)]" data-help-toggle data-help-target="#folder-form">

@@ -28,6 +28,24 @@ docker run --rm -it \
 
 The Flask variant exposes port `8080`. Map it to the host when running containers: `-p 8080:8080`.
 
+### Flask UI highlights
+
+* Drag & drop uploads, batch ZIP support, and a responsive layout optimised for desktops and tablets.
+* Persistent preferences stored in the browser (theme, advanced settings) with optional server-side sync via `remember_preferences`.
+* Dark/light theme toggle, GPU/CPU provider badge, and a background colour picker with transparency toggle.
+* Live activity log, thumbnail previews, and a `/history` endpoint that surfaces all processed files for the current container.
+
+By default processed assets are written to `<instance_path>/results`. Override this location via `OUTPUT_DIR` if you prefer to mount a dedicated volume:
+
+```
+docker run --rm -it \
+  -p 8080:8080 \
+  -v $(pwd)/models:/models \
+  -v $(pwd)/web-results:/var/lib/bgremover/results \
+  -e OUTPUT_DIR=/var/lib/bgremover/results \
+  br-remover-flask
+```
+
 ## Docker Compose example
 
 ```yaml
@@ -42,9 +60,11 @@ services:
       - "8080:8080"
     volumes:
       - ./models:/models
+      - ./web-results:/var/lib/bgremover/results
     environment:
       - MODEL_DIR=/models
       - BGR_LOGLEVEL=INFO
+      - OUTPUT_DIR=/var/lib/bgremover/results
 ```
 
 ## GPU acceleration

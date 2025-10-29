@@ -59,7 +59,32 @@ Exit status is `0` when every image succeeds and non-zero otherwise.
 python -m runtimes.flask_app.app
 ```
 
-The app factory exposes `create_app()` for WSGI or Gunicorn deployments. The landing page offers tooltips for each option, a GPU/CPU badge that lists the active providers, and a model directory override field that applies only to the current session.
+The factory (`runtimes.flask_app.app:create_app`) works for local development and production servers such as Gunicorn. The refreshed UI now includes:
+
+* **Drag & drop uploads** with instant previews and support for multiple images per run.
+* A **live preview panel** that streams results, provides per-image downloads, and mirrors the structured activity log.
+* **Advanced controls** on par with the GUI runtime: model selector, feather radius, provider preference (auto/GPU/CPU), optional alpha-matting toggles, mask smoothing, custom output folder naming, and a persistent model directory field.
+* A **background fill picker** with a transparent toggle so users can composite against any colour.
+* **Dark/light mode** toggle with system preference detection and full localStorage persistence for theme and runtime options.
+* **Folder/batch processing** that accepts ZIP archives, reports per-file success/failure, and exposes a combined ZIP download of all outputs.
+* **History management** powered by the shared `ResultStore`, showing thumbnails, metadata, and quick preview/download links for previous jobs.
+
+The front-end stores preferences client-side and optionally syncs server-side configuration when “Remember settings” is enabled.
+
+#### HTTP endpoints
+
+The Flask runtime exposes a small JSON API that powers the interface and can be consumed programmatically:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Render the interactive UI with theme + provider context. |
+| `POST` | `/process` | Process one or more uploaded images. Returns metadata, previews, and download IDs. |
+| `POST` | `/batch` | Accept a ZIP archive, run the batch pipeline, and return a summary plus a ZIP download handle. |
+| `GET` | `/result/<id>` | Serve a processed image for inline previews. |
+| `GET` | `/download/<id>` | Download a processed asset (image or batch ZIP). |
+| `GET` | `/history` | Retrieve persisted result metadata for the current server instance. |
+
+All routes honour the shared configuration object (`bgremover_core.config.Config`), so provider hints and model directories stay in sync with the other runtimes.
 
 ### GUI
 

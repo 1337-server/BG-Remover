@@ -97,8 +97,17 @@ def remove_background(
     *,
     config: Config | None = None,
     feather_radius: int = 3,
+    **_advanced_options: object,
 ) -> np.ndarray:
-    """Return ``image`` with its background removed using ``model_key``."""
+    """Return ``image`` with its background removed using ``model_key``.
+
+    The ``_advanced_options`` parameter accepts additional keyword arguments to
+    keep the public API forward compatible with runtimes exposing richer
+    controls (for example the Flask and GUI front-ends).  The current
+    implementation only consumes ``feather_radius`` but ignores the remaining
+    values gracefully so callers can pass feature flags without triggering
+    unexpected ``TypeError`` exceptions.
+    """
 
     active_config = config or load_config()
     session = _prepare_session(model_key or active_config.default_model, config=active_config)

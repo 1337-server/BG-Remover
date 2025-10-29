@@ -1,0 +1,66 @@
+<section class="card" id="preview-card">
+  <header class="flex items-center justify-between">
+    <div>
+      <h2 class="text-lg font-semibold">Live preview</h2>
+      <p class="text-sm text-slate-500 dark:text-slate-400">Processed results appear here with download options.</p>
+    </div>
+    <div class="text-sm text-slate-500 dark:text-slate-400" x-show="previewItems.length">
+      <span x-text="previewItems.length"></span> result<span x-show="previewItems.length > 1">s</span>
+    </div>
+  </header>
+  <div class="mt-4 grid gap-4" x-show="previewItems.length">
+    <template x-for="item in previewItems" :key="item.id">
+      <article class="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
+        <div class="grid md:grid-cols-2">
+          <div class="bg-slate-100 dark:bg-slate-800 p-4">
+            <div class="aspect-square overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-white">
+              <img :src="item.preview_data_uri || `/result/${item.id}`" :alt="`Preview ${item.result_name}`" class="h-full w-full object-contain" />
+            </div>
+          </div>
+          <div class="p-4 space-y-3">
+            <div>
+              <h3 class="font-semibold" x-text="item.result_name"></h3>
+              <p class="text-sm text-slate-500 dark:text-slate-400" x-text="`Original: ${item.original_name}`"></p>
+            </div>
+            <dl class="grid grid-cols-2 gap-2 text-sm">
+              <div><dt class="text-slate-500 dark:text-slate-400">Model</dt><dd x-text="item.options.model_key"></dd></div>
+              <div><dt class="text-slate-500 dark:text-slate-400">Feather</dt><dd x-text="item.options.feather_radius"></dd></div>
+              <div><dt class="text-slate-500 dark:text-slate-400">Format</dt><dd x-text="item.options.output_format"></dd></div>
+              <div><dt class="text-slate-500 dark:text-slate-400">Size</dt><dd x-text="formatBytes(item.size_bytes)"></dd></div>
+            </dl>
+            <div class="flex flex-wrap gap-2 pt-2">
+              <a :href="`/download/${item.id}`" class="btn-secondary">
+                <span class="material-symbols-rounded text-base">download</span>
+                Download
+              </a>
+              <button type="button" class="btn-tertiary" @click="openInNewTab(item.id)">
+                <span class="material-symbols-rounded text-base">open_in_new</span>
+                Open
+              </button>
+              <button type="button" class="btn-tertiary" @click="removePreview(item.id)">
+                <span class="material-symbols-rounded text-base">delete</span>
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      </article>
+    </template>
+  </div>
+  <div class="mt-6" x-show="!previewItems.length">
+    <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center text-slate-500 dark:text-slate-400">
+      Processed images will appear here.
+    </div>
+  </div>
+  <div class="mt-6">
+    <h3 class="text-sm font-semibold text-slate-500 dark:text-slate-300">Activity log</h3>
+    <ul class="mt-3 space-y-2 max-h-48 overflow-y-auto" id="status-log">
+      <template x-for="entry in activityLog" :key="entry.id">
+        <li :class="entry.class">
+          <span class="material-symbols-rounded text-base" :class="entry.iconClass" aria-hidden="true" x-text="entry.icon"></span>
+          <span x-text="entry.message"></span>
+        </li>
+      </template>
+    </ul>
+  </div>
+</section>

@@ -197,6 +197,7 @@ def _download_model_via_http(
 ) -> Path:
     """Download ``spec`` from ``url`` into ``destination`` using ``headers``."""
 
+    destination.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = destination.with_suffix(".tmp")
     try:
         with contextlib.ExitStack() as stack:
@@ -294,6 +295,7 @@ def _download_model(
         return destination
 
     model_dir.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
 
     attempts = 0
     while attempts < max_attempts:

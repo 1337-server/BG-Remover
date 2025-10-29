@@ -532,10 +532,16 @@ class BackgroundRemoverApp(tb.Window):
         self._image_preview: ImageTk.PhotoImage | None = None
         self._result_preview: ImageTk.PhotoImage | None = None
         self.alpha_spinboxes: list[tb.Spinbox] = []
+        self.provider_badge: tb.Label | None = None
+        self.provider_tooltip: ToolTip | None = None
+        self._provider_status = tb.StringVar(value="[ CPU ]")
+        self._provider_refresh_thread: threading.Thread | None = None
+        self._pending_provider_key: str | None = None
 
         self._create_variables()
         self._build_ui()
         self.after(100, self._process_event_queue)
+        self._refresh_provider_badge()
         self._prepare_model_runtime(initial=True)
 
     def _create_variables(self) -> None:
@@ -580,6 +586,12 @@ class BackgroundRemoverApp(tb.Window):
         header = tb.Frame(container)
         header.pack(fill=BOTH, expand=False)
 
+        self.app_style.configure(
+            "StatusBadge.TLabel",
+            padding=(10, 4),
+            font=("Segoe UI", 9, "bold"),
+        )
+
         title = tb.Label(
             header,
             text="Background Remover",
@@ -593,6 +605,18 @@ class BackgroundRemoverApp(tb.Window):
             bootstyle="secondary",
         )
         subtitle.pack(side=LEFT, padx=10, pady=6)
+
+        self.provider_badge = tb.Label(
+            header,
+            textvariable=self._provider_status,
+            style="StatusBadge.TLabel",
+            bootstyle="secondary",
+        )
+        self.provider_badge.pack(side=RIGHT, padx=(0, 12))
+        self.provider_tooltip = create_tooltip(
+            self.provider_badge,
+            "Active providers: CPUExecutionProvider",
+        )
 
         theme_button = tb.Button(
             header,
@@ -863,6 +887,77 @@ class BackgroundRemoverApp(tb.Window):
             "Avoid reprocessing files that already have background-free versions on disk.",
         )
         self._sync_alpha_controls()
+
+    def _refresh_provider_badge(self, *, model_key: str | None = None) -> None:
+        """Update the hardware provider badge asynchronously."""
+
+        if self.provider_badge is None:
+            return
+        selected_key = model_key or self.model_var.get()
+        self._pending_provider_key = selected_key
+        model_name = _REMOVAL_MODEL_LOOKUP.get(selected_key, DEFAULT_MODEL_NAME)
+
+        def worker(target_key: str, target_model: str) -> None:
+            """Load provider information for ``target_model`` in a thread."""
+
+            providers: tuple[str, ...]
+            try:
+                session = ensure_global_session(target_model)
+                providers = tuple(getattr(session, "providers_available", ()))
+                if not providers:
+                    inner = getattr(session, "inner", None)
+                    if inner is not None and hasattr(inner, "get_providers"):
+                        providers = tuple(inner.get_providers())
+                if not providers:
+                    providers = ("CPUExecutionProvider",)
+            except Exception:
+                LOGGER.exception("Failed to detect ONNX providers for %s", target_model)
+                providers = ("CPUExecutionProvider",)
+
+            self.after(0, lambda: self._apply_provider_badge(target_key, providers))
+
+        thread = threading.Thread(target=worker, args=(selected_key, model_name), daemon=True)
+        thread.start()
+        self._provider_refresh_thread = thread
+
+    def _apply_provider_badge(
+        self, model_key: str, providers: Iterable[str] | tuple[str, ...]
+    ) -> None:
+        """Apply provider state to the badge when the UI thread is ready."""
+
+        if model_key != self._pending_provider_key or self.provider_badge is None:
+            return
+
+        provider_list = tuple(providers) if providers else ("CPUExecutionProvider",)
+        use_gpu = "CUDAExecutionProvider" in provider_list
+        status_text = "[ GPU ]" if use_gpu else "[ CPU ]"
+        bootstyle = "success" if use_gpu else "secondary"
+
+        self._provider_status.set(status_text)
+        self.provider_badge.configure(bootstyle=bootstyle)
+
+        tooltip_text = "Active providers: " + ", ".join(provider_list)
+        if self.provider_tooltip is None:
+            self.provider_tooltip = create_tooltip(self.provider_badge, tooltip_text)
+        else:
+            updated = False
+            for attr_name in ("configure", "config"):
+                updater = getattr(self.provider_tooltip, attr_name, None)
+                if callable(updater):
+                    try:
+                        updater(text=tooltip_text)
+                        updated = True
+                        break
+                    except Exception:
+                        continue
+            if not updated:
+                try:
+                    self.provider_tooltip.text = tooltip_text
+                    updated = True
+                except Exception:
+                    updated = False
+            if not updated:
+                self.provider_tooltip = create_tooltip(self.provider_badge, tooltip_text)
 
     def _add_labeled_spinbox(
         self,
@@ -1150,6 +1245,7 @@ class BackgroundRemoverApp(tb.Window):
         keys = [option["key"] for option in REMOVAL_MODEL_OPTIONS]
         if 0 <= index < len(keys):
             self.model_var.set(keys[index])
+            self._refresh_provider_badge(model_key=keys[index])
 
     @safe_callback
     def _sync_alpha_controls(self) -> None:

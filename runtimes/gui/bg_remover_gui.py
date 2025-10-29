@@ -104,6 +104,49 @@ def _coerce_smoothing(value: Any) -> float:
     return max(0.0, min(1.0, smoothing))
 
 
+class CollapsibleSection(tb.Frame):
+    """A reusable frame with a toggleable content area."""
+
+    def __init__(
+        self,
+        parent: Any,
+        *,
+        title: str = "",
+        start_open: bool = True,
+    ) -> None:
+        super().__init__(parent)
+        self.columnconfigure(0, weight=1)
+        self._title = title
+        self.content_visible = start_open
+
+        self.header = tb.Frame(self)
+        self.header.grid(row=0, column=0, sticky="ew")
+
+        arrow = "▼" if start_open else "►"
+        self.toggle_button = tb.Button(
+            self.header,
+            text=f"{arrow} {title}",
+            command=self.toggle,
+        )
+        self.toggle_button.pack(fill="x", pady=2)
+        self.toggle_button.configure(anchor="w")
+
+        self.content = tb.Frame(self)
+        if start_open:
+            self.content.grid(row=1, column=0, sticky="ew")
+
+    def toggle(self) -> None:
+        """Collapse or expand the content frame."""
+
+        if self.content_visible:
+            self.content.grid_remove()
+            self.toggle_button.configure(text=f"► {self._title}")
+        else:
+            self.content.grid(row=1, column=0, sticky="ew")
+            self.toggle_button.configure(text=f"▼ {self._title}")
+        self.content_visible = not self.content_visible
+
+
 class BackgroundRemoverApp(tb.Window):
     """Main application window for background removal."""
 
@@ -485,21 +528,32 @@ class BackgroundRemoverApp(tb.Window):
 
         self.advanced_body = tb.Frame(parent, padding=10)
         self.advanced_body.pack(fill=BOTH, expand=True)
-        self.advanced_body.grid_columnconfigure(1, weight=1)
 
         self._build_general_section(self.advanced_body)
-        self._build_alpha_section(self.advanced_body)
-        self._build_mask_section(self.advanced_body)
-        self._build_output_section(self.advanced_body)
-        self._build_batch_section(self.advanced_body)
+
+        alpha_section = CollapsibleSection(self.advanced_body, title="Alpha Matting Refinement")
+        alpha_section.pack(fill="x", pady=(0, 8))
+        self._build_alpha_section(alpha_section.content)
+
+        mask_section = CollapsibleSection(self.advanced_body, title="Mask Refinement")
+        mask_section.pack(fill="x", pady=(0, 8))
+        self._build_mask_section(mask_section.content)
+
+        output_section = CollapsibleSection(self.advanced_body, title="Output")
+        output_section.pack(fill="x", pady=(0, 8))
+        self._build_output_section(output_section.content)
+
+        batch_section = CollapsibleSection(self.advanced_body, title="Batch Processing")
+        batch_section.pack(fill="x")
+        self._build_batch_section(batch_section.content)
         self._toggle_alpha_controls()
 
     def _build_general_section(self, parent: tb.Frame) -> None:
         """Create general processing preference controls."""
 
         general = tb.Frame(parent)
-        general.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, 10))
-        general.grid_columnconfigure(1, weight=1)
+        general.pack(fill="x", pady=(0, 10))
+        general.columnconfigure(1, weight=1)
 
         tb.Label(general, text="Model").grid(row=0, column=0, sticky=W)
         self.model_var = tb.StringVar(value=self.settings.get("model_key", self.config.default_model))
@@ -581,9 +635,9 @@ class BackgroundRemoverApp(tb.Window):
     def _build_alpha_section(self, parent: tb.Frame) -> None:
         """Create the alpha matting refinement group."""
 
-        frame = tb.Labelframe(parent, text="Alpha Matting Refinement", padding=10)
-        frame.grid(row=1, column=0, columnspan=2, sticky="we", pady=(0, 10))
-        frame.grid_columnconfigure(1, weight=1)
+        frame = tb.Frame(parent, padding=10)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
 
         self.alpha_enabled_var = tb.BooleanVar(value=bool(self.settings.get("alpha_matting", False)))
         enable_check = tb.Checkbutton(
@@ -669,9 +723,9 @@ class BackgroundRemoverApp(tb.Window):
     def _build_mask_section(self, parent: tb.Frame) -> None:
         """Create mask refinement controls."""
 
-        frame = tb.Labelframe(parent, text="Mask Refinement", padding=10)
-        frame.grid(row=2, column=0, columnspan=2, sticky="we", pady=(0, 10))
-        frame.grid_columnconfigure(1, weight=1)
+        frame = tb.Frame(parent, padding=10)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
 
         self.smoothing_var = tb.DoubleVar(value=float(self.settings.get("smoothing", 0.0)))
         tb.Label(frame, text="Smoothing").grid(row=0, column=0, sticky=W)
@@ -712,9 +766,9 @@ class BackgroundRemoverApp(tb.Window):
     def _build_output_section(self, parent: tb.Frame) -> None:
         """Create output configuration controls."""
 
-        frame = tb.Labelframe(parent, text="Output", padding=10)
-        frame.grid(row=3, column=0, columnspan=2, sticky="we", pady=(0, 10))
-        frame.grid_columnconfigure(1, weight=1)
+        frame = tb.Frame(parent, padding=10)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
 
         tb.Label(frame, text="Format").grid(row=0, column=0, sticky=W)
         self.format_var = tb.StringVar(value=self.settings.get("output_format", "PNG"))
@@ -764,9 +818,9 @@ class BackgroundRemoverApp(tb.Window):
     def _build_batch_section(self, parent: tb.Frame) -> None:
         """Create batch processing configuration controls."""
 
-        frame = tb.Labelframe(parent, text="Batch Processing", padding=10)
-        frame.grid(row=4, column=0, columnspan=2, sticky="we")
-        frame.grid_columnconfigure(1, weight=1)
+        frame = tb.Frame(parent, padding=10)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
 
         self.recursive_var = tb.BooleanVar(value=bool(self.settings.get("recursive", False)))
         recursive_check = tb.Checkbutton(
@@ -808,7 +862,7 @@ class BackgroundRemoverApp(tb.Window):
         """Toggle visibility of the advanced settings frame."""
 
         if self.advanced_visible.get():
-            self.advanced_body.forget()
+            self.advanced_body.pack_forget()
             self.advanced_visible.set(False)
             self.toggle_button.configure(text="Show")
         else:

@@ -582,6 +582,8 @@
   const previewSizeInput = document.getElementById('single-preview-size');
   const previewSizeLabel = document.getElementById('single-preview-size-label');
   const previewContainer = document.getElementById('single-preview')?.parentElement;
+  const previewBackgroundInput = document.getElementById('single-preview-background');
+  const previewBackgroundValue = document.getElementById('single-preview-background-value');
 
   const applyPreviewSize = () => {
     if (!previewSizeInput) {
@@ -605,6 +607,149 @@
     previewSizeInput.addEventListener('change', applyPreviewSize);
     applyPreviewSize();
   }
+
+  /**
+   * Convert a numeric colour component to its two-digit hexadecimal representation.
+   * @param {number} component - A colour channel value between 0 and 255.
+   * @returns {string} Two-digit hexadecimal representation.
+   */
+  const componentToHex = (component) => {
+    const safeValue = Number.isFinite(component) ? Math.min(Math.max(Math.round(component), 0), 255) : 0;
+    return safeValue.toString(16).padStart(2, '0');
+  };
+
+  /**
+   * Convert a CSS rgba()/rgb() string to a hexadecimal colour.
+   * @param {string} colorString - The CSS colour string to convert.
+   * @returns {string | null} The equivalent hexadecimal colour or null if parsing fails.
+   */
+  const rgbaToHex = (colorString) => {
+    if (typeof colorString !== 'string') {
+      return null;
+    }
+    const match = colorString
+      .trim()
+      .match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
+    if (!match) {
+      return null;
+    }
+    const [, r, g, b] = match;
+    return `#${componentToHex(Number(r))}${componentToHex(Number(g))}${componentToHex(Number(b))}`;
+  };
+
+  /**
+   * Extract the alpha channel from a CSS rgba()/rgb() string.
+   * @param {string} colorString - The CSS colour string.
+   * @returns {number | null} Parsed alpha channel between 0 and 1, or null if unavailable.
+   */
+  const parseAlphaChannel = (colorString) => {
+    if (typeof colorString !== 'string') {
+      return null;
+    }
+    const match = colorString
+      .trim()
+      .match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
+    if (!match) {
+      return null;
+    }
+    const alpha = match[4];
+    if (typeof alpha === 'undefined') {
+      return null;
+    }
+    const numeric = Number(alpha);
+    if (Number.isNaN(numeric)) {
+      return null;
+    }
+    return Math.min(Math.max(numeric, 0), 1);
+  };
+
+  /**
+   * Normalise a hex colour value to the #RRGGBB format.
+   * @param {string} value - The colour value to normalise.
+   * @returns {string} A #RRGGBB colour string.
+   */
+  const normaliseHex = (value) => {
+    if (typeof value !== 'string') {
+      return '#94a3b8';
+    }
+    const trimmed = value.trim();
+    if (/^#([0-9a-f]{6})$/i.test(trimmed)) {
+      return trimmed.toLowerCase();
+    }
+    if (/^#([0-9a-f]{3})$/i.test(trimmed)) {
+      const [, shortHex] = trimmed.match(/^#([0-9a-f]{3})$/i) || [];
+      if (shortHex) {
+        const expanded = shortHex
+          .split('')
+          .map((char) => char + char)
+          .join('');
+        return `#${expanded.toLowerCase()}`;
+      }
+    }
+    return '#94a3b8';
+  };
+
+  /**
+   * Convert a hexadecimal colour to an rgba() string with the provided alpha channel.
+   * @param {string} hex - The hexadecimal colour value.
+   * @param {number} alpha - Alpha channel between 0 and 1.
+   * @returns {string} A CSS rgba() representation.
+   */
+  const hexToRgba = (hex, alpha) => {
+    const normalised = normaliseHex(hex);
+    const r = parseInt(normalised.slice(1, 3), 16);
+    const g = parseInt(normalised.slice(3, 5), 16);
+    const b = parseInt(normalised.slice(5, 7), 16);
+    const safeAlpha = Number.isFinite(alpha) ? Math.min(Math.max(alpha, 0), 1) : 0.35;
+    return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+  };
+
+  let previewBackgroundAlpha = 0.35;
+
+  /**
+   * Update the checkerboard backdrop colour in the preview container.
+   * @param {string} hexValue - The selected hexadecimal colour.
+   */
+  const applyPreviewBackgroundColor = (hexValue) => {
+    if (!previewContainer) {
+      return;
+    }
+    const rgbaValue = hexToRgba(hexValue, previewBackgroundAlpha);
+    previewContainer.style.setProperty('--checkerboard-color', rgbaValue);
+    previewContainer.style.setProperty('--checkerboard-pattern-color', rgbaValue);
+    if (previewBackgroundValue) {
+      previewBackgroundValue.textContent = normaliseHex(hexValue).toUpperCase();
+    }
+  };
+
+  const initialisePreviewBackgroundControl = () => {
+    if (!previewBackgroundInput || !previewContainer) {
+      return;
+    }
+
+    const computedStyle = getComputedStyle(previewContainer);
+    const existingColor =
+      computedStyle.getPropertyValue('--checkerboard-pattern-color') ||
+      computedStyle.getPropertyValue('--checkerboard-color');
+    const existingHex = rgbaToHex(existingColor) || normaliseHex(previewBackgroundInput.value);
+    const alphaFromCss = parseAlphaChannel(existingColor);
+    if (alphaFromCss !== null) {
+      previewBackgroundAlpha = alphaFromCss;
+    }
+
+    const startingHex = normaliseHex(existingHex);
+    previewBackgroundInput.value = startingHex;
+    applyPreviewBackgroundColor(startingHex);
+
+    const handleBackgroundChange = (event) => {
+      applyPreviewBackgroundColor(event.target.value);
+    };
+
+    previewBackgroundInput.addEventListener('input', handleBackgroundChange);
+    previewBackgroundInput.addEventListener('change', handleBackgroundChange);
+  };
+
+  initialisePreviewBackgroundControl();
 
   const edgeSlider = document.getElementById('single-feather');
   const edgeValueLabel = document.getElementById('single-feather-value');

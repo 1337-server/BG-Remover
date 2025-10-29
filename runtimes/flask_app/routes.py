@@ -594,7 +594,7 @@ def _create_record(
     if serialised.get("preserve_names"):
         filename = f"{stem}.{suffix}"
     else:
-        filename = f"{stem}_no_bg.{suffix}"
+        filename = f"{stem}_{identifier[:8]}_no_bg.{suffix}"
     output_path = output_dir / filename
     if pillow_format != "PNG" and result_image.mode != "RGB":
         save_image = result_image.convert("RGB")

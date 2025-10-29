@@ -90,7 +90,9 @@ workflows. At runtime it creates an `output/` subfolder inside whichever directo
 the original images untouched.
 
 All command-line flags described above continue to work—for example pass `--onefile` to emit a
-single-binary distribution or `--no-clean` during iterative testing.
+single-binary distribution or `--no-clean` during iterative testing. Regardless of the packaging
+mode, the GUI records uncaught exceptions to an `error.log` file that lives next to the executable
+and surfaces a message box with the location so crashes are no longer silent.
 
 After building, double-click the executable (or run it from a terminal) to open the GUI window directly
 without starting a local web server.

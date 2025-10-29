@@ -146,7 +146,14 @@ def _write_traceback_to_log(traceback_text: str) -> Path:
     """Persist ``traceback_text`` to :data:`LOG_FILE` and return the path."""
 
     try:
-        LOG_FILE.write_text(traceback_text, encoding="utf-8")
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as log_file:
+            if LOG_FILE.exists() and LOG_FILE.stat().st_size > 0:
+                log_file.write("\n")
+            log_file.write("=" * 80 + "\n")
+            log_file.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+            log_file.write("\n")
+            log_file.write(traceback_text)
     except Exception:  # pragma: no cover - best-effort logging fallback
         print("Failed to write error log:")
         print(traceback_text)
@@ -447,7 +454,7 @@ class BackgroundRemoverApp(tb.Window):
 
     def __init__(self) -> None:
         super().__init__(title="Background Remover", themename="flatly")
-        self.app_style = tb.Style()
+        self.app_style = tb.Style("flatly")
         self.geometry("1100x720")
         self.minsize(960, 640)
         self._theme_dark = False

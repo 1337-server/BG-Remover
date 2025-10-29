@@ -19,7 +19,6 @@ import logging
 import os
 import threading
 import time
-from types import SimpleNamespace
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -29,9 +28,12 @@ from typing import IO, Any, cast
 import numpy as np
 import onnxruntime as ort
 from PIL import Image, ImageFilter, ImageOps
+
 try:  # pragma: no cover - optional dependency fallback
     import requests  # type: ignore[import]
 except ModuleNotFoundError:  # pragma: no cover - fallback for restricted environments
+    from types import SimpleNamespace
+
     from requests_shim import HTTPError, RequestException, Response, get
 
     requests = SimpleNamespace(  # type: ignore[assignment]
@@ -179,6 +181,16 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         std=(0.5, 0.5, 0.5),
         huggingface_repo="briaai/RMBG-1.4",
         huggingface_filename="onnx/model.onnx",
+    ),
+
+    # Alias of the BRIA RMBG v2.0 weights used for the "complex scene" option in the UI.
+    "sam_segmentation_model": ModelSpec(
+        key="sam_segmentation_model",
+        input_size=(1024, 1024),
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+        huggingface_repo="briaai/RMBG-2.0",
+        huggingface_filename="RMBG-2.0.onnx",
     ),
 
     # SAM ViT-B Encoder (Hugging Face)

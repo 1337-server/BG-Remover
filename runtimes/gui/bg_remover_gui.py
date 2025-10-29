@@ -1,8 +1,9 @@
 """Tkinter GUI for the background remover runtimes."""
 from __future__ import annotations
-import os
+
 import json
 import logging
+import os
 import threading
 import webbrowser
 from pathlib import Path
@@ -15,18 +16,11 @@ from ttkbootstrap.constants import BOTH, END, LEFT, RIGHT, W
 from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.tooltip import ToolTip
 
-from bgremover_core import (
-    Config,
-    init_logging,
-    load_config,
-    persist_config,
-    process_folder,
-    remove_background,
-)
+from bgremover_core import Config, init_logging, load_config, persist_config, process_folder
 from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
 from bgremover_core.models.loader import detect_providers
 from bgremover_core.models.specs import MODEL_SPECS
-from bgremover_core.processing.pipeline import ReportEntry
+from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry, process_image
 
 LOGGER = logging.getLogger(__name__)
 
@@ -102,6 +96,26 @@ def _coerce_smoothing(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(1.0, smoothing))
+
+
+def run_gui_pipeline_for_parity(
+    image: Image.Image,
+    *,
+    config: Config,
+    model_key: str,
+    feather_radius: int = 3,
+    **advanced_options: object,
+) -> ProcessingResult:
+    """Return the GUI pipeline result for diagnostic parity checks."""
+
+    array = image_to_numpy(image)
+    return process_image(
+        array,
+        model_key=model_key,
+        config=config,
+        feather_radius=feather_radius,
+        **advanced_options,
+    )
 
 
 class CollapsibleSection(tb.Frame):
@@ -1125,13 +1139,13 @@ class BackgroundRemoverApp(tb.Window):
             config = self._active_config()
             kwargs = self._processing_kwargs()
             kwargs["feather_radius"] = int(self.settings.get("feather_radius", 3))
-            result = remove_background(
+            result = process_image(
                 array,
-                self.model_var.get(),
+                model_key=self.model_var.get(),
                 config=config,
                 **kwargs,
             )
-            result_image = Image.fromarray(result)
+            result_image = result.image
             format_hint, _ = _format_meta(self.settings.get("output_format", "PNG"))
             self.after(
                 0,

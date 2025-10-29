@@ -15,6 +15,8 @@ from bgremover_core.processing import pipeline
 class StubSession:
     def __init__(self, spec: ModelSpec) -> None:
         self.spec = spec
+        self.input_name = "input"
+        self.providers_available = ("CPUExecutionProvider",)
 
     def run(self, _tensor):  # pragma: no cover - simple stub
         width, height = self.spec.input_size
@@ -39,6 +41,16 @@ def test_remove_background_returns_rgba_array(stub_session: None) -> None:
     result = pipeline.remove_background(image, "test-model", config=config)
     assert result.shape == (32, 32, 4)
     assert result.dtype == np.uint8
+
+
+def test_process_image_returns_processing_result(stub_session: None) -> None:
+    config = Config(model_dir=Path("/tmp/models"))
+    image = np.zeros((32, 32, 4), dtype=np.uint8)
+    result = pipeline.process_image(image, model_key="test-model", config=config)
+    assert isinstance(result, pipeline.ProcessingResult)
+    assert result.image.size == (32, 32)
+    assert result.mask.shape == (32, 32)
+    assert result.alpha.shape == (32, 32)
 
 
 def test_remove_background_failure_raises_pipeline_error() -> None:

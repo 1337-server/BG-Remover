@@ -233,9 +233,10 @@ window.bgrApp = function bgrApp(rawConfig) {
         });
         const payload = await response.json();
         if (!response.ok) {
-          throw new Error(payload.error || 'Processing failed');
+          const errorMessage = payload.message || payload.error || 'Processing failed';
+          throw new Error(errorMessage);
         }
-        const results = payload.results || [];
+        const results = Array.isArray(payload.results) ? payload.results : [];
         results.forEach((item) => {
           this.addActivity('success', `${item.result_name} processed successfully ✓`);
         });

@@ -15,6 +15,7 @@ from uuid import uuid4
 import numpy as np
 from flask import (
     Blueprint,
+    Flask,
     Response,
     current_app,
     jsonify,
@@ -262,17 +263,21 @@ def _process_image(upload, *, config: Config, store: ResultStore, options: dict[
 
 
 def _process_single_request(
+    app: Flask,
     files: Iterable,
     *,
     config: Config,
     options: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    store = _get_store()
-    results: list[dict[str, Any]] = []
-    for upload in files:
-        record = _process_image(upload, config=config, store=store, options=options)
-        results.append(record.as_dict(include_preview=True))
-    return results
+    """Process each uploaded file within the provided Flask application context."""
+
+    with app.app_context():
+        store = _get_store()
+        results: list[dict[str, Any]] = []
+        for upload in files:
+            record = _process_image(upload, config=config, store=store, options=options)
+            results.append(record.as_dict(include_preview=True))
+        return results
 
 
 # ---------------------------------------------------------------------------
@@ -304,12 +309,22 @@ def process_images() -> Response:
         return jsonify({"error": "No images uploaded"}), 400
 
     executor = _get_executor()
-    future = executor.submit(_process_single_request, uploads, config=active_config, options=options)
+    app_obj = current_app._get_current_object()
     try:
+        future = executor.submit(
+            _process_single_request,
+            app_obj,
+            uploads,
+            config=active_config,
+            options=options,
+        )
         results = future.result()
     except PipelineError as error:
         LOGGER.error("Processing failed: %s", error)
         return jsonify({"error": str(error)}), 422
+    except Exception as error:  # noqa: BLE001
+        LOGGER.exception("Unexpected processing failure")
+        return jsonify({"status": "error", "message": str(error)}), 500
 
     if options["remember"] and options["model_dir"]:
         persist_config(active_config)

@@ -80,6 +80,74 @@ def test_encode_result_image_returns_data_url(monkeypatch: pytest.MonkeyPatch) -
     assert data_url.startswith("data:image/png;base64,")
 
 
+def test_download_model_from_huggingface(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Ensure Hugging Face hosted models download through the hub helper."""
+
+    spec = bg_remove.MODEL_SPECS["matting-by-generation"]
+    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+
+    assert spec.huggingface_filename is not None
+
+    def fake_download(
+        spec_arg: bg_remove.ModelSpec, url: str, destination: Path, headers: dict[str, str]
+    ) -> Path:
+        assert spec_arg is spec
+        assert "Authorization" not in headers
+        destination.write_bytes(b"onnx")
+        return destination
+
+    monkeypatch.setattr(bg_remove, "_download_model_via_http", fake_download)
+    path = bg_remove._download_model(spec)
+    expected_path = tmp_path / f"{spec.key}.onnx"
+    assert path == expected_path
+    assert expected_path.exists()
+    assert expected_path.read_bytes() == b"onnx"
+
+
+def test_download_model_from_huggingface_uses_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Attach Hugging Face tokens from the environment when provided."""
+
+    spec = bg_remove.MODEL_SPECS["sam_segmentation_model"]
+    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "secret")
+
+    captured_headers: dict[str, str] = {}
+
+    def fake_download(
+        spec_arg: bg_remove.ModelSpec, url: str, destination: Path, headers: dict[str, str]
+    ) -> Path:
+        captured_headers.update(headers)
+        destination.write_bytes(b"onnx")
+        return destination
+
+    monkeypatch.setattr(bg_remove, "_download_model_via_http", fake_download)
+    path = bg_remove._download_model(spec)
+    expected_path = tmp_path / f"{spec.key}.onnx"
+    assert path == expected_path
+    assert captured_headers.get("Authorization") == "Bearer secret"
+
+
+def test_download_model_from_huggingface_reports_auth_issue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Surface a helpful message when Hugging Face access is denied."""
+
+    spec = bg_remove.MODEL_SPECS["briaai/RMBG-2.0"]
+    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+
+    def fake_download(
+        spec_arg: bg_remove.ModelSpec, url: str, destination: Path, headers: dict[str, str]
+    ) -> Path:
+        raise RuntimeError("HTTP Error 401: Unauthorized")
+
+    monkeypatch.setattr(bg_remove, "_download_model_via_http", fake_download)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        bg_remove._download_model(spec)
+
+    assert "authentication" in str(excinfo.value).lower()
+
+
 def test_all_removal_models_have_specs() -> None:
     """Ensure every configured UI model maps to a downloadable spec."""
 

@@ -68,6 +68,14 @@ window.bgrApp = function bgrApp(rawConfig) {
     model_dir: normalizedModelDir,
   });
 
+  const createEmptyBatchSummary = () => ({
+    total: 0,
+    success: 0,
+    failed: 0,
+    size_bytes: 0,
+    download_url: '',
+  });
+
   const buildInitialSettings = () => {
     const stored = readStoredSettings();
     const defaults = createDefaults();
@@ -102,7 +110,7 @@ window.bgrApp = function bgrApp(rawConfig) {
     isDragging: false,
     batchFile: null,
     batchFileName: '',
-    batchSummary: null,
+    batchSummary: createEmptyBatchSummary(),
     settings: buildInitialSettings(),
 
     init() {
@@ -194,7 +202,7 @@ window.bgrApp = function bgrApp(rawConfig) {
     resetBatch() {
       this.batchFile = null;
       this.batchFileName = '';
-      this.batchSummary = null;
+      this.batchSummary = createEmptyBatchSummary();
       const input = document.getElementById('batch-input');
       if (input) {
         input.value = '';
@@ -265,7 +273,9 @@ window.bgrApp = function bgrApp(rawConfig) {
         if (!response.ok) {
           throw new Error(payload.error || 'Batch processing failed');
         }
-        this.batchSummary = payload.summary ? { ...payload.summary, download_url: payload.download_url } : null;
+        this.batchSummary = payload.summary
+          ? { ...payload.summary, download_url: payload.download_url }
+          : createEmptyBatchSummary();
         if (payload.summary) {
           this.showToast(
             'success',

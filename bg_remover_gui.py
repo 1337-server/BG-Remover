@@ -131,7 +131,26 @@ def _ensure_pyinstaller_hidden_imports() -> None:
 
 _ensure_pyinstaller_hidden_imports()
 
-LOG_FILE = Path(os.path.abspath(".")) / "error.log"
+def _runtime_directory() -> Path:
+    """Return the directory that should contain runtime artefacts."""
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+LOG_FILE = _runtime_directory() / "error.log"
+
+
+def _write_traceback_to_log(traceback_text: str) -> Path:
+    """Persist ``traceback_text`` to :data:`LOG_FILE` and return the path."""
+
+    try:
+        LOG_FILE.write_text(traceback_text, encoding="utf-8")
+    except Exception:  # pragma: no cover - best-effort logging fallback
+        print("Failed to write error log:")
+        print(traceback_text)
+    return LOG_FILE
 
 
 def _configure_logging() -> None:
@@ -157,13 +176,10 @@ def _configure_logging() -> None:
 LOGGER = logging.getLogger(__name__)
 
 
-def _show_fatal_error_dialog(title: str, traceback_text: str) -> None:
-    """Display a blocking error dialog containing ``traceback_text``."""
+def _show_fatal_error_dialog(title: str, log_path: Path) -> None:
+    """Display a blocking error dialog referencing ``log_path``."""
 
-    message = (
-        "An unrecoverable error occurred and the application must close. "
-        f"A detailed log was written to {LOG_FILE}.\n\n{traceback_text}"
-    )
+    message = f"An unexpected error occurred. See {log_path} for details."
     try:
         Messagebox.show_error(message, title)
     except Exception:
@@ -431,7 +447,7 @@ class BackgroundRemoverApp(tb.Window):
 
     def __init__(self) -> None:
         super().__init__(title="Background Remover", themename="flatly")
-        self.style = tb.Style()
+        self.app_style = tb.Style()
         self.geometry("1100x720")
         self.minsize(960, 640)
         self._theme_dark = False
@@ -885,7 +901,7 @@ class BackgroundRemoverApp(tb.Window):
 
         self._theme_dark = not self._theme_dark
         theme = "darkly" if self._theme_dark else "flatly"
-        self.style.theme_use(theme)
+        self.app_style.theme_use(theme)
 
     def _on_format_selected(self, _event: Any) -> None:
         """Synchronise the output format variable with the dropdown."""
@@ -1206,16 +1222,18 @@ def main() -> None:
         app = BackgroundRemoverApp()
     except Exception:
         traceback_text = traceback.format_exc()
+        log_path = _write_traceback_to_log(traceback_text)
         LOGGER.exception("Failed to initialise the Background Remover GUI.")
-        _show_fatal_error_dialog("Background Remover", traceback_text)
+        _show_fatal_error_dialog("Background Remover", log_path)
         return
 
     try:
         app.mainloop()
     except Exception:
         traceback_text = traceback.format_exc()
+        log_path = _write_traceback_to_log(traceback_text)
         LOGGER.exception("Unhandled exception within the Tkinter main loop.")
-        _show_fatal_error_dialog("Background Remover", traceback_text)
+        _show_fatal_error_dialog("Background Remover", log_path)
     finally:
         LOGGER.info("Background Remover GUI stopped.")
 

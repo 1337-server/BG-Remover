@@ -19,18 +19,17 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any, cast
 
-from enum import Enum
-
 import numpy as np
 import onnxruntime as ort
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
 try:  # pragma: no cover - optional dependency fallback
     import requests  # type: ignore[import]
@@ -949,7 +948,14 @@ def _remove_background_from_image_loader(
     output_image: Image.Image | None = None
     original: Image.Image | None = None
     processed_input: Image.Image | None = None
+    elapsed_ms = 0.0
     try:
+        original = loader()
+        original.load()
+        processed_input = ImageOps.exif_transpose(original)
+        if processed_input is not original:
+            processed_input.load()
+
         mask_image = _predict_mask(processed_input, active_session)
         mask_l = cast(Image.Image, ImageOps.exif_transpose(mask_image)).convert("L")
         mask_image.close()
@@ -964,14 +970,18 @@ def _remove_background_from_image_loader(
         refined_mask = Image.fromarray(alpha_np, mode="L")
         output_image = processed_input.copy()
         output_image.putalpha(refined_mask)
+    except UnidentifiedImageError:
+        error = "The uploaded file is not a recognised image format."
+        LOGGER.error("Failed to open input image for background removal", exc_info=True)
     except Exception as exc:  # pragma: no cover - depends on third-party libraries
         error = str(exc)
-        output_image = None
+        LOGGER.exception("Background removal pipeline raised an unexpected error")
     finally:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         if processed_input is not None:
-            processed_input.close()
-        if original is not None:
+            with contextlib.suppress(Exception):
+                processed_input.close()
+        if original is not None and original is not processed_input:
             with contextlib.suppress(Exception):
                 original.close()
 

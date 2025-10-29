@@ -1,6 +1,7 @@
 """Tests for the Flask route providing the background removal UI."""
 from __future__ import annotations
 
+import base64
 import io
 
 import pytest
@@ -65,6 +66,36 @@ def test_post_with_image_displays_result(
     assert payload["mime_type"] == "image/png"
     assert payload["result"]["success"] is True
     assert payload["image_base64"].startswith("data:image/png;base64,")
+
+
+def test_post_with_json_image_payload(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    monkeypatch.setattr(bg_remove, "_load_session", lambda model_name: DummySession())
+    monkeypatch.setattr(
+        bg_remove,
+        "_predict_mask",
+        lambda image, session: Image.new("L", image.size, color=255),
+    )
+
+    buffer, filename = _make_upload()
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    response = client.post(
+        "/?json=1",
+        json={"image_base64": encoded, "filename": filename, "output_format": "png"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["result"]["success"] is True
+    assert payload["mime_type"] == "image/png"
+    assert payload["download_name"].endswith(".png")
 
 
 def test_post_uses_requested_model_session(

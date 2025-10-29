@@ -14,8 +14,8 @@ import threading
 import time
 import traceback
 from collections.abc import Iterable, Iterator
-from functools import wraps
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -161,6 +161,12 @@ def _write_traceback_to_log(traceback_text: str) -> Path:
     return LOG_FILE
 
 
+def create_tooltip(widget: Any, text: str, *, wraplength: int = 280) -> ToolTip:
+    """Attach a tooltip with consistent styling to ``widget`` and return it."""
+
+    return ToolTip(widget, text, wraplength=wraplength)
+
+
 def _configure_logging() -> None:
     """Initialise a file-based logger for capturing runtime issues."""
 
@@ -245,8 +251,7 @@ def safe_callback(fn):
 
             def generator_wrapper() -> Iterator[Any]:
                 try:
-                    for item in result:
-                        yield item
+                    yield from result
                 except Exception as exc:  # pragma: no cover - runtime safety net
                     handle_exception(exc)
                     return
@@ -589,7 +594,7 @@ class BackgroundRemoverApp(tb.Window):
             bootstyle="secondary-outline",
         )
         theme_button.pack(side=RIGHT)
-        ToolTip(theme_button, "Switch between light and dark themes.")
+        create_tooltip(theme_button, "Switch between light and dark themes.")
 
         mode_frame = tb.Frame(container, padding=(0, 20, 0, 10))
         mode_frame.pack(fill=BOTH, expand=False)
@@ -609,7 +614,7 @@ class BackgroundRemoverApp(tb.Window):
             bootstyle="success-toolbutton",
         )
         single_radio.pack(side=LEFT, padx=(0, 8))
-        ToolTip(single_radio, "Process a single image file.")
+        create_tooltip(single_radio, "Process a single image file.")
 
         folder_radio = tb.Radiobutton(
             choices,
@@ -620,7 +625,7 @@ class BackgroundRemoverApp(tb.Window):
             bootstyle="info-toolbutton",
         )
         folder_radio.pack(side=LEFT, padx=(0, 8))
-        ToolTip(folder_radio, "Process all supported images inside a folder.")
+        create_tooltip(folder_radio, "Process all supported images inside a folder.")
 
         body = tb.PanedWindow(container, orient="horizontal")
         body.pack(fill=BOTH, expand=True)
@@ -660,7 +665,11 @@ class BackgroundRemoverApp(tb.Window):
 
         format_label = tb.Label(parent, text="Output format", font=("Segoe UI", 10, "bold"))
         format_label.pack(anchor=W)
-        ToolTip(format_label, "Choose the file type used for saved results.")
+        format_tooltip = (
+            "Choose how processed images are saved. PNG keeps transparency (default), JPG fills the "
+            "background, and WEBP balances quality with smaller files."
+        )
+        create_tooltip(format_label, format_tooltip)
 
         formats = [f"{spec.label}" for spec in OUTPUT_FORMATS]
         keys = [spec.key for spec in OUTPUT_FORMATS]
@@ -679,10 +688,15 @@ class BackgroundRemoverApp(tb.Window):
         self.format_combo.current(initial_index)
         self.format_combo.pack(fill=BOTH, pady=5)
         self.format_combo.bind("<<ComboboxSelected>>", self._on_format_selected)
+        create_tooltip(self.format_combo, format_tooltip)
 
         model_label = tb.Label(parent, text="Removal model", font=("Segoe UI", 10, "bold"))
         model_label.pack(anchor=W, pady=(10, 0))
-        ToolTip(model_label, "Select which ML model should run background removal.")
+        model_tooltip = (
+            "Choose which ONNX model handles background removal. Larger models capture more detail "
+            "but take longer to run; lighter models are faster with slightly softer edges."
+        )
+        create_tooltip(model_label, model_tooltip)
 
         model_values = [option["label"] for option in REMOVAL_MODEL_OPTIONS]
         model_keys = [option["key"] for option in REMOVAL_MODEL_OPTIONS]
@@ -701,6 +715,7 @@ class BackgroundRemoverApp(tb.Window):
         self.model_combo.current(idx)
         self.model_combo.pack(fill=BOTH, pady=5)
         self.model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
+        create_tooltip(self.model_combo, model_tooltip)
 
         alpha_check = tb.Checkbutton(
             parent,
@@ -709,7 +724,13 @@ class BackgroundRemoverApp(tb.Window):
             command=self._sync_alpha_controls,
         )
         alpha_check.pack(anchor=W, pady=(15, 5))
-        ToolTip(alpha_check, "Use fine-grained matting to refine edges around hair or fur.")
+        create_tooltip(
+            alpha_check,
+            (
+                "Enables an extra refinement pass that preserves fine details like hair or fur. "
+                "Disable for faster processing."
+            ),
+        )
 
         alpha_frame = tb.Frame(parent)
         alpha_frame.pack(fill=BOTH, pady=5)
@@ -720,7 +741,10 @@ class BackgroundRemoverApp(tb.Window):
             variable=self.am_foreground_var,
             from_=0,
             to=255,
-            tooltip="Pixels brighter than this are treated as definite foreground.",
+            tooltip=(
+                "Sets how strongly the foreground is preserved when alpha matting runs (0–255; "
+                "default 240)."
+            ),
             collector=self.alpha_spinboxes,
         )
         self._add_labeled_spinbox(
@@ -729,7 +753,10 @@ class BackgroundRemoverApp(tb.Window):
             variable=self.am_background_var,
             from_=0,
             to=255,
-            tooltip="Pixels darker than this are treated as background.",
+            tooltip=(
+                "Controls how aggressively the background is removed during matting (0–255; default "
+                "10)."
+            ),
             collector=self.alpha_spinboxes,
         )
         self._add_labeled_spinbox(
@@ -738,7 +765,10 @@ class BackgroundRemoverApp(tb.Window):
             variable=self.am_erode_var,
             from_=0,
             to=255,
-            tooltip="Higher values slightly expand the background mask for smoother edges.",
+            tooltip=(
+                "Adjusts the erosion kernel used before refinement. Higher values trim more edge "
+                "detail (0–255; default 10)."
+            ),
             collector=self.alpha_spinboxes,
         )
 
@@ -751,7 +781,10 @@ class BackgroundRemoverApp(tb.Window):
             variable=self.feather_var,
             from_=0,
             to=50,
-            tooltip="Softens edges by blending the mask with the background.",
+            tooltip=(
+                "Adjusts how soft subject borders appear. Higher values blend edges across a wider "
+                "radius (0–50; default 3)."
+            ),
         )
         self._add_labeled_spinbox(
             tuning_frame,
@@ -759,7 +792,10 @@ class BackgroundRemoverApp(tb.Window):
             variable=self.colorkey_var,
             from_=0,
             to=60,
-            tooltip="Higher values allow more aggressive colour spill removal.",
+            tooltip=(
+                "Useful for solid backgrounds such as green screens. Higher values remove more "
+                "similar colours (0–255; default 14)."
+            ),
         )
 
         colorkey_check = tb.Checkbutton(
@@ -768,9 +804,12 @@ class BackgroundRemoverApp(tb.Window):
             variable=self.use_colorkey_var,
         )
         colorkey_check.pack(anchor=W, pady=(5, 0))
-        ToolTip(
+        create_tooltip(
             colorkey_check,
-            "When enabled, a colour key fallback is applied when matting is disabled.",
+            (
+                "Applies a colour-key helper when matting is disabled so solid backgrounds still "
+                "get removed. Enabled by default."
+            ),
         )
 
         recursive_check = tb.Checkbutton(
@@ -779,7 +818,10 @@ class BackgroundRemoverApp(tb.Window):
             variable=self.recursive_var,
         )
         recursive_check.pack(anchor=W, pady=(15, 0))
-        ToolTip(recursive_check, "Scan sub-folders when batch processing.")
+        create_tooltip(
+            recursive_check,
+            "Process every supported image within nested folders—ideal for large photo libraries.",
+        )
 
         skip_check = tb.Checkbutton(
             parent,
@@ -787,7 +829,10 @@ class BackgroundRemoverApp(tb.Window):
             variable=self.skip_existing_var,
         )
         skip_check.pack(anchor=W, pady=5)
-        ToolTip(skip_check, "Avoid reprocessing files that already have background-free versions.")
+        create_tooltip(
+            skip_check,
+            "Avoid reprocessing files that already have background-free versions on disk.",
+        )
         self._sync_alpha_controls()
 
     def _add_labeled_spinbox(
@@ -807,7 +852,7 @@ class BackgroundRemoverApp(tb.Window):
         frame.pack(fill=BOTH, pady=3)
         lbl = tb.Label(frame, text=label)
         lbl.pack(anchor=W)
-        ToolTip(lbl, tooltip)
+        create_tooltip(lbl, tooltip)
         spin = tb.Spinbox(
             frame,
             from_=from_,
@@ -817,6 +862,7 @@ class BackgroundRemoverApp(tb.Window):
             width=10,
         )
         spin.pack(anchor=W)
+        create_tooltip(spin, tooltip)
         if collector is not None:
             collector.append(spin)
 
@@ -840,7 +886,7 @@ class BackgroundRemoverApp(tb.Window):
             bootstyle="primary-outline",
         )
         self.file_button.pack(side=LEFT)
-        ToolTip(self.file_button, "Browse for a single image to process.")
+        create_tooltip(self.file_button, "Browse for a single image to process.")
 
         file_label = tb.Label(
             file_row,
@@ -866,7 +912,10 @@ class BackgroundRemoverApp(tb.Window):
             bootstyle="success",
         )
         self.process_button.pack(side=LEFT)
-        ToolTip(self.process_button, "Generate a background-free version of the selected image.")
+        create_tooltip(
+            self.process_button,
+            "Generate a background-free version of the selected image.",
+        )
 
     def _build_folder_controls(self, parent: tb.Frame) -> None:
         """Create widgets for folder-based processing."""
@@ -893,7 +942,10 @@ class BackgroundRemoverApp(tb.Window):
             bootstyle="primary-outline",
         )
         self.folder_button.pack(side=LEFT)
-        ToolTip(self.folder_button, "Choose the folder that should be processed in batch mode.")
+        create_tooltip(
+            self.folder_button,
+            "Choose the folder that should be processed in batch mode.",
+        )
 
         folder_label = tb.Label(
             choose_row,
@@ -913,7 +965,7 @@ class BackgroundRemoverApp(tb.Window):
             bootstyle="secondary-outline",
         )
         self.output_button.pack(side=LEFT)
-        ToolTip(
+        create_tooltip(
             self.output_button,
             (
                 "Choose where processed images should be saved. Leave unset to use the "
@@ -968,7 +1020,10 @@ class BackgroundRemoverApp(tb.Window):
             state="disabled",
         )
         self.cancel_batch_button.pack(side=LEFT, padx=10)
-        ToolTip(self.cancel_batch_button, "Stop processing after the current image completes.")
+        create_tooltip(
+            self.cancel_batch_button,
+            "Stop processing after the current image completes.",
+        )
 
         log_label = tb.Label(parent, text="Status log", font=("Segoe UI", 10, "bold"))
         log_label.pack(anchor=W)

@@ -44,7 +44,9 @@
         "badge_label": {{ badge_label|tojson }},
         "providers": {{ providers|tojson }},
         "model_options": {{ model_options|tojson }},
-        "model_dir": {{ model_dir|tojson }}
+        "default_model": {{ default_model|tojson }},
+        "model_dir": {{ model_dir|tojson }},
+        "model_specs": {{ model_specs|tojson }}
       }'
       x-data="bgrApp($el.dataset.config)"
       x-init="init()"

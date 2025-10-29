@@ -45,10 +45,18 @@ window.bgrApp = function bgrApp(rawConfig) {
   const normalizedProviders = Array.isArray(parsedConfig.providers) ? parsedConfig.providers : [];
   const normalizedModels = Array.isArray(parsedConfig.model_options) ? parsedConfig.model_options : [];
   const normalizedModelDir = typeof parsedConfig.model_dir === 'string' ? parsedConfig.model_dir : '';
+  const normalizedDefaultModel =
+    typeof parsedConfig.default_model === 'string' && parsedConfig.default_model
+      ? parsedConfig.default_model
+      : 'isnet-general-use';
+  const normalizedModelSpecs =
+    parsedConfig.model_specs && typeof parsedConfig.model_specs === 'object'
+      ? { ...parsedConfig.model_specs }
+      : {};
   const normalizedBadgeLabel = parsedConfig.badge_label || normalizedProviders[0] || 'CPU';
 
   const baseDefaults = {
-    model_key: 'isnet-general-use',
+    model_key: normalizedDefaultModel,
     feather_radius: 3,
     provider: 'auto',
     background_color: '#ffffff',
@@ -97,6 +105,7 @@ window.bgrApp = function bgrApp(rawConfig) {
     providers: normalizedProviders,
     provider: normalizedBadgeLabel,
     modelOptions: normalizedModels,
+    modelSpecs: normalizedModelSpecs,
     modelDir: normalizedModelDir,
     providerPill: normalizedBadgeLabel,
     providerPillClass: '',
@@ -120,6 +129,26 @@ window.bgrApp = function bgrApp(rawConfig) {
       this.persistSettings();
       this.loadHistory();
       console.log('✅ Alpine initialized successfully with config:', this.initialConfig);
+    },
+
+    activeModelSpecs() {
+      if (!this.settings || !this.settings.model_key) {
+        return null;
+      }
+      return this.modelSpecs?.[this.settings.model_key] || null;
+    },
+
+    activeModelSpecsEntries() {
+      const specs = this.activeModelSpecs();
+      if (!specs) {
+        return [];
+      }
+      try {
+        return Object.entries(specs);
+      } catch (error) {
+        console.warn('Unable to enumerate model specs', error);
+        return [];
+      }
     },
 
     ensureModelDefaults() {

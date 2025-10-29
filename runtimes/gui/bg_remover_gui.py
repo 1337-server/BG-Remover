@@ -135,7 +135,8 @@ class BackgroundRemoverApp(tb.Window):
     def _provider_hints(self) -> tuple[str, ...]:
         """Return provider hints derived from current settings."""
 
-        device = (self.settings.get("device") or "Auto").lower()
+        settings = getattr(self, "__dict__", {}).get("settings") or {}
+        device = (settings.get("device") or "Auto").lower()
         if device == "gpu":
             return ("CUDAExecutionProvider", "CPUExecutionProvider")
         if device == "cpu":
@@ -146,7 +147,15 @@ class BackgroundRemoverApp(tb.Window):
         """Return a :class:`Config` reflecting interactive selections."""
 
         updates: dict[str, Any] = {}
-        model_dir_text = (self.settings.get("model_dir") or "").strip()
+        settings = getattr(self, "__dict__", {}).get("settings") or {}
+        model_dir_text = (settings.get("model_dir") or "").strip()
+        if not model_dir_text:
+            model_dir_var = getattr(self, "__dict__", {}).get("model_dir_var")
+            if model_dir_var is not None:
+                try:
+                    model_dir_text = (model_dir_var.get() or "").strip()
+                except Exception:  # pragma: no cover - safeguard for mocked widgets
+                    model_dir_text = ""
         if model_dir_text:
             updates["model_dir"] = Path(model_dir_text)
         provider_hints = self._provider_hints()

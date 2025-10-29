@@ -108,44 +108,65 @@ class ModelSpec:
 
     key: str
     url: str
-    checksum_md5: str
     input_size: tuple[int, int]
     mean: tuple[float, float, float]
     std: tuple[float, float, float]
+    checksum_md5: str | None = None
 
 
 MODEL_SPECS: dict[str, ModelSpec] = {
     "isnet-general-use": ModelSpec(
         key="isnet-general-use",
         url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
-        checksum_md5="fc16ebd8b0c10d971d3513d564d01e29",
         input_size=(1024, 1024),
         mean=(0.5, 0.5, 0.5),
         std=(1.0, 1.0, 1.0),
+        checksum_md5="fc16ebd8b0c10d971d3513d564d01e29",
     ),
     "u2net": ModelSpec(
         key="u2net",
         url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx",
-        checksum_md5="60024c5c889badc19c04ad937298a77b",
         input_size=(320, 320),
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
+        checksum_md5="60024c5c889badc19c04ad937298a77b",
     ),
     "u2net_human_seg": ModelSpec(
         key="u2net_human_seg",
         url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net_human_seg.onnx",
-        checksum_md5="c09ddc2e0104f800e3e1bb4652583d1f",
         input_size=(320, 320),
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
+        checksum_md5="c09ddc2e0104f800e3e1bb4652583d1f",
     ),
     "isnet-anime": ModelSpec(
         key="isnet-anime",
         url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-anime.onnx",
-        checksum_md5="6f184e756bb3bd901c8849220a83e38e",
         input_size=(1024, 1024),
         mean=(0.485, 0.456, 0.406),
         std=(1.0, 1.0, 1.0),
+        checksum_md5="6f184e756bb3bd901c8849220a83e38e",
+    ),
+    "briaai/RMBG-2.0": ModelSpec(
+        key="briaai/RMBG-2.0",
+        url="https://huggingface.co/briaai/RMBG-2.0/resolve/main/RMBG-2.0.onnx?download=1",
+        input_size=(1024, 1024),
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+    ),
+    "matting-by-generation": ModelSpec(
+        key="matting-by-generation",
+        url="https://huggingface.co/risenW/matting-by-generation/resolve/main/matting.onnx?download=1",
+        input_size=(1024, 1024),
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+    ),
+    "sam_segmentation_model": ModelSpec(
+        key="sam_segmentation_model",
+        url="https://huggingface.co/vitmat/sam-segmentation-model/resolve/main/model.onnx?download=1",
+        input_size=(1024, 1024),
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
     ),
 }
 
@@ -275,11 +296,19 @@ def _compute_mask(array: np.ndarray, original_size: tuple[int, int]) -> Image.Im
     return image
 
 
-def _verify_md5(path: Path, expected: str) -> bool:
-    """Return ``True`` when the file at ``path`` matches ``expected``."""
+def _verify_md5(path: Path, expected: str | None) -> bool:
+    """Return ``True`` when the file at ``path`` matches ``expected``.
+
+    When ``expected`` is ``None`` or empty the check is reduced to
+    verifying the file exists. Some community hosted models do not
+    publish checksums, so we prefer opportunistic validation rather than
+    blocking the download entirely.
+    """
 
     if not path.exists():
         return False
+    if not expected:
+        return True
     checksum = hashlib.md5()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
@@ -297,7 +326,11 @@ def _download_model(spec: ModelSpec) -> Path:
     LOGGER.info("Fetching model %s from %s", spec.key, spec.url)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.ExitStack() as stack:
-        response = stack.enter_context(urllib.request.urlopen(spec.url))
+        request = urllib.request.Request(
+            spec.url,
+            headers={"User-Agent": "br-remover/1.0 (+https://github.com/your-org/br-remover)"},
+        )
+        response = stack.enter_context(urllib.request.urlopen(request))
         tmp_path = destination.with_suffix(".tmp")
         with stack.enter_context(tmp_path.open("wb")) as buffer:
             shutil.copyfileobj(response, buffer)

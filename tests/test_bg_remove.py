@@ -78,3 +78,13 @@ def test_encode_result_image_returns_data_url(monkeypatch: pytest.MonkeyPatch) -
     result = bg_remove.remove_background_bytes(_make_image_bytes())
     data_url = bg_remove.encode_result_image(result)
     assert data_url.startswith("data:image/png;base64,")
+
+
+def test_all_removal_models_have_specs() -> None:
+    """Ensure every configured UI model maps to a downloadable spec."""
+
+    import importlib
+
+    app_module = importlib.import_module("app")
+    configured_keys = {option["model_name"] for option in app_module.REMOVAL_MODEL_OPTIONS}
+    assert configured_keys.issubset(bg_remove.MODEL_SPECS)

@@ -67,8 +67,11 @@ FORMAT_OPTIONS = [
 DEFAULT_OUTPUT_FORMAT_KEY = DEFAULT_OUTPUT_FORMAT
 REMOVAL_MODEL_OPTIONS = [
     {"key": "general", "label": "General Model", "model_name": "isnet-general-use"},
+    {"key": "general_high_quality", "label": "High-Quality General Model", "model_name": "briaai/RMBG-2.0"},
     {"key": "human", "label": "Human Model", "model_name": "u2net_human_seg"},
+    {"key": "human_matting", "label": "Human Matting (Fine Edges)", "model_name": "matting-by-generation"},
     {"key": "object", "label": "Object Model", "model_name": "u2net"},
+    {"key": "complex_scene", "label": "Complex Scene Model", "model_name": "sam_segmentation_model"},
     {"key": "anime", "label": "Anime / Illustration Model", "model_name": "isnet-anime"},
 ]
 _REMOVAL_MODEL_LOOKUP: dict[str, str] = {

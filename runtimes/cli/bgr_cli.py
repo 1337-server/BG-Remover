@@ -18,7 +18,7 @@ from bgremover_core import (
     process_folder,
     remove_background,
 )
-from bgremover_core.io.image_io import save_image_to_path
+from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
 
 STATUS_SUCCESS = "✓"
 STATUS_FAILURE = "✗"
@@ -91,7 +91,7 @@ def _persist_if_requested(config: Config, args: argparse.Namespace) -> None:
 
 def _load_image(path: Path) -> np.ndarray:
     with Image.open(path) as image:
-        return np.asarray(image.convert("RGBA"))
+        return image_to_numpy(image)
 
 
 def _handle_single(args: argparse.Namespace, config: Config) -> int:

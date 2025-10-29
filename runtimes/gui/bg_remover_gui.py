@@ -8,7 +8,6 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox
 from typing import Any
 
-import numpy as np
 import ttkbootstrap as tb
 from PIL import Image, ImageTk
 from ttkbootstrap.constants import BOTH, END, LEFT, RIGHT, W
@@ -23,7 +22,7 @@ from bgremover_core import (
     process_folder,
     remove_background,
 )
-from bgremover_core.io.image_io import save_image_to_path
+from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
 from bgremover_core.models.loader import detect_providers
 from bgremover_core.models.specs import MODEL_SPECS
 from bgremover_core.processing.pipeline import ReportEntry
@@ -896,7 +895,7 @@ class BackgroundRemoverApp(tb.Window):
 
         try:
             source_image = self._load_source_image(input_path)
-            array = np.asarray(source_image)
+            array = image_to_numpy(source_image)
             config = self._active_config()
             kwargs = self._processing_kwargs()
             kwargs["feather_radius"] = int(self.settings.get("feather_radius", 3))

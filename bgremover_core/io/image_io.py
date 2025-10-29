@@ -26,6 +26,19 @@ def load_image_from_array(array: np.ndarray) -> Image.Image:
     return Image.fromarray(array.astype("uint8"), mode=mode)
 
 
+def image_to_numpy(image: Image.Image) -> np.ndarray:
+    """Return a contiguous RGBA numpy array created from ``image``.
+
+    The GUI, CLI, and web runtimes share this helper to guarantee that
+    every front-end feeds identically formatted input tensors into the
+    processing pipeline.
+    """
+
+    rgba_image = image.convert("RGBA")
+    array = np.asarray(rgba_image, dtype=np.uint8)
+    return np.ascontiguousarray(array)
+
+
 def save_image_to_path(image: Image.Image, path: Path, *, format_hint: str | None = None) -> Path:
     """Persist ``image`` to ``path`` using ``format_hint`` when provided."""
 
@@ -36,4 +49,9 @@ def save_image_to_path(image: Image.Image, path: Path, *, format_hint: str | Non
     return path
 
 
-__all__ = ["decode_image_bytes", "load_image_from_array", "save_image_to_path"]
+__all__ = [
+    "decode_image_bytes",
+    "image_to_numpy",
+    "load_image_from_array",
+    "save_image_to_path",
+]

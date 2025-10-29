@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import numpy as np
 from flask import (
     Blueprint,
     Flask,
@@ -27,6 +26,7 @@ from PIL import Image, UnidentifiedImageError
 
 from bgremover_core import Config, load_config, remove_background
 from bgremover_core.config import persist_config
+from bgremover_core.io.image_io import image_to_numpy
 from bgremover_core.models.loader import detect_providers
 from bgremover_core.models.specs import MODEL_SPECS
 from bgremover_core.processing.pipeline import PipelineError, process_folder
@@ -218,7 +218,7 @@ def _process_image(upload, *, config: Config, store: ResultStore, options: dict[
     except UnidentifiedImageError as error:
         raise PipelineError(f"Unsupported image format: {error}") from error
 
-    array = np.asarray(image)
+    array = image_to_numpy(image)
     processing_kwargs = _pipeline_kwargs(options)
     result_array = remove_background(
         array,

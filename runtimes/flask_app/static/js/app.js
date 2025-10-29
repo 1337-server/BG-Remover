@@ -31,6 +31,11 @@ function readStoredSettings() {
  * @returns {object} Alpine component descriptor consumed by the UI templates.
  */
 window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels, defaultModelDir) {
+  const normalizedProviders = Array.isArray(providerList) ? providerList : [];
+  const normalizedModels = Array.isArray(availableModels) ? availableModels : [];
+  const normalizedModelDir = defaultModelDir || '';
+  const normalizedBadgeLabel = initialBadgeLabel || normalizedProviders[0] || 'CPU';
+
   const baseDefaults = {
     model_key: 'isnet-general-use',
     feather_radius: 3,
@@ -38,7 +43,7 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
     background_color: '#ffffff',
     transparent: true,
     output_format: 'PNG',
-    model_dir: defaultModelDir || '',
+    model_dir: normalizedModelDir,
     output_directory: '',
     preserve_names: false,
     alpha_matting: false,
@@ -48,11 +53,8 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
 
   const createDefaults = () => ({
     ...baseDefaults,
-    model_key:
-      Array.isArray(availableModels) && availableModels.length
-        ? availableModels[0]
-        : baseDefaults.model_key,
-    model_dir: defaultModelDir || '',
+    model_key: normalizedModels.length ? normalizedModels[0] : baseDefaults.model_key,
+    model_dir: normalizedModelDir,
   });
 
   const buildInitialSettings = () => {
@@ -66,16 +68,19 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
       ...stored,
       model_key: stored.model_key || defaults.model_key,
       model_dir: stored.model_dir ?? defaults.model_dir,
+      provider: stored.provider || defaults.provider,
     };
   };
 
   return {
-    badgeLabel: initialBadgeLabel || 'CPU',
-    providers: providerList || [],
-    modelOptions: availableModels || [],
-    providerPill: initialBadgeLabel || 'CPU',
+    badgeLabel: normalizedBadgeLabel,
+    providers: normalizedProviders,
+    provider: normalizedBadgeLabel,
+    modelOptions: normalizedModels,
+    modelDir: normalizedModelDir,
+    providerPill: normalizedBadgeLabel,
     providerPillClass: '',
-    themeLabel: 'Light',
+    themeLabel: document.documentElement.classList.contains('dark') ? 'Dark' : 'Light',
     selectedFiles: [],
     previewItems: [],
     history: [],
@@ -94,7 +99,7 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
       this.ensureModelDefaults();
       this.persistSettings();
       this.loadHistory();
-      console.log('Alpine app initialized successfully');
+      console.log('✅ Alpine initialized successfully');
     },
 
     ensureModelDefaults() {
@@ -105,7 +110,10 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
         this.settings.model_key = this.modelOptions[0];
       }
       if (!this.settings.model_dir) {
-        this.settings.model_dir = defaultModelDir || '';
+        this.settings.model_dir = this.modelDir;
+      }
+      if (!this.settings.provider || !['auto', 'gpu', 'cpu'].includes(this.settings.provider)) {
+        this.settings.provider = (this.provider || 'auto').toLowerCase();
       }
     },
 

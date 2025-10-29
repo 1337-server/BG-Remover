@@ -847,7 +847,20 @@
         }
         if (folderSummary) {
           folderSummary.classList.remove('hidden');
-          folderSummary.textContent = `Processed ${data.summary.success} of ${data.summary.total} images.`;
+          const summarySuccess = Number(data?.summary?.success) || 0;
+          const summaryTotal = Number(data?.summary?.total) || 0;
+          let summaryMessage = `Processed ${summarySuccess} of ${summaryTotal} images.`;
+          if (data?.selection) {
+            const modelLabel = data.selection.removal_model_label || '';
+            const modelName = data.selection.model_name || '';
+            const modelDescription = modelLabel && modelName && modelLabel !== modelName
+              ? `${modelLabel} (${modelName})`
+              : (modelLabel || modelName);
+            if (modelDescription) {
+              summaryMessage += ` Using ${modelDescription}.`;
+            }
+          }
+          folderSummary.textContent = summaryMessage;
           if (data.zip_error) {
             folderSummary.textContent += ` ZIP error: ${data.zip_error}`;
           }

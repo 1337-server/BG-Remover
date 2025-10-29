@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 import ttkbootstrap as tb
-from PIL import Image
+from PIL import Image, ImageTk
 from ttkbootstrap.constants import BOTH, END, LEFT, RIGHT, W
 from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.tooltip import ToolTip
@@ -876,15 +876,92 @@ class BackgroundRemoverApp(tb.Window):
             )
             result_image = Image.fromarray(result)
             format_hint, _ = _format_meta(self.settings.get("output_format", "PNG"))
-            if format_hint != "PNG" and result_image.mode != "RGB":
-                result_image = result_image.convert("RGB")
-            save_image_to_path(result_image, output_path, format_hint=format_hint)
-            self.after(0, lambda: self._log(f"{input_path.name} processed successfully ✓"))
+            self.after(
+                0,
+                lambda: self._show_preview(
+                    result_image,
+                    output_path,
+                    format_hint,
+                    input_path.name,
+                ),
+            )
         except Exception as error:
             LOGGER.exception("Single image processing failed")
             message = str(error)
             self.after(0, lambda: self._log(f"{input_path.name} failed ✗ — Reason: {message}", error=True))
             self.after(0, lambda: messagebox.showerror("Processing failed", message))
+
+    def _save_processed_image(
+        self,
+        pil_image: Image.Image,
+        output_path: Path,
+        format_hint: str,
+    ) -> None:
+        """Persist ``pil_image`` to ``output_path`` respecting the configured format."""
+
+        image_to_save = pil_image
+        if format_hint != "PNG" and pil_image.mode != "RGB":
+            image_to_save = pil_image.convert("RGB")
+        save_image_to_path(image_to_save, output_path, format_hint=format_hint)
+
+    def _show_preview(
+        self,
+        pil_image: Image.Image,
+        output_path: Path,
+        format_hint: str,
+        original_name: str,
+    ) -> None:
+        """Display a modal preview window for ``pil_image`` prior to saving."""
+
+        preview_win = tb.Toplevel(self)
+        preview_win.title("Preview Processed Image")
+        preview_win.transient(self)
+        preview_win.grab_set()
+        preview_win.resizable(True, True)
+
+        container = tb.Frame(preview_win, padding=12)
+        container.pack(fill=BOTH, expand=True)
+
+        display_image = pil_image.copy()
+        display_image.thumbnail((720, 720))
+        image_preview = ImageTk.PhotoImage(display_image)
+        image_label = tb.Label(container, image=image_preview)
+        image_label.image = image_preview  # type: ignore[attr-defined]
+        image_label.pack(padx=4, pady=(0, 12))
+
+        def save_image() -> None:
+            """Save the processed image and close the preview."""
+
+            try:
+                self._save_processed_image(pil_image, output_path, format_hint)
+            except Exception as error:  # pragma: no cover - GUI feedback
+                error_message = str(error)
+                self._log(f"Failed to save image ✗ — Reason: {error_message}", error=True)
+                messagebox.showerror("Save failed", error_message)
+                return
+            self._log(f"{original_name} processed successfully ✓")
+            preview_win.destroy()
+
+        def cancel() -> None:
+            """Discard the processed image and close the preview."""
+
+            self._log("Processing canceled by user ✗")
+            preview_win.destroy()
+
+        buttons = tb.Frame(container)
+        buttons.pack(fill=BOTH, expand=False)
+        tb.Button(buttons, text="Save", command=save_image, bootstyle="success").pack(
+            side=LEFT,
+            padx=(0, 6),
+        )
+        tb.Button(buttons, text="Discard", command=cancel, bootstyle="secondary").pack(
+            side=RIGHT,
+            padx=(6, 0),
+        )
+
+        preview_win.protocol("WM_DELETE_WINDOW", cancel)
+        preview_win.focus_set()
+        self._log("Preview generated successfully ✔")
 
     def _process_batch(self) -> None:
         """Validate inputs and start batch processing."""

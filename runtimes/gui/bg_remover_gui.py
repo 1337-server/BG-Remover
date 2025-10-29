@@ -34,12 +34,12 @@ GUI_SETTINGS_FILE = Path.home() / ".bgremover_gui.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "model_key": "isnet-general-use",
-    "input_resize": "auto",
+    "input_resize": "stretch",
     "alpha_matting": False,
     "alpha_foreground_threshold": 240,
     "alpha_background_threshold": 10,
     "alpha_erode_size": 10,
-    "smoothing": 0.3,
+    "smoothing": 0.0,
     "edge_refinement": False,
     "feather_radius": 3,
     "background_color": "",
@@ -51,6 +51,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "parallel_threads": 4,
     "model_dir": "",
 }
+
+
+VALID_RESIZE_MODES: tuple[str, ...] = ("auto", "keep-aspect", "crop", "stretch")
 
 
 def _format_meta(format_name: str) -> tuple[str, str]:
@@ -77,6 +80,29 @@ def _hex_to_rgb(value: str | None) -> tuple[int, int, int] | None:
         return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
     except ValueError:  # pragma: no cover - defensive
         return None
+
+
+def _resolve_resize_mode(value: str | None) -> str:
+    """Return a supported resize mode string defaulting to ``"stretch"``."""
+
+    if not value:
+        return "stretch"
+    lowered = value.strip().lower()
+    for mode in VALID_RESIZE_MODES:
+        if lowered == mode:
+            return mode
+    LOGGER.warning("Unknown resize mode %s; falling back to 'stretch'", value)
+    return "stretch"
+
+
+def _coerce_smoothing(value: Any) -> float:
+    """Return a clamped smoothing ratio compatible with the processing pipeline."""
+
+    try:
+        smoothing = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, smoothing))
 
 
 class BackgroundRemoverApp(tb.Window):
@@ -113,6 +139,8 @@ class BackgroundRemoverApp(tb.Window):
             LOGGER.warning("Unable to read GUI settings: %s", error)
         settings.setdefault("model_key", base_config.default_model)
         settings.setdefault("model_dir", str(base_config.model_dir))
+        settings["input_resize"] = _resolve_resize_mode(settings.get("input_resize"))
+        settings["smoothing"] = _coerce_smoothing(settings.get("smoothing", 0.0))
         return settings
 
     def _save_settings(self) -> None:
@@ -158,12 +186,12 @@ class BackgroundRemoverApp(tb.Window):
         """Return advanced processing keyword arguments."""
 
         return {
-            "resize_mode": self.settings.get("input_resize", "auto"),
+            "resize_mode": _resolve_resize_mode(self.settings.get("input_resize")),
             "alpha_matting": bool(self.settings.get("alpha_matting", False)),
             "alpha_foreground_threshold": self.settings.get("alpha_foreground_threshold", 240),
             "alpha_background_threshold": self.settings.get("alpha_background_threshold", 10),
             "alpha_erode_size": self.settings.get("alpha_erode_size", 10),
-            "smoothing": self.settings.get("smoothing", 0.0),
+            "smoothing": _coerce_smoothing(self.settings.get("smoothing", 0.0)),
             "edge_refinement": bool(self.settings.get("edge_refinement", False)),
             "background_color": _hex_to_rgb(self.settings.get("background_color")),
             "output_format": self.settings.get("output_format", "PNG"),
@@ -323,10 +351,10 @@ class BackgroundRemoverApp(tb.Window):
         self.model_var.trace_add("write", lambda *_: self._on_model_change())
 
         tb.Label(general, text="Input resize").grid(row=1, column=0, sticky=W)
-        self.resize_var = tb.StringVar(value=self.settings.get("input_resize", "auto"))
+        self.resize_var = tb.StringVar(value=self.settings.get("input_resize", "stretch"))
         resize_combo = tb.Combobox(
             general,
-            values=["auto", "keep-aspect", "crop", "stretch"],
+            values=list(VALID_RESIZE_MODES),
             textvariable=self.resize_var,
             width=40,
             state="readonly",
@@ -338,7 +366,10 @@ class BackgroundRemoverApp(tb.Window):
         )
         self._add_tooltip(
             resize_combo,
-            "Controls how input images are resized before inference. Use 'auto' for best balance.",
+            (
+                "Controls how input images are resized before inference. 'Stretch' matches "
+                "CLI and Flask results; other modes preserve composition differently."
+            ),
         )
 
         tb.Label(general, text="Device").grid(row=2, column=0, sticky=W)
@@ -496,7 +527,7 @@ class BackgroundRemoverApp(tb.Window):
         frame.grid(row=2, column=0, columnspan=2, sticky="we", pady=(0, 10))
         frame.grid_columnconfigure(1, weight=1)
 
-        self.smoothing_var = tb.DoubleVar(value=float(self.settings.get("smoothing", 0.3)))
+        self.smoothing_var = tb.DoubleVar(value=float(self.settings.get("smoothing", 0.0)))
         tb.Label(frame, text="Smoothing").grid(row=0, column=0, sticky=W)
         smoothing_scale = tb.Scale(
             frame,
@@ -512,7 +543,7 @@ class BackgroundRemoverApp(tb.Window):
         self.smoothing_var.trace_add("write", lambda *_: self._update_smoothing(smoothing_value))
         self._add_tooltip(
             smoothing_scale,
-            "Applies smoothing to soften mask edges. Range: 0–1. Recommended: 0.3–0.7",
+            "Applies smoothing to soften mask edges. Range: 0–1. Start at 0.0 and increase only if needed.",
         )
 
         self.edge_var = tb.BooleanVar(value=bool(self.settings.get("edge_refinement", False)))
@@ -757,12 +788,12 @@ class BackgroundRemoverApp(tb.Window):
     def _on_mask_change(self) -> None:
         """Persist smoothing changes."""
 
-        self._update_setting("smoothing", float(self.smoothing_var.get()))
+        self._update_setting("smoothing", _coerce_smoothing(self.smoothing_var.get()))
 
     def _update_smoothing(self, label: tb.Label) -> None:
         """Refresh smoothing label and persist value."""
 
-        value = float(self.smoothing_var.get())
+        value = _coerce_smoothing(self.smoothing_var.get())
         label.configure(text=f"{value:.2f}")
         self._update_setting("smoothing", value)
 

@@ -364,12 +364,7 @@ if (window.Alpine) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  if (window.Alpine) {
-    if (!window.__BGR_ALPINE_STARTED__) {
-      window.Alpine.start();
-      window.__BGR_ALPINE_STARTED__ = true;
-    }
-  } else {
+  if (!window.Alpine) {
     console.error('Alpine failed to load');
   }
 });

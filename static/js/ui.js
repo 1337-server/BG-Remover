@@ -1120,37 +1120,45 @@
       } = config;
 
       return {
+        // Explicitly initialise each reactive property so Alpine bindings
+        // never reference undefined variables during the initial render.
         configs,
         lookup,
         selectedModelKey: initialKey || '',
+        selectedModelName: initialModelName || null,
+        optionSchemas: {},
+        hasAdvancedOptions: false,
         initialValues: initialValues || {},
         initialModelName: initialModelName || null,
         idPrefix,
         fieldValues: { ...(initialValues || {}) },
         init() {
-          if (!this.selectedModelKey) {
-            const keys = Object.keys(this.lookup || {});
-            if (keys.length > 0) {
-              [this.selectedModelKey] = keys;
-            }
-          }
+          this.ensureSelectedModelKey();
+          this.refreshModelContext();
           this.resetModelOptions(true);
           this.$watch('selectedModelKey', () => {
+            this.refreshModelContext();
             this.resetModelOptions(false);
           });
         },
-        get selectedModelName() {
-          return this.lookup?.[this.selectedModelKey] || this.selectedModelKey || null;
-        },
-        get optionSchemas() {
-          const name = this.selectedModelName;
-          if (!name) {
-            return {};
+        ensureSelectedModelKey() {
+          if (this.selectedModelKey) {
+            return;
           }
-          return this.configs?.[name] || {};
+          const keys = Object.keys(this.lookup || {});
+          if (keys.length > 0) {
+            [this.selectedModelKey] = keys;
+          }
         },
-        get hasAdvancedOptions() {
-          return Object.keys(this.optionSchemas).length > 0;
+        refreshModelContext() {
+          const resolvedName = this.lookup?.[this.selectedModelKey] || this.selectedModelKey || null;
+          this.selectedModelName = resolvedName;
+          if (!this.initialModelName && resolvedName) {
+            this.initialModelName = resolvedName;
+          }
+          const schema = resolvedName && this.configs ? this.configs[resolvedName] : null;
+          this.optionSchemas = schema ? { ...schema } : {};
+          this.hasAdvancedOptions = Object.keys(this.optionSchemas).length > 0;
         },
         inputType(schema) {
           if (!schema) {
@@ -1211,7 +1219,7 @@
           return schema.type === 'float' ? '0.1' : '1';
         },
         resetModelOptions(preserveExisting) {
-          const schemas = this.optionSchemas;
+          const schemas = this.optionSchemas || {};
           const keys = Object.keys(schemas);
           if (!keys.length) {
             this.fieldValues = {};

@@ -61,6 +61,7 @@
 
         <div class="space-y-6">
           <section id="panel-single" class="tab-panel space-y-6" data-tab-panel="single" role="tabpanel" aria-labelledby="tab-single">
+            <!-- modelOptionsForm initialises every reactive property in static/js/ui.js so Alpine bindings stay defined. -->
             <form
               id="single-form"
               enctype="multipart/form-data"
@@ -387,6 +388,7 @@
           </section>
 
           <section id="panel-folder" class="tab-panel hidden space-y-6" data-tab-panel="folder" role="tabpanel" aria-labelledby="tab-folder" tabindex="-1">
+            <!-- Keep folder workflow in sync with the same Alpine data component to avoid undefined bindings. -->
             <form
               id="folder-form"
               class="space-y-6"

@@ -18,8 +18,23 @@ function readStoredSettings() {
   }
 }
 
-document.addEventListener('alpine:init', () => {
-  Alpine.data('bgrApp', (initialBadgeLabel, providerList, availableModels, defaultModelDir) => {
+/**
+ * Register the primary Alpine component when an Alpine instance is available.
+ * The helper tolerates scripts loading in any order by attempting registration
+ * immediately and falling back to the `alpine:init` lifecycle event.
+ *
+ * @param {import('alpinejs').Alpine | undefined} AlpineInstance - The global Alpine instance.
+ */
+function defineBgrAppComponent(AlpineInstance) {
+  if (!AlpineInstance || typeof AlpineInstance.data !== 'function') {
+    console.error('Alpine instance missing; unable to register bgrApp component.');
+    return;
+  }
+  if (window.__BGR_APP_COMPONENT_REGISTERED__) {
+    return;
+  }
+
+  AlpineInstance.data('bgrApp', (initialBadgeLabel, providerList, availableModels, defaultModelDir) => {
     const baseDefaults = {
       model_key: 'isnet-general-use',
       feather_radius: 3,
@@ -336,7 +351,17 @@ document.addEventListener('alpine:init', () => {
       },
     };
   });
+
+  window.__BGR_APP_COMPONENT_REGISTERED__ = true;
+}
+
+document.addEventListener('alpine:init', () => {
+  defineBgrAppComponent(window.Alpine);
 });
+
+if (window.Alpine) {
+  defineBgrAppComponent(window.Alpine);
+}
 
 document.addEventListener('DOMContentLoaded', () => {
   if (window.Alpine) {

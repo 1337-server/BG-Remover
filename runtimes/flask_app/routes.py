@@ -34,7 +34,14 @@ from .services import ResultRecord, ResultStore, ensure_filename, total_size
 
 LOGGER = logging.getLogger(__name__)
 
-bp = Blueprint("bgremover", __name__)
+webui = Blueprint(
+    "webui",
+    __name__,
+    static_folder="static",
+    template_folder="templates",
+)
+
+__all__ = ["webui"]
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +261,7 @@ def _process_single_request(
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-@bp.route("/", methods=["GET"])
+@webui.route("/", methods=["GET"])
 def index() -> Response:
     config = _get_config()
     providers = detect_providers(config.provider_hints)
@@ -269,7 +276,7 @@ def index() -> Response:
     return render_template("index.html", **context)
 
 
-@bp.route("/process", methods=["POST"])
+@webui.route("/process", methods=["POST"])
 def process_images() -> Response:
     config = _get_config()
     options = _options_from_request(config)
@@ -293,7 +300,7 @@ def process_images() -> Response:
     return jsonify({"results": results})
 
 
-@bp.route("/batch", methods=["POST"])
+@webui.route("/batch", methods=["POST"])
 def batch_process() -> Response:
     config = _get_config()
     options = _options_from_request(config)
@@ -375,7 +382,7 @@ def batch_process() -> Response:
         return jsonify({"error": str(error)}), 422
 
 
-@bp.route("/result/<string:identifier>", methods=["GET"])
+@webui.route("/result/<string:identifier>", methods=["GET"])
 def result_preview(identifier: str) -> Response:
     store = _get_store()
     record = store.get(identifier)
@@ -389,7 +396,7 @@ def result_preview(identifier: str) -> Response:
     )
 
 
-@bp.route("/download/<string:identifier>", methods=["GET"])
+@webui.route("/download/<string:identifier>", methods=["GET"])
 def download(identifier: str) -> Response:
     store = _get_store()
     record = store.get(identifier)
@@ -403,7 +410,7 @@ def download(identifier: str) -> Response:
     )
 
 
-@bp.route("/history", methods=["GET"])
+@webui.route("/history", methods=["GET"])
 def history() -> Response:
     store = _get_store()
     records = [record.as_dict(include_preview=False) for record in store.list_records()]

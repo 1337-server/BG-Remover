@@ -9,7 +9,7 @@ from flask import Flask
 
 from bgremover_core import init_logging, load_config
 
-from .routes import bp
+from .routes import webui
 from .services import ResultStore
 
 _DEFAULT_SECRET = "bgremover-secret"
@@ -48,7 +48,7 @@ def create_app(config_overrides: dict[str, object] | None = None) -> Flask:
     app.extensions["executor"] = ThreadPoolExecutor(max_workers=4)
     app.extensions["result_store"] = _create_result_store(app)
 
-    app.register_blueprint(bp)
+    app.register_blueprint(webui)
     return app
 
 

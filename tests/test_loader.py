@@ -78,7 +78,7 @@ def test_download_with_nested_local_path(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
         status_code = 200
 
-        def __enter__(self) -> "DummyResponse":
+        def __enter__(self) -> DummyResponse:
             return self
 
         def __exit__(self, *_args) -> None:
@@ -96,5 +96,51 @@ def test_download_with_nested_local_path(monkeypatch: pytest.MonkeyPatch, tmp_pa
     path = loader._download_model(spec, model_dir)
 
     assert path == model_dir / "nested/model.onnx"
+    assert path.exists()
+    assert path.read_bytes() == b"dummy-weights"
+
+
+def test_download_via_http_creates_nested_directories(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``_download_model_via_http`` should create parents for nested destinations."""
+
+    spec = ModelSpec(
+        key="dummy-model",
+        input_size=(1, 1),
+        mean=(0.0, 0.0, 0.0),
+        std=(1.0, 1.0, 1.0),
+        url="https://example.com/dummy.onnx",
+        local_filename="nested/model.onnx",
+    )
+
+    class DummyResponse:
+        """Stand-in for a streaming ``requests`` response."""
+
+        status_code = 200
+
+        def __enter__(self) -> DummyResponse:  # pragma: no cover - protocol behaviour
+            return self
+
+        def __exit__(self, *_args) -> None:  # pragma: no cover - protocol behaviour
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 1024):
+            del chunk_size
+            yield b"dummy-weights"
+
+    monkeypatch.setattr(loader.requests, "get", lambda *_args, **_kwargs: DummyResponse())
+
+    model_dir = tmp_path / "models"
+    destination = model_dir / loader._build_model_filename(spec)
+
+    assert not destination.parent.exists()
+
+    path = loader._download_model_via_http(spec, spec.url or "", destination, headers={})
+
+    assert path == destination
     assert path.exists()
     assert path.read_bytes() == b"dummy-weights"

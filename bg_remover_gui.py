@@ -17,6 +17,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
+from tkinter import filedialog
 from typing import TYPE_CHECKING, Any
 
 import ttkbootstrap as tb
@@ -33,8 +34,10 @@ from bg_removal import (
     SUPPORTED_EXTENSIONS,
     ensure_global_session,
     ensure_models_downloaded,
+    get_models_directory,
     get_output_format_spec,
     remove_bg_file,
+    set_models_directory,
 )
 
 # Model options mirror the Flask UI so users can switch between
@@ -530,12 +533,10 @@ class BackgroundRemoverApp(tb.Window):
         self._result_preview: ImageTk.PhotoImage | None = None
         self.alpha_spinboxes: list[tb.Spinbox] = []
 
-        ensure_models_downloaded()
-        ensure_global_session()
-
         self._create_variables()
         self._build_ui()
         self.after(100, self._process_event_queue)
+        self._prepare_model_runtime(initial=True)
 
     def _create_variables(self) -> None:
         """Initialise Tkinter variables used across the UI."""
@@ -561,6 +562,11 @@ class BackgroundRemoverApp(tb.Window):
         self.colorkey_var = tb.IntVar(value=DEFAULT_TUNE_VALUES["colorkey_tolerance"])
         self.use_colorkey_var = tb.BooleanVar(value=DEFAULT_TUNE_VALUES["use_colorkey_fallback"])
         self.output_format_var = tb.StringVar(value=DEFAULT_OUTPUT_FORMAT)
+        default_model_dir = get_models_directory()
+        default_display = str(default_model_dir)
+        if default_model_dir == Path("./models"):
+            default_display = "./models"
+        self.model_folder_var = tb.StringVar(value=default_display)
         self.model_var = tb.StringVar(value="general")
         self.recursive_var = tb.BooleanVar(value=False)
         self.skip_existing_var = tb.BooleanVar(value=True)
@@ -663,6 +669,28 @@ class BackgroundRemoverApp(tb.Window):
             justify=LEFT,
         )
         info_label.pack(anchor=W, pady=(0, 10))
+
+        model_frame = tb.Labelframe(parent, text="Model Settings", padding=10)
+        model_frame.pack(fill=BOTH, pady=(0, 10))
+
+        folder_row = tb.Frame(model_frame)
+        folder_row.pack(fill=BOTH, pady=(0, 5))
+
+        tb.Label(folder_row, text="Model folder:").pack(side=LEFT, padx=(0, 6))
+        folder_entry = tb.Entry(folder_row, textvariable=self.model_folder_var, width=34)
+        folder_entry.pack(side=LEFT, fill=BOTH, expand=True)
+        folder_entry.bind("<FocusOut>", lambda _event: self._prepare_model_runtime())
+        folder_entry.bind("<Return>", lambda _event: self._prepare_model_runtime(announce_ready=True))
+        browse_button = tb.Button(folder_row, text="Browse…", command=self._choose_model_folder)
+        browse_button.pack(side=LEFT, padx=(6, 0))
+
+        ToolTip(
+            model_frame,
+            (
+                "Choose where ONNX models are stored or downloaded. Useful if you want "
+                "to keep models on a separate drive or shared folder."
+            ),
+        )
 
         format_label = tb.Label(parent, text="Output format", font=("Segoe UI", 10, "bold"))
         format_label.pack(anchor=W)
@@ -1132,6 +1160,21 @@ class BackgroundRemoverApp(tb.Window):
             widget.configure(state=state)
 
     @safe_callback
+    def _choose_model_folder(self) -> None:
+        """Prompt the user to choose where models are stored or downloaded."""
+
+        folder = filedialog.askdirectory(title="Select Model Storage Folder")
+        if folder:
+            self.model_folder_var.set(folder)
+            self.log_status(f"🧠 Model folder set to: {folder}")
+            self._prepare_model_runtime(announce_ready=True)
+        else:
+            self.log_status("⚠️ No model folder selected; using ./models", color="yellow")
+            if not self.model_folder_var.get().strip():
+                self.model_folder_var.set("./models")
+                self._prepare_model_runtime()
+
+    @safe_callback
     def _choose_single_image(self) -> None:
         """Prompt the user to choose an image file."""
 
@@ -1166,6 +1209,9 @@ class BackgroundRemoverApp(tb.Window):
         path = Path(path_text)
         if not path.exists():
             Messagebox.show_error("Please choose an image before processing.", "Background Remover")
+            return
+
+        if not self._prepare_model_runtime():
             return
 
         def worker() -> None:
@@ -1247,6 +1293,51 @@ class BackgroundRemoverApp(tb.Window):
             "colorkey_tolerance": int(self.colorkey_var.get()),
         }
         return {"output": None, "kwargs": kwargs}
+
+    def _apply_model_directory(self) -> Path | None:
+        """Synchronise the model storage directory with the backend module."""
+
+        raw_value = self.model_folder_var.get().strip()
+        if not raw_value:
+            raw_value = "./models"
+        self.model_folder_var.set(raw_value)
+        try:
+            directory = set_models_directory(raw_value)
+        except Exception as error:
+            self._report_model_error("Failed to configure model folder", error)
+            return None
+        display_value = "./models" if directory == Path("./models") else str(directory)
+        self.model_folder_var.set(display_value)
+        return directory
+
+    def _prepare_model_runtime(
+        self, *, initial: bool = False, announce_ready: bool = False
+    ) -> bool:
+        """Ensure the requested ONNX models are ready for use."""
+
+        directory = self._apply_model_directory()
+        if directory is None:
+            return False
+        model_name = _REMOVAL_MODEL_LOOKUP.get(self.model_var.get(), DEFAULT_MODEL_NAME)
+        try:
+            ensure_models_downloaded(prefetch={model_name})
+            ensure_global_session(model_name)
+        except Exception as error:
+            self._report_model_error("Failed to prepare models", error)
+            return False
+        if announce_ready and not initial:
+            self.log_status(f"✅ Models ready in {self.model_folder_var.get()}")
+        return True
+
+    def _report_model_error(self, summary: str, error: Exception) -> None:
+        """Log ``error`` to the UI and persist the traceback for debugging."""
+
+        traceback_text = traceback.format_exc()
+        log_path = _write_traceback_to_log(traceback_text)
+        LOGGER.error(summary, exc_info=error)
+        reason = str(error) or error.__class__.__name__
+        self.log_status(f"❌ {summary}: {reason}", color="red")
+        self.log_status(f"See {log_path} for details.", color="red")
 
     def _display_preview(
         self,
@@ -1394,6 +1485,9 @@ class BackgroundRemoverApp(tb.Window):
                 "Please choose a folder before starting the batch.",
                 "Background Remover",
             )
+            return
+
+        if not self._prepare_model_runtime():
             return
 
         output_root = self._output_folder_override or (folder.parent / "output")

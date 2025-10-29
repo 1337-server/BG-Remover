@@ -1233,11 +1233,19 @@ def remove_bg_folder(
     output_root = _resolve_output_directory(output_dir, source_dir)
     format_spec = get_output_format_spec(output_format)
 
+    sources = list(_iter_input_files(source_dir, recursive))
     session = ensure_global_session(model_name)
 
+    if not sources:
+        return []
+
+    # Match the thread pool size to available CPU capacity while avoiding
+    # launching redundant workers when there are only a handful of tasks.
+    max_workers = min(os.cpu_count() or 1, len(sources)) or 1
+
     submitted: list[tuple[Path, Future[RemovalResult]]] = []
-    with ThreadPoolExecutor() as executor:
-        for source in _iter_input_files(source_dir, recursive):
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for source in sources:
             relative = source.relative_to(source_dir) if recursive else Path(source.name)
             destination = format_spec.normalise_filename(output_root / relative)
             destination.parent.mkdir(parents=True, exist_ok=True)

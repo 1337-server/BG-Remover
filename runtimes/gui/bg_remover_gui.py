@@ -1,6 +1,6 @@
 """Tkinter GUI for the background remover runtimes."""
 from __future__ import annotations
-
+import os
 import json
 import logging
 import threading
@@ -42,7 +42,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "smoothing": 0.0,
     "edge_refinement": False,
     "feather_radius": 3,
-    "background_color": "",
     "output_format": "PNG",
     "preserve_names": False,
     "output_directory": "",
@@ -105,20 +104,86 @@ def _coerce_smoothing(value: Any) -> float:
     return max(0.0, min(1.0, smoothing))
 
 
+class CollapsibleSection(tb.Frame):
+    """A reusable frame with a toggleable content area."""
+
+    def __init__(
+        self,
+        parent: Any,
+        *,
+        title: str = "",
+        start_open: bool = True,
+    ) -> None:
+        super().__init__(parent)
+        self.columnconfigure(0, weight=1)
+        self._title = title
+        self.content_visible = start_open
+
+        self.header = tb.Frame(self)
+        self.header.grid(row=0, column=0, sticky="ew")
+
+        arrow = "▼" if start_open else "►"
+        self.toggle_button = tb.Button(
+            self.header,
+            text=f"{arrow} {title}",
+            command=self.toggle,
+        )
+
+        self.toggle_button.configure(style="TButton", padding=(5, 2))
+        self.toggle_button.pack(fill="x", anchor="w")
+        self.content = tb.Frame(self)
+        if start_open:
+            self.content.grid(row=1, column=0, sticky="ew")
+
+    def toggle(self) -> None:
+        """Collapse or expand the content frame."""
+
+        if self.content_visible:
+            self.content.grid_remove()
+            self.toggle_button.configure(text=f"► {self._title}")
+        else:
+            self.content.grid(row=1, column=0, sticky="ew")
+            self.toggle_button.configure(text=f"▼ {self._title}")
+        self.content_visible = not self.content_visible
+
+
 class BackgroundRemoverApp(tb.Window):
     """Main application window for background removal."""
 
     def __init__(self) -> None:
         super().__init__(themename="flatly")
-        self.title("Background Remover")
-        self.geometry("900x720")
+        self.title("Background Remover - PRO")
+        self.geometry("1920x1080")
         self.resizable(True, True)
 
         self.config = load_config()
         init_logging(self.config.log_level)
         self.settings = self._load_settings(self.config)
         self._tooltips: dict[object, ToolTip] = {}
+        # --- Add this block here ---
 
+        icon_path = Path(os.path.dirname(__file__)) / "bg_icon.ico"
+        logging.info(f"Attempting to load window icon from: {icon_path}")
+
+        try:
+            if icon_path.exists():
+                self.iconbitmap(icon_path)
+                logging.info("Successfully applied .ico icon to GUI window.")
+            else:
+                logging.warning(f"Icon file not found: {icon_path}")
+        except Exception as e:
+            logging.exception(f"Failed to set .ico icon: {e}")
+            try:
+                from tkinter import PhotoImage
+                png_icon = icon_path.with_suffix(".png")
+                if png_icon.exists():
+                    self.iconphoto(False, PhotoImage(file=str(png_icon)))
+                    logging.info("Fallback: applied .png icon successfully.")
+                else:
+                    logging.warning(f"No fallback PNG found at {png_icon}")
+            except Exception as e2:
+                logging.exception(f"Failed to set .png fallback icon: {e2}")
+        # --- End block ---
         self.providers = detect_providers(self._provider_hints())
         self._preview_image: Image.Image | None = None
         self._preview_photo: ImageTk.PhotoImage | None = None
@@ -128,6 +193,7 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_saved_path: Path | None = None
         self._preview_canvas_image: int | None = None
         self._preview_display_override: Image.Image | None = None
+        self._preview_last_fill_color: tuple[int, int, int] | None = None
         self.preview_zoom_var = tb.DoubleVar(value=100.0)
 
         self._build_ui()
@@ -212,7 +278,6 @@ class BackgroundRemoverApp(tb.Window):
             "alpha_erode_size": self.settings.get("alpha_erode_size", 10),
             "smoothing": _coerce_smoothing(self.settings.get("smoothing", 0.0)),
             "edge_refinement": bool(self.settings.get("edge_refinement", False)),
-            "background_color": _hex_to_rgb(self.settings.get("background_color")),
             "output_format": self.settings.get("output_format", "PNG"),
             "preserve_names": bool(self.settings.get("preserve_names", False)),
             "parallel_threads": int(self.settings.get("parallel_threads", 1)),
@@ -463,21 +528,32 @@ class BackgroundRemoverApp(tb.Window):
 
         self.advanced_body = tb.Frame(parent, padding=10)
         self.advanced_body.pack(fill=BOTH, expand=True)
-        self.advanced_body.grid_columnconfigure(1, weight=1)
 
         self._build_general_section(self.advanced_body)
-        self._build_alpha_section(self.advanced_body)
-        self._build_mask_section(self.advanced_body)
-        self._build_output_section(self.advanced_body)
-        self._build_batch_section(self.advanced_body)
+
+        alpha_section = CollapsibleSection(self.advanced_body, title="Alpha Matting Refinement")
+        alpha_section.pack(fill="x", pady=(0, 8))
+        self._build_alpha_section(alpha_section.content)
+
+        mask_section = CollapsibleSection(self.advanced_body, title="Mask Refinement")
+        mask_section.pack(fill="x", pady=(0, 8))
+        self._build_mask_section(mask_section.content)
+
+        output_section = CollapsibleSection(self.advanced_body, title="Output")
+        output_section.pack(fill="x", pady=(0, 8))
+        self._build_output_section(output_section.content)
+
+        batch_section = CollapsibleSection(self.advanced_body, title="Batch Processing")
+        batch_section.pack(fill="x")
+        self._build_batch_section(batch_section.content)
         self._toggle_alpha_controls()
 
     def _build_general_section(self, parent: tb.Frame) -> None:
         """Create general processing preference controls."""
 
         general = tb.Frame(parent)
-        general.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, 10))
-        general.grid_columnconfigure(1, weight=1)
+        general.pack(fill="x", pady=(0, 10))
+        general.columnconfigure(1, weight=1)
 
         tb.Label(general, text="Model").grid(row=0, column=0, sticky=W)
         self.model_var = tb.StringVar(value=self.settings.get("model_key", self.config.default_model))
@@ -533,31 +609,10 @@ class BackgroundRemoverApp(tb.Window):
             "Preferred hardware backend. Auto selects GPU if available, otherwise CPU.",
         )
 
-        tb.Label(general, text="Background fill").grid(row=3, column=0, sticky=W)
-        color_frame = tb.Frame(general)
-        color_frame.grid(row=3, column=1, sticky="we", padx=8)
-        color_frame.grid_columnconfigure(1, weight=1)
-        tb.Button(
-            color_frame,
-            text="Choose",
-            command=self._choose_background_color,
-        ).grid(row=0, column=0, padx=(0, 6))
-        tb.Button(
-            color_frame,
-            text="Clear",
-            command=self._clear_background_color,
-        ).grid(row=0, column=1, padx=(0, 6))
-        self.color_label = tb.Label(color_frame, text=self._background_label_text(), width=18)
-        self.color_label.grid(row=0, column=2, sticky=W)
-        self._add_tooltip(
-            color_frame,
-            "Choose background fill color. Transparent if left unset.",
-        )
-
-        tb.Label(general, text="Model directory").grid(row=4, column=0, sticky=W)
+        tb.Label(general, text="Model directory").grid(row=3, column=0, sticky=W)
         self.model_dir_var = tb.StringVar(value=self.settings.get("model_dir", str(self.config.model_dir)))
         model_dir_frame = tb.Frame(general)
-        model_dir_frame.grid(row=4, column=1, sticky="we", padx=8)
+        model_dir_frame.grid(row=3, column=1, sticky="we", padx=8)
         model_dir_frame.grid_columnconfigure(0, weight=1)
         model_entry = tb.Entry(model_dir_frame, textvariable=self.model_dir_var)
         model_entry.grid(row=0, column=0, sticky="we", padx=(0, 6))
@@ -580,9 +635,9 @@ class BackgroundRemoverApp(tb.Window):
     def _build_alpha_section(self, parent: tb.Frame) -> None:
         """Create the alpha matting refinement group."""
 
-        frame = tb.Labelframe(parent, text="Alpha Matting Refinement", padding=10)
-        frame.grid(row=1, column=0, columnspan=2, sticky="we", pady=(0, 10))
-        frame.grid_columnconfigure(1, weight=1)
+        frame = tb.Frame(parent, padding=10)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
 
         self.alpha_enabled_var = tb.BooleanVar(value=bool(self.settings.get("alpha_matting", False)))
         enable_check = tb.Checkbutton(
@@ -668,9 +723,9 @@ class BackgroundRemoverApp(tb.Window):
     def _build_mask_section(self, parent: tb.Frame) -> None:
         """Create mask refinement controls."""
 
-        frame = tb.Labelframe(parent, text="Mask Refinement", padding=10)
-        frame.grid(row=2, column=0, columnspan=2, sticky="we", pady=(0, 10))
-        frame.grid_columnconfigure(1, weight=1)
+        frame = tb.Frame(parent, padding=10)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
 
         self.smoothing_var = tb.DoubleVar(value=float(self.settings.get("smoothing", 0.0)))
         tb.Label(frame, text="Smoothing").grid(row=0, column=0, sticky=W)
@@ -711,9 +766,9 @@ class BackgroundRemoverApp(tb.Window):
     def _build_output_section(self, parent: tb.Frame) -> None:
         """Create output configuration controls."""
 
-        frame = tb.Labelframe(parent, text="Output", padding=10)
-        frame.grid(row=3, column=0, columnspan=2, sticky="we", pady=(0, 10))
-        frame.grid_columnconfigure(1, weight=1)
+        frame = tb.Frame(parent, padding=10)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
 
         tb.Label(frame, text="Format").grid(row=0, column=0, sticky=W)
         self.format_var = tb.StringVar(value=self.settings.get("output_format", "PNG"))
@@ -763,9 +818,9 @@ class BackgroundRemoverApp(tb.Window):
     def _build_batch_section(self, parent: tb.Frame) -> None:
         """Create batch processing configuration controls."""
 
-        frame = tb.Labelframe(parent, text="Batch Processing", padding=10)
-        frame.grid(row=4, column=0, columnspan=2, sticky="we")
-        frame.grid_columnconfigure(1, weight=1)
+        frame = tb.Frame(parent, padding=10)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
 
         self.recursive_var = tb.BooleanVar(value=bool(self.settings.get("recursive", False)))
         recursive_check = tb.Checkbutton(
@@ -807,19 +862,13 @@ class BackgroundRemoverApp(tb.Window):
         """Toggle visibility of the advanced settings frame."""
 
         if self.advanced_visible.get():
-            self.advanced_body.forget()
+            self.advanced_body.pack_forget()
             self.advanced_visible.set(False)
             self.toggle_button.configure(text="Show")
         else:
             self.advanced_body.pack(fill=BOTH, expand=True)
             self.advanced_visible.set(True)
             self.toggle_button.configure(text="Hide")
-
-    def _background_label_text(self) -> str:
-        """Return a human readable summary of the background selection."""
-
-        color = self.settings.get("background_color", "")
-        return color or "Transparent"
 
     def _toggle_alpha_controls(self) -> None:
         """Enable or disable alpha control widgets."""
@@ -832,12 +881,11 @@ class BackgroundRemoverApp(tb.Window):
         """Synchronize preview-related button states with available data."""
 
         has_preview = self._preview_image is not None
-        has_color = bool((self.settings.get("background_color") or "").strip())
         has_saved = self._preview_saved_path is not None and self._preview_saved_path.exists()
         self.save_button.configure(state="normal" if has_preview else "disabled")
         self.discard_button.configure(state="normal" if has_preview else "disabled")
         self.view_full_button.configure(state="normal" if has_saved else "disabled")
-        fill_state = "normal" if has_preview and has_color else "disabled"
+        fill_state = "normal" if has_preview else "disabled"
         clear_state = "normal" if has_preview and self._preview_display_override else "disabled"
         self.preview_fill_button.configure(state=fill_state)
         self.preview_clear_button.configure(state=clear_state)
@@ -855,27 +903,23 @@ class BackgroundRemoverApp(tb.Window):
         tooltip_text = "Providers: " + ", ".join(self.providers or ["CPUExecutionProvider"])
         self._add_tooltip(self.badge, tooltip_text)
 
-    def _clear_background_color(self) -> None:
-        """Reset the background fill setting."""
-
-        self._update_setting("background_color", "")
-        self.color_label.configure(text=self._background_label_text())
-        self._update_preview_controls()
-
     def _preview_fill_background(self) -> None:
-        """Display the current preview composited with the configured background color."""
+        """Display the preview composited with a user-selected background color."""
 
         if not self._preview_image:
             return
-        rgb_color = _hex_to_rgb(self.settings.get("background_color"))
-        if not rgb_color:
-            messagebox.showinfo(
-                "No background color",
-                "Set a background fill color in Advanced Settings before previewing the fill.",
-            )
+        initial = "#ffffff"
+        if self._preview_last_fill_color:
+            initial = "#{:02x}{:02x}{:02x}".format(*self._preview_last_fill_color)
+        rgb_color, hex_value = colorchooser.askcolor(
+            title="Choose preview background color",
+            initialcolor=initial,
+        )
+        if not hex_value or not rgb_color:
             return
+        self._preview_last_fill_color = tuple(int(component) for component in rgb_color)
         preview_rgba = self._preview_image.convert("RGBA")
-        filled_background = Image.new("RGBA", preview_rgba.size, (*rgb_color, 255))
+        filled_background = Image.new("RGBA", preview_rgba.size, (*self._preview_last_fill_color, 255))
         self._preview_display_override = Image.alpha_composite(filled_background, preview_rgba)
         self._render_preview_image()
         self._update_preview_controls()
@@ -905,15 +949,6 @@ class BackgroundRemoverApp(tb.Window):
         self.providers = detect_providers(self._provider_hints())
         self._refresh_badge()
         self._update_preview_controls()
-
-    def _choose_background_color(self) -> None:
-        """Display a color chooser dialog and store the result."""
-
-        _, hex_value = colorchooser.askcolor(title="Choose background color")
-        if hex_value:
-            self._update_setting("background_color", hex_value)
-            self.color_label.configure(text=self._background_label_text())
-            self._update_preview_controls()
 
     def _on_model_dir_change(self) -> None:
         """Persist model directory text edits into settings."""
@@ -1145,6 +1180,7 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_saved_path = None
         self._preview_canvas_image = None
         self._preview_display_override = None
+        self._preview_last_fill_color = None
         self.preview_canvas.delete("all")
         self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
         self.preview_zoom_var.set(100.0)

@@ -299,3 +299,132 @@ def test_resolve_huggingface_token_reads_cached_file(
 
     token = bg_remove._resolve_huggingface_token()
     assert token == "hf_secret_token"
+
+
+def test_ensure_models_downloaded_defers_until_requested(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ensure downloads are not triggered until a session requests a model."""
+
+    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
+    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+
+    def raise_prefetch(spec: bg_remove.ModelSpec) -> None:
+        raise AssertionError("Prefetch should not run during deferral test")
+
+    monkeypatch.setattr(bg_remove, "_schedule_prefetch", raise_prefetch)
+
+    download_called = False
+
+    def fail_download(spec: bg_remove.ModelSpec, **_: object) -> Path:
+        nonlocal download_called
+        download_called = True
+        raise AssertionError("Download should be deferred")
+
+    monkeypatch.setattr(bg_remove, "_download_model", fail_download)
+
+    statuses = bg_remove.ensure_models_downloaded(prefetch=False)
+
+    assert not download_called
+    assert statuses[bg_remove.DEFAULT_MODEL_NAME].state is bg_remove.DownloadState.PENDING
+
+
+def test_ensure_models_downloaded_prefetches_requested_models(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Schedule background downloads for explicitly requested models."""
+
+    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
+    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+
+    scheduled: list[str] = []
+
+    def record_prefetch(spec: bg_remove.ModelSpec) -> None:
+        scheduled.append(spec.key)
+
+    monkeypatch.setattr(bg_remove, "_schedule_prefetch", record_prefetch)
+
+    statuses = bg_remove.ensure_models_downloaded(prefetch={"u2net"})
+
+    assert "u2net" in scheduled
+    assert statuses["u2net"].state is bg_remove.DownloadState.PENDING
+
+
+def test_download_model_retries_transient_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Retry downloads with exponential backoff when transient errors occur."""
+
+    spec = bg_remove.ModelSpec(
+        key="example-transient",
+        input_size=(1, 1),
+        mean=(0.0, 0.0, 0.0),
+        std=(1.0, 1.0, 1.0),
+        url="https://example.invalid/model.onnx",
+        checksum_md5=None,
+    )
+
+    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
+    monkeypatch.setattr(bg_remove, "_verify_md5", lambda path, checksum: path.exists())
+
+    attempts: list[int] = []
+
+    def flaky_download(
+        spec_arg: bg_remove.ModelSpec, destination: Path
+    ) -> Path:
+        attempts.append(1)
+        if len(attempts) < 2:
+            raise RuntimeError("temporary network issue")
+        destination.write_bytes(b"onnx")
+        return destination
+
+    monkeypatch.setattr(bg_remove, "_download_model_from_url", flaky_download)
+
+    delays: list[float] = []
+    monkeypatch.setattr(bg_remove.time, "sleep", lambda value: delays.append(value))
+
+    path = bg_remove._download_model(spec, max_attempts=3, backoff_base=0.1)
+
+    assert path.exists()
+    assert len(attempts) == 2
+    assert delays == [0.1]
+
+    status = bg_remove.get_download_statuses()[spec.key]
+    assert status.state is bg_remove.DownloadState.AVAILABLE
+    assert status.attempts == 2
+
+
+def test_download_model_records_failure_after_retries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Expose failure information when all download retries are exhausted."""
+
+    spec = bg_remove.ModelSpec(
+        key="example-failure",
+        input_size=(1, 1),
+        mean=(0.0, 0.0, 0.0),
+        std=(1.0, 1.0, 1.0),
+        url="https://example.invalid/model.onnx",
+        checksum_md5=None,
+    )
+
+    monkeypatch.setattr(bg_remove, "MODEL_DOWNLOAD_ROOT", tmp_path)
+    monkeypatch.setattr(bg_remove, "MODELS_DIRECTORY", tmp_path)
+    monkeypatch.setattr(bg_remove, "_verify_md5", lambda path, checksum: False)
+    monkeypatch.setattr(bg_remove.time, "sleep", lambda value: None)
+
+    def always_fail(
+        spec_arg: bg_remove.ModelSpec, destination: Path
+    ) -> Path:
+        raise RuntimeError("permanent outage")
+
+    monkeypatch.setattr(bg_remove, "_download_model_from_url", always_fail)
+
+    with pytest.raises(RuntimeError):
+        bg_remove._download_model(spec, max_attempts=2, backoff_base=0.0)
+
+    status = bg_remove.get_download_statuses()[spec.key]
+    assert status.state is bg_remove.DownloadState.FAILED
+    assert status.error is not None
+    assert status.attempts == 2

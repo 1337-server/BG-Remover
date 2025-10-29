@@ -46,6 +46,7 @@ from bg_removal import (
     remove_bg_file,
     remove_bg_folder,
 )
+from model_configs import parse_model_options, serialise_model_configs
 
 LOGGER = logging.getLogger(__name__)
 
@@ -95,6 +96,7 @@ FORMAT_OPTIONS = [
     for spec in OUTPUT_FORMATS
 ]
 DEFAULT_OUTPUT_FORMAT_KEY = DEFAULT_OUTPUT_FORMAT
+MODEL_CONFIGS_FRONTEND = serialise_model_configs()
 REMOVAL_MODEL_OPTIONS = [
     {"key": "general", "label": "General Model (isnet-general-use)", "model_name": "isnet-general-use"},
     {
@@ -207,6 +209,21 @@ def _collect_single_options(form: Mapping[str, Any], defaults: Mapping[str, Any]
     }
 
 
+def _extract_model_option_payload(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a flat mapping of model-specific options from ``values``."""
+
+    direct = values.get("model_options")
+    if isinstance(direct, Mapping):
+        return {str(key): direct[key] for key in direct}
+
+    extracted: dict[str, Any] = {}
+    prefix = "model_option_"
+    for key, raw_value in values.items():
+        if isinstance(key, str) and key.startswith(prefix):
+            extracted[key[len(prefix) :]] = raw_value
+    return extracted
+
+
 def _load_json_payload() -> Mapping[str, Any] | None:
     """Return the parsed JSON payload when available and valid."""
 
@@ -273,6 +290,8 @@ def remove_background_view() -> ResponseReturnValue:
     defaults = dict(DEFAULT_SINGLE_OPTIONS)
     defaults["output_format"] = DEFAULT_OUTPUT_FORMAT_KEY
     defaults.update(DEFAULT_CHECKBOX_OPTIONS)
+    defaults["model_options"] = {}
+    defaults["model_options_model_name"] = _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY]
 
     if request.method == "GET":
         ensure_global_session()
@@ -283,6 +302,8 @@ def remove_background_view() -> ResponseReturnValue:
             format_options=FORMAT_OPTIONS,
             accelerator_runtime=runtime_info,
             removal_model_options=REMOVAL_MODEL_OPTIONS,
+            model_configs=MODEL_CONFIGS_FRONTEND,
+            removal_model_lookup=_REMOVAL_MODEL_LOOKUP,
         )
 
     json_payload = _load_json_payload()
@@ -306,6 +327,19 @@ def remove_background_view() -> ResponseReturnValue:
     model_name = _REMOVAL_MODEL_LOOKUP.get(
         removal_model_key, _REMOVAL_MODEL_LOOKUP[DEFAULT_REMOVAL_MODEL_KEY]
     )
+    defaults["removal_model"] = removal_model_key
+    raw_model_options = _extract_model_option_payload(form_data)
+    try:
+        model_options = parse_model_options(model_name, raw_model_options)
+    except ValueError as exc:
+        LOGGER.error(
+            "Invalid model-specific options supplied",
+            extra={"model_name": model_name, "error": str(exc)},
+        )
+        runtime_info = get_runtime_payload()
+        return _bad_request(str(exc), runtime_info=runtime_info)
+    defaults["model_options"] = dict(model_options)
+    defaults["model_options_model_name"] = model_name
     preview_size: int | None = None
     preview_size_raw = form_data.get("preview_size")
     if preview_size_raw:
@@ -338,6 +372,7 @@ def remove_background_view() -> ResponseReturnValue:
                 output_dir,
                 output_format=format_spec.key,
                 model_name=model_name,
+                model_options=model_options,
                 recursive=recursive,
                 alpha_matting=options["alpha_matting"],
                 am_foreground=options["am_foreground"],
@@ -358,6 +393,7 @@ def remove_background_view() -> ResponseReturnValue:
             "removal_model_label": _REMOVAL_MODEL_LABEL_LOOKUP.get(removal_model_key),
             "output_directory": output_dir,
             "preview_size": preview_size,
+            "model_options": model_options,
         }
 
         if _is_truthy(form_data.get("zip")):
@@ -377,6 +413,8 @@ def remove_background_view() -> ResponseReturnValue:
             format_options=FORMAT_OPTIONS,
             accelerator_runtime=runtime_info,
             removal_model_options=REMOVAL_MODEL_OPTIONS,
+            model_configs=MODEL_CONFIGS_FRONTEND,
+            removal_model_lookup=_REMOVAL_MODEL_LOOKUP,
             results=payload,
         )
 
@@ -437,6 +475,7 @@ def remove_background_view() -> ResponseReturnValue:
         output_path if save_to_disk else None,
         output_format=format_spec.key,
         model_name=model_name,
+        model_options=model_options,
         alpha_matting=options["alpha_matting"],
         am_foreground=options["am_foreground"],
         am_background=options["am_background"],
@@ -475,6 +514,7 @@ def remove_background_view() -> ResponseReturnValue:
                 "removal_model_label": _REMOVAL_MODEL_LABEL_LOOKUP.get(removal_model_key),
                 "preview_size": preview_size,
                 "output_directory": str(persistent_output_dir) if persistent_output_dir else None,
+                "model_options": model_options,
             },
         }
         response_data.update(runtime_info)

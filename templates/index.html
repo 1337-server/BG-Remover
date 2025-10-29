@@ -61,12 +61,22 @@
 
         <div class="space-y-6">
           <section id="panel-single" class="tab-panel space-y-6" data-tab-panel="single" role="tabpanel" aria-labelledby="tab-single">
+            <!-- modelOptionsForm initialises every reactive property so Alpine bindings stay defined for dynamic schemas. -->
             <form
               id="single-form"
               enctype="multipart/form-data"
               class="space-y-6"
               novalidate
               data-help-container
+              data-model-options-config='{{ {
+                "configs": model_configs,
+                "lookup": removal_model_lookup,
+                "initialKey": defaults.removal_model,
+                "initialValues": defaults.model_options,
+                "initialModelName": defaults.model_options_model_name,
+                "idPrefix": "single"
+              } | tojson | safe }}'
+              x-data="modelOptionsForm($el.dataset.modelOptionsConfig)"
             >
               <div
                 class="alert hidden rounded-2xl border border-red-400 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200"
@@ -119,7 +129,7 @@
                       </ul>
                     {% endcall %}
                   </div>
-                  <select class="form-select block w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] shadow-sm focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]" id="single-model" name="removal_model">
+                  <select class="form-select block w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] shadow-sm focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]" id="single-model" name="removal_model" x-model="selectedModelKey">
                     {% for option in removal_model_options %}
                       <option value="{{ option.key }}" {% if option.key == defaults.removal_model %}selected{% endif %}>{{ option.label }}</option>
                     {% endfor %}
@@ -191,9 +201,86 @@
                 <p class="text-xs text-[var(--color-text-muted)]" data-help-element>Leave blank if you prefer to choose the location manually when downloading.</p>
               </div>
 
+              <template x-if="hasAdvancedOptions">
+                <details class="group rounded-2xl border border-[var(--color-border-muted)] bg-[var(--color-surface-soft)]/30" x-cloak>
+                  <summary class="flex cursor-pointer items-center justify-between gap-2 rounded-2xl px-4 py-3 text-sm font-semibold text-[var(--color-text-strong)]">
+                    Advanced Options
+                    <span class="transition-transform group-open:rotate-180" aria-hidden="true">▾</span>
+                  </summary>
+                  <div class="space-y-4 px-4 pb-4 pt-2 text-sm text-[var(--color-text-muted)]">
+                    <template x-for="[paramName, schema] in Object.entries(optionSchemas)" :key="paramName">
+                      <div class="space-y-2">
+                        <template x-if="inputType(schema) === 'checkbox'">
+                          <label class="inline-flex items-start gap-3 rounded-xl border border-transparent px-3 py-2 transition hover:bg-[var(--color-surface-soft)]">
+                            <input
+                              class="mt-1 h-4 w-4 rounded border-[var(--color-border-muted)] text-[var(--color-accent-strong)] focus:ring-[var(--color-accent-strong)]"
+                              type="checkbox"
+                              :id="`${idPrefix}-model-option-${paramName}`"
+                              :name="`model_option_${paramName}`"
+                              x-model="fieldValues[paramName]"
+                            >
+                            <span class="space-y-1">
+                              <span class="font-medium text-[var(--color-text-strong)]" x-text="formatLabel(paramName, schema)"></span>
+                              <template x-if="schema.help_text">
+                                <p class="text-xs text-[var(--color-text-muted)]" x-text="schema.help_text"></p>
+                              </template>
+                            </span>
+                          </label>
+                        </template>
+                        <template x-if="inputType(schema) !== 'checkbox'">
+                          <div class="space-y-2">
+                            <label
+                              class="text-sm font-medium text-[var(--color-text-muted)]"
+                              :for="`${idPrefix}-model-option-${paramName}`"
+                              x-text="formatLabel(paramName, schema)"
+                            ></label>
+                            <template x-if="inputType(schema) === 'select'">
+                              <select
+                                class="form-select block w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] shadow-sm focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]"
+                                :id="`${idPrefix}-model-option-${paramName}`"
+                                :name="`model_option_${paramName}`"
+                                x-model="fieldValues[paramName]"
+                              >
+                                <template x-for="option in optionList(schema)" :key="option.value">
+                                  <option :value="option.value" x-text="option.label"></option>
+                                </template>
+                              </select>
+                            </template>
+                            <template x-if="inputType(schema) === 'number'">
+                              <input
+                                class="w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]"
+                                type="number"
+                                :id="`${idPrefix}-model-option-${paramName}`"
+                                :name="`model_option_${paramName}`"
+                                x-model="fieldValues[paramName]"
+                                :min="schema.min ?? null"
+                                :max="schema.max ?? null"
+                                :step="numberStep(schema)"
+                              >
+                            </template>
+                            <template x-if="inputType(schema) === 'text'">
+                              <input
+                                class="w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]"
+                                type="text"
+                                :id="`${idPrefix}-model-option-${paramName}`"
+                                :name="`model_option_${paramName}`"
+                                x-model="fieldValues[paramName]"
+                              >
+                            </template>
+                            <template x-if="schema.help_text">
+                              <p class="text-xs text-[var(--color-text-muted)]" x-text="schema.help_text"></p>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </details>
+              </template>
+
               <details class="group rounded-2xl border border-dashed border-[var(--color-border-muted)] bg-[var(--color-surface-soft)]/30" data-component="accordion">
                 <summary class="flex cursor-pointer items-center justify-between gap-2 rounded-2xl px-4 py-3 text-sm font-semibold text-[var(--color-text-strong)]">
-                  Advanced refinements
+                  General refinements
                   <span class="transition-transform group-open:rotate-180" aria-hidden="true">▾</span>
                 </summary>
                 <div class="space-y-6 px-4 pb-4 pt-2 text-sm text-[var(--color-text-muted)]">
@@ -299,7 +386,22 @@
           </section>
 
           <section id="panel-folder" class="tab-panel hidden space-y-6" data-tab-panel="folder" role="tabpanel" aria-labelledby="tab-folder" tabindex="-1">
-            <form id="folder-form" class="space-y-6" novalidate data-help-container>
+            <!-- Keep folder workflow in sync with the same Alpine data component to avoid undefined bindings. -->
+            <form
+              id="folder-form"
+              class="space-y-6"
+              novalidate
+              data-help-container
+              data-model-options-config='{{ {
+                "configs": model_configs,
+                "lookup": removal_model_lookup,
+                "initialKey": defaults.removal_model,
+                "initialValues": defaults.model_options,
+                "initialModelName": defaults.model_options_model_name,
+                "idPrefix": "folder"
+              } | tojson | safe }}'
+              x-data="modelOptionsForm($el.dataset.modelOptionsConfig)"
+            >
               <input type="hidden" name="process_folder" value="on">
               <label class="flex items-center gap-2 text-sm font-medium text-[var(--color-text-muted)]" data-help-toggle data-help-target="#folder-form">
                 <input type="checkbox" class="h-4 w-4 rounded border-[var(--color-border-muted)] text-[var(--color-accent-strong)] focus:ring-[var(--color-accent-strong)]" id="folder-help-toggle" checked>
@@ -339,7 +441,7 @@
                     </ul>
                   {% endcall %}
                 </div>
-                <select class="form-select block w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] shadow-sm focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]" id="folder-model" name="removal_model">
+                <select class="form-select block w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] shadow-sm focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]" id="folder-model" name="removal_model" x-model="selectedModelKey">
                   {% for option in removal_model_options %}
                     <option value="{{ option.key }}" {% if option.key == defaults.removal_model %}selected{% endif %}>{{ option.label }}</option>
                   {% endfor %}
@@ -374,6 +476,83 @@
                   {% endfor %}
                 </select>
               </div>
+
+              <template x-if="hasAdvancedOptions">
+                <details class="group rounded-2xl border border-[var(--color-border-muted)] bg-[var(--color-surface-soft)]/30" x-cloak>
+                  <summary class="flex cursor-pointer items-center justify-between gap-2 rounded-2xl px-4 py-3 text-sm font-semibold text-[var(--color-text-strong)]">
+                    Advanced Options
+                    <span class="transition-transform group-open:rotate-180" aria-hidden="true">▾</span>
+                  </summary>
+                  <div class="space-y-4 px-4 pb-4 pt-2 text-sm text-[var(--color-text-muted)]">
+                    <template x-for="[paramName, schema] in Object.entries(optionSchemas)" :key="paramName">
+                      <div class="space-y-2">
+                        <template x-if="inputType(schema) === 'checkbox'">
+                          <label class="inline-flex items-start gap-3 rounded-xl border border-transparent px-3 py-2 transition hover:bg-[var(--color-surface-soft)]">
+                            <input
+                              class="mt-1 h-4 w-4 rounded border-[var(--color-border-muted)] text-[var(--color-accent-strong)] focus:ring-[var(--color-accent-strong)]"
+                              type="checkbox"
+                              :id="`${idPrefix}-model-option-${paramName}`"
+                              :name="`model_option_${paramName}`"
+                              x-model="fieldValues[paramName]"
+                            >
+                            <span class="space-y-1">
+                              <span class="font-medium text-[var(--color-text-strong)]" x-text="formatLabel(paramName, schema)"></span>
+                              <template x-if="schema.help_text">
+                                <p class="text-xs text-[var(--color-text-muted)]" x-text="schema.help_text"></p>
+                              </template>
+                            </span>
+                          </label>
+                        </template>
+                        <template x-if="inputType(schema) !== 'checkbox'">
+                          <div class="space-y-2">
+                            <label
+                              class="text-sm font-medium text-[var(--color-text-muted)]"
+                              :for="`${idPrefix}-model-option-${paramName}`"
+                              x-text="formatLabel(paramName, schema)"
+                            ></label>
+                            <template x-if="inputType(schema) === 'select'">
+                              <select
+                                class="form-select block w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] shadow-sm focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]"
+                                :id="`${idPrefix}-model-option-${paramName}`"
+                                :name="`model_option_${paramName}`"
+                                x-model="fieldValues[paramName]"
+                              >
+                                <template x-for="option in optionList(schema)" :key="option.value">
+                                  <option :value="option.value" x-text="option.label"></option>
+                                </template>
+                              </select>
+                            </template>
+                            <template x-if="inputType(schema) === 'number'">
+                              <input
+                                class="w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]"
+                                type="number"
+                                :id="`${idPrefix}-model-option-${paramName}`"
+                                :name="`model_option_${paramName}`"
+                                x-model="fieldValues[paramName]"
+                                :min="schema.min ?? null"
+                                :max="schema.max ?? null"
+                                :step="numberStep(schema)"
+                              >
+                            </template>
+                            <template x-if="inputType(schema) === 'text'">
+                              <input
+                                class="w-full rounded-xl border-[var(--color-border-muted)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)] focus:border-[var(--color-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-strong)]"
+                                type="text"
+                                :id="`${idPrefix}-model-option-${paramName}`"
+                                :name="`model_option_${paramName}`"
+                                x-model="fieldValues[paramName]"
+                              >
+                            </template>
+                            <template x-if="schema.help_text">
+                              <p class="text-xs text-[var(--color-text-muted)]" x-text="schema.help_text"></p>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </details>
+              </template>
 
               <div class="grid gap-4 md:grid-cols-2">
                 <label class="flex items-start gap-3">

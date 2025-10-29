@@ -52,7 +52,7 @@ def test_post_with_image_displays_result(
     monkeypatch.setattr(
         bg_remove,
         "_predict_mask",
-        lambda image, session: Image.new("L", image.size, color=255),
+        lambda image, session, model_options=None: Image.new("L", image.size, color=255),
     )
     upload = _make_upload()
     response = client.post(
@@ -79,7 +79,7 @@ def test_post_with_json_image_payload(
     monkeypatch.setattr(
         bg_remove,
         "_predict_mask",
-        lambda image, session: Image.new("L", image.size, color=255),
+        lambda image, session, model_options=None: Image.new("L", image.size, color=255),
     )
 
     buffer, filename = _make_upload()
@@ -165,7 +165,7 @@ def test_json_request_with_output_dir_persists_file(
     monkeypatch.setattr(
         bg_remove,
         "_predict_mask",
-        lambda image, session: Image.new("L", image.size, color=255),
+        lambda image, session, model_options=None: Image.new("L", image.size, color=255),
     )
 
     original_remove_bg_file = bg_remove.remove_bg_file
@@ -200,6 +200,84 @@ def test_json_request_with_output_dir_persists_file(
     assert isinstance(saved_path, Path)
     assert saved_path.exists()
     assert payload["result"]["path_out"] == str(saved_path)
+
+
+def test_invalid_model_option_returns_error(client: FlaskClient) -> None:
+    buffer, filename = _make_upload()
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    response = client.post(
+        "/?json=1",
+        json={
+            "image_base64": encoded,
+            "filename": filename,
+            "output_format": "png",
+            "removal_model": "general_high_quality",
+            "model_options": {"input_size": 9000},
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload is not None
+    assert "input_size" in payload["error"]
+
+
+def test_model_options_passed_to_remove_bg_file(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummySession:
+        providers_available = ("CPUExecutionProvider",)
+
+    monkeypatch.setattr("app.ensure_global_session", lambda model_name=None: DummySession())
+
+    spec = bg_remove.get_output_format_spec("png")
+    captured: dict[str, object] = {}
+
+    def fake_remove_bg_file(
+        input_path: Path | str,
+        output: Path | str | None,
+        **kwargs: object,
+    ) -> bg_remove.RemovalResult:
+        captured["model_options"] = kwargs.get("model_options")
+        image = Image.new("RGBA", (2, 2), color=(255, 0, 0, 255))
+        return bg_remove.RemovalResult(
+            image=image,
+            format_spec=spec,
+            elapsed_ms=1.0,
+            path_in=Path(input_path),
+            path_out=None,
+        )
+
+    monkeypatch.setattr("app.remove_bg_file", fake_remove_bg_file)
+
+    buffer, filename = _make_upload()
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    response = client.post(
+        "/?json=1",
+        json={
+            "image_base64": encoded,
+            "filename": filename,
+            "output_format": "png",
+            "removal_model": "complex_scene",
+            "model_options": {
+                "precision": "fp32",
+                "segmentation_points": 12,
+                "prompt_mode": "foreground",
+            },
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert captured["model_options"] == {
+        "precision": "fp32",
+        "segmentation_points": 12,
+        "prompt_mode": "foreground",
+    }
+
 
 def test_post_uses_requested_model_session(
     client: FlaskClient, monkeypatch: pytest.MonkeyPatch

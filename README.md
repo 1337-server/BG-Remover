@@ -2,8 +2,8 @@
 
 This project combines a rich command-line tool and a small Flask UI to remove image backgrounds using
 direct ONNX Runtime sessions powered by the U²-Net family of models. It can clean up single images,
-entire folders, or uploaded files, and exports in multiple formats (PNG, WebP, JPEG, BMP, TIFF) with
-transparency preserved whenever the format allows it.
+entire folders, or uploaded files, and exports in multiple formats (PNG, WebP, JPEG) with transparency
+preserved whenever the format allows it.
 
 ---
 
@@ -12,9 +12,10 @@ transparency preserved whenever the format allows it.
 * ✅ **ONNX Runtime-powered masks** with optional alpha matting for detailed hair and fur handling.
 * ✅ **Solid background fallback** (colour-key) plus configurable feathering when OpenCV is available.
 * ✅ **Single-image CLI** and **folder batch mode** that respect EXIF orientation and reuse one model session.
-* ✅ **Flexible exports** with selectable PNG, WebP, JPEG, BMP, or TIFF output (alpha preserved when supported).
-* ✅ **Web interface** built with Flask featuring upload + server-folder workflows, ZIP downloads, and previews.
-* ✅ Runs entirely on CPU, auto-orients input files, and limits oversized images to keep RAM usage stable.
+* ✅ **Flexible exports** with selectable PNG, WebP, or JPEG output (alpha preserved when supported).
+* ✅ **Multiple removal models** covering general scenes, portraits, products, and anime-style artwork.
+* ✅ **Web interface** built with Flask featuring upload + server-folder workflows, ZIP downloads, previews, and guided help.
+* ✅ Runs entirely on CPU, auto-orients input files, limits oversized images to keep RAM usage stable, and caches downloaded weights.
 
 ---
 
@@ -38,7 +39,7 @@ transparency preserved whenever the format allows it.
    ```
 
 The first run of either the CLI or web service initialises a single ONNX Runtime session and caches the
-U²-Net / ISNet weights automatically.
+U²-Net / ISNet weights automatically in `~/.u2net`.
 
 ---
 
@@ -67,18 +68,19 @@ Run the CLI with:
 
 ```bash
 python main.py --input path/to/image_or_folder --output optional/output/dir \
-  --format webp --alpha-matting --am-foreground 240 --am-background 10 --am-erode 10 \
-  --colorkey-tolerance 14 --feather-radius 3 --recursive
+  --model human --format webp --alpha-matting --am-foreground 240 --am-background 10 \
+  --am-erode 10 --colorkey-tolerance 14 --feather-radius 3 --recursive
 ```
 
 Key behaviour:
 
 * Passing a **file** writes to `./output/<name>.<format>` (or to `--output` if given).
 * Passing a **folder** produces results under `./output` (or the directory from `--output`).
-* Use `--alpha-matting` + thresholds for tricky edges, `--no-colorkey-fallback` to disable the
-  solid-colour helper, and `--recursive` to process nested folders.
-* Specify `--format [png|webp|jpg|bmp|tiff]` to control the export type; unsupported values raise
-  a clear validation error.
+* Use `--alpha-matting` + thresholds for tricky edges, `--model` to pick between general, human,
+  object, or anime-focused weights, `--no-colorkey-fallback` to disable the solid-colour helper, and
+  `--recursive` to process nested folders.
+* Specify `--format [png|webp|jpg]` to control the export type; unsupported values raise a clear
+  validation error.
 
 ---
 
@@ -99,9 +101,11 @@ background removal is complete—no streaming or WebSocket connection is require
 Open http://127.0.0.1:5000/image/remove-bg in your browser to access:
 
 * **Single Image** tab – upload an image, receive the processed file once complete, request alternate
-  formats, or fetch JSON payloads.
+  formats, or fetch JSON payloads. Preview size, feathering, and destination directory can be tuned
+  before submitting.
 * **Folder Processing** tab – supply a server-side folder, optional output directory, recursive mode,
-  alpha-matting settings, ZIP bundle downloads, and preview-size controls.
+  alpha-matting settings, ZIP bundle downloads, and preview-size controls. Processed batches can be
+  fetched as individual files or as an on-demand ZIP archive.
 
 The Flask app initialises a single ONNX Runtime session on startup so repeated requests remain fast. The
 UI header displays the active CPU execution provider so you can confirm the model is ready before

@@ -24,18 +24,28 @@ function readStoredSettings() {
  * Exposing the factory on `window` ensures Alpine can invoke it directly from
  * the HTML `x-data` attribute regardless of script execution order.
  *
- * @param {string} initialBadgeLabel - Primary provider label rendered in the header.
- * @param {string[]} providerList - Ordered list of execution providers.
- * @param {string[]} availableModels - Ordered list of model identifiers.
- * @param {string} defaultModelDir - Absolute model directory path supplied by Flask.
+ * @param {string|object} rawConfig - JSON string or object containing template provided values.
  * @returns {object} Alpine component descriptor consumed by the UI templates.
  */
-window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels, defaultModelDir) {
+window.bgrApp = function bgrApp(rawConfig) {
   console.log('✅ bgrApp registered globally:', typeof window.bgrApp);
-  const normalizedProviders = Array.isArray(providerList) ? providerList : [];
-  const normalizedModels = Array.isArray(availableModels) ? availableModels : [];
-  const normalizedModelDir = defaultModelDir || '';
-  const normalizedBadgeLabel = initialBadgeLabel || normalizedProviders[0] || 'CPU';
+
+  let parsedConfig = {};
+  try {
+    if (typeof rawConfig === 'string') {
+      parsedConfig = JSON.parse(rawConfig);
+    } else if (rawConfig && typeof rawConfig === 'object') {
+      parsedConfig = { ...rawConfig };
+    }
+  } catch (error) {
+    console.error('Config parse failed:', error, rawConfig);
+    parsedConfig = {};
+  }
+
+  const normalizedProviders = Array.isArray(parsedConfig.providers) ? parsedConfig.providers : [];
+  const normalizedModels = Array.isArray(parsedConfig.model_options) ? parsedConfig.model_options : [];
+  const normalizedModelDir = typeof parsedConfig.model_dir === 'string' ? parsedConfig.model_dir : '';
+  const normalizedBadgeLabel = parsedConfig.badge_label || normalizedProviders[0] || 'CPU';
 
   const baseDefaults = {
     model_key: 'isnet-general-use',
@@ -74,6 +84,7 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
   };
 
   return {
+    initialConfig: parsedConfig,
     badgeLabel: normalizedBadgeLabel,
     providers: normalizedProviders,
     provider: normalizedBadgeLabel,
@@ -100,7 +111,7 @@ window.bgrApp = function bgrApp(initialBadgeLabel, providerList, availableModels
       this.ensureModelDefaults();
       this.persistSettings();
       this.loadHistory();
-      console.log('✅ Alpine initialized successfully');
+      console.log('✅ Alpine initialized successfully with config:', this.initialConfig);
     },
 
     ensureModelDefaults() {

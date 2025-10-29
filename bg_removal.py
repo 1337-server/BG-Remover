@@ -1165,9 +1165,16 @@ def remove_bg_file(
     colorkey_tolerance: int = 14,
     feather_radius: int = 3,
     retain_image: bool = False,
+    save_to_disk: bool = True,
     session: BackgroundRemovalSession | None = None,
 ) -> RemovalResult:
-    """Remove the background from ``input_path`` and write the result to ``output``."""
+    """Remove the background from ``input_path`` and optionally persist the result.
+
+    Args:
+        save_to_disk: When ``True`` (the default) the processed image is written
+            to ``output``. When ``False`` the caller receives the processed
+            image entirely in memory and no filesystem artefact is created.
+    """
 
     # Allow callers to inject a pre-created session so batch processing can share
     # the same inference instance when running concurrently.
@@ -1189,7 +1196,7 @@ def remove_bg_file(
         session=session,
     )
     destination: Path | None = None
-    if result.success:
+    if result.success and save_to_disk:
         destination = _resolve_output_path(source_path, output, result.format_spec)
         result.save(destination)
     image_ref = result.image if retain_image else None

@@ -17,6 +17,23 @@ preserved whenever the format allows it.
 * ✅ **Web interface** built with Flask featuring upload + server-folder workflows, ZIP downloads, previews, and guided help.
 * ✅ Runs entirely on CPU, auto-orients input files, limits oversized images to keep RAM usage stable, and caches downloaded weights.
 
+### 🎯 Model catalogue
+
+The application automatically fetches the required ONNX weights when they are
+first used. General-purpose defaults rely on the IS-Net family, while the
+advanced options now point to actively maintained BRIA releases to avoid the
+previous 404 errors:
+
+| UI option | Model key | Source |
+|-----------|-----------|--------|
+| General | `isnet-general-use` | GitHub release (danielgatis/rembg) |
+| High-quality General | `briaai/RMBG-2.0` | Hugging Face (`briaai/RMBG-2.0`) |
+| Portrait Matting | `matting-by-generation` | Hugging Face (`briaai/BRIA-RMBG-1.4`) |
+| Complex Scene | `sam_segmentation_model` | Hugging Face (`briaai/RMBG-2.0`) |
+| Human | `u2net_human_seg` | GitHub release (danielgatis/rembg) |
+| Object | `u2net` | GitHub release (danielgatis/rembg) |
+| Anime | `isnet-anime` | GitHub release (danielgatis/rembg) |
+
 ---
 
 ### 📦 Installation

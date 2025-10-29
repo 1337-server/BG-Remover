@@ -65,3 +65,34 @@ def test_post_with_image_displays_result(
     assert payload["mime_type"] == "image/png"
     assert payload["result"]["success"] is True
     assert payload["image_base64"].startswith("data:image/png;base64,")
+
+
+def test_post_uses_requested_model_session(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure only the requested model session is initialised for POST submissions."""
+
+    calls: list[str | None] = []
+
+    def fake_ensure(model_name: str | None = None) -> None:
+        calls.append(model_name)
+
+    runtime_call_count = 0
+
+    def fake_runtime_payload() -> dict[str, object]:
+        nonlocal runtime_call_count
+        runtime_call_count += 1
+        return {"providers_available": ["CPUExecutionProvider"]}
+
+    monkeypatch.setattr("app.ensure_global_session", fake_ensure)
+    monkeypatch.setattr("app.get_runtime_payload", fake_runtime_payload)
+
+    response = client.post(
+        "/?json=1",
+        data={"removal_model": "general_high_quality"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert calls == ["briaai/RMBG-2.0"]
+    assert runtime_call_count == 1

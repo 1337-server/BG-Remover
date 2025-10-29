@@ -96,6 +96,7 @@ class BackgroundRemoverApp(tb.Window):
         self.providers = detect_providers(self._provider_hints())
         self._build_ui()
         self._refresh_badge()
+        self._preview_image: Image.Image | None = None
 
     # ------------------------------------------------------------------
     # Settings helpers
@@ -863,8 +864,8 @@ class BackgroundRemoverApp(tb.Window):
         """Worker that performs single image processing."""
 
         try:
-            with Image.open(input_path) as image:
-                array = np.asarray(image.convert("RGBA"))
+            source_image = self._load_source_image(input_path)
+            array = np.asarray(source_image)
             config = self._active_config()
             kwargs = self._processing_kwargs()
             kwargs["feather_radius"] = int(self.settings.get("feather_radius", 3))
@@ -891,6 +892,12 @@ class BackgroundRemoverApp(tb.Window):
             self.after(0, lambda: self._log(f"{input_path.name} failed ✗ — Reason: {message}", error=True))
             self.after(0, lambda: messagebox.showerror("Processing failed", message))
 
+    def _load_source_image(self, path: Path) -> Image.Image:
+        """Return a freshly loaded RGBA image from ``path``."""
+
+        with Image.open(path) as source:
+            return source.convert("RGBA")
+
     def _save_processed_image(
         self,
         pil_image: Image.Image,
@@ -913,6 +920,7 @@ class BackgroundRemoverApp(tb.Window):
     ) -> None:
         """Display a modal preview window for ``pil_image`` prior to saving."""
 
+        self._preview_image = pil_image
         preview_win = tb.Toplevel(self)
         preview_win.title("Preview Processed Image")
         preview_win.transient(self)
@@ -940,12 +948,14 @@ class BackgroundRemoverApp(tb.Window):
                 messagebox.showerror("Save failed", error_message)
                 return
             self._log(f"{original_name} processed successfully ✓")
+            self._preview_image = None
             preview_win.destroy()
 
         def cancel() -> None:
             """Discard the processed image and close the preview."""
 
-            self._log("Processing canceled by user ✗")
+            self._preview_image = None
+            self._log("❌ Preview closed without saving.")
             preview_win.destroy()
 
         buttons = tb.Frame(container)

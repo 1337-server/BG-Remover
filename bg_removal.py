@@ -323,6 +323,19 @@ def _verify_md5(path: Path, expected: str | None) -> bool:
     return checksum.hexdigest() == expected.lower()
 
 
+def _read_token_file(path: Path) -> str | None:
+    """Return the first non-empty line from ``path`` when present."""
+
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    lines = [line.strip() for line in contents.splitlines() if line.strip()]
+    if not lines:
+        return None
+    return lines[0]
+
+
 def _resolve_huggingface_token() -> str | None:
     """Return an authentication token for Hugging Face downloads when available."""
 
@@ -332,6 +345,16 @@ def _resolve_huggingface_token() -> str | None:
             cleaned = token.strip()
             if cleaned:
                 return cleaned
+
+    home = Path.home()
+    candidate_paths = (
+        home / ".huggingface" / "token",
+        home / ".cache" / "huggingface" / "token",
+    )
+    for token_path in candidate_paths:
+        token = _read_token_file(token_path)
+        if token:
+            return token
     return None
 
 

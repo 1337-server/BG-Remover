@@ -156,3 +156,22 @@ def test_all_removal_models_have_specs() -> None:
     app_module = importlib.import_module("app")
     configured_keys = {option["model_name"] for option in app_module.REMOVAL_MODEL_OPTIONS}
     assert configured_keys.issubset(bg_remove.MODEL_SPECS)
+
+
+def test_resolve_huggingface_token_reads_cached_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Load a cached Hugging Face token when environment variables are missing."""
+
+    for variable in ("HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"):
+        monkeypatch.delenv(variable, raising=False)
+
+    home_dir = tmp_path / "home"
+    huggingface_dir = home_dir / ".huggingface"
+    huggingface_dir.mkdir(parents=True)
+    (huggingface_dir / "token").write_text("hf_secret_token\n", encoding="utf-8")
+
+    monkeypatch.setattr(bg_remove.Path, "home", classmethod(lambda cls: home_dir))
+
+    token = bg_remove._resolve_huggingface_token()
+    assert token == "hf_secret_token"

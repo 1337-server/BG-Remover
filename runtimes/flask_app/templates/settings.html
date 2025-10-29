@@ -4,12 +4,12 @@
       <h2 class="text-lg font-semibold">Advanced settings</h2>
       <p class="text-sm text-slate-500 dark:text-slate-400">Fine tune processing behaviour and runtime preferences.</p>
     </div>
-    <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetSettings">Reset defaults</button>
+    <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetSettings()">Reset defaults</button>
   </header>
   <div class="mt-4 grid gap-4 md:grid-cols-2">
     <label class="field">
       <span class="field-label">Model</span>
-      <select name="model_key" class="input" x-model="settings.model_key" @change="persistSettings">
+      <select name="model_key" class="input" x-model="settings.model_key" @change="persistSettings()">
         <template x-for="option in modelOptions" :key="option">
           <option :value="option" x-text="option"></option>
         </template>
@@ -19,7 +19,7 @@
     <label class="field">
       <span class="field-label">Feather radius</span>
       <div class="flex items-center gap-3">
-        <input type="range" min="0" max="50" name="feather_radius" x-model="settings.feather_radius" @input="persistSettings" class="w-full" />
+        <input type="range" min="0" max="50" name="feather_radius" x-model="settings.feather_radius" @input="persistSettings()" class="w-full" />
         <span class="font-semibold w-10 text-right" x-text="settings.feather_radius"></span>
       </div>
       <p class="field-help">Softens the mask edges to avoid harsh cut-outs.</p>
@@ -27,26 +27,26 @@
     <div class="field">
       <span class="field-label">Device preference</span>
       <div class="flex flex-wrap gap-3 text-sm">
-        <label class="chip"><input type="radio" name="provider" value="auto" x-model="settings.provider" @change="persistSettings" />Auto</label>
-        <label class="chip"><input type="radio" name="provider" value="gpu" x-model="settings.provider" @change="persistSettings" />GPU</label>
-        <label class="chip"><input type="radio" name="provider" value="cpu" x-model="settings.provider" @change="persistSettings" />CPU</label>
+        <label class="chip"><input type="radio" name="provider" value="auto" x-model="settings.provider" @change="persistSettings()" />Auto</label>
+        <label class="chip"><input type="radio" name="provider" value="gpu" x-model="settings.provider" @change="persistSettings()" />GPU</label>
+        <label class="chip"><input type="radio" name="provider" value="cpu" x-model="settings.provider" @change="persistSettings()" />CPU</label>
       </div>
       <p class="field-help">Override provider selection for troubleshooting and GPU usage.</p>
     </div>
     <label class="field">
       <span class="field-label">Model directory</span>
-      <input type="text" name="model_dir" class="input" placeholder="~/models" x-model="settings.model_dir" @change="persistSettings" />
+      <input type="text" name="model_dir" class="input" placeholder="~/models" x-model="settings.model_dir" @change="persistSettings()" />
       <p class="field-help">Where downloaded ONNX models are stored on the server.</p>
     </label>
     <label class="field">
       <span class="field-label">Output subfolder</span>
-      <input type="text" name="output_directory" class="input" placeholder="optional" x-model="settings.output_directory" @change="persistSettings" />
+      <input type="text" name="output_directory" class="input" placeholder="optional" x-model="settings.output_directory" @change="persistSettings()" />
       <p class="field-help">Store processed files inside this folder under the server cache.</p>
     </label>
     <label class="field">
       <span class="field-label">File naming</span>
       <label class="inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" name="preserve_names" value="true" x-model="settings.preserve_names" @change="persistSettings" />
+        <input type="checkbox" name="preserve_names" value="true" x-model="settings.preserve_names" @change="persistSettings()" />
         Keep original filenames
       </label>
       <p class="field-help">When disabled the app adds a unique suffix per export.</p>
@@ -54,20 +54,20 @@
     <label class="field">
       <span class="field-label">Alpha matting</span>
       <label class="inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" name="alpha_matting" value="true" x-model="settings.alpha_matting" @change="persistSettings" />
+        <input type="checkbox" name="alpha_matting" value="true" x-model="settings.alpha_matting" @change="persistSettings()" />
         Enable refined matting
       </label>
       <p class="field-help">Improves edge quality for tricky hair or fur. (Experimental)</p>
     </label>
     <label class="field">
       <span class="field-label">Mask smoothing</span>
-      <input type="number" name="mask_blur" min="0" max="25" class="input" x-model="settings.mask_blur" @change="persistSettings" />
+      <input type="number" name="mask_blur" min="0" max="25" class="input" x-model="settings.mask_blur" @change="persistSettings()" />
       <p class="field-help">Applies an additional blur pass to the generated alpha mask.</p>
     </label>
     <label class="field">
       <span class="field-label">Remember settings</span>
       <label class="inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" name="remember_preferences" value="true" x-model="settings.remember_preferences" @change="persistSettings" />
+        <input type="checkbox" name="remember_preferences" value="true" x-model="settings.remember_preferences" @change="persistSettings()" />
         Sync settings to config file
       </label>
       <p class="field-help">Persists model directory and provider choice server-side.</p>

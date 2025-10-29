@@ -29,7 +29,11 @@
     <script defer src="{{ url_for('webui.static', filename='js/app.js') }}"></script>
   </head>
   <body class="bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100 min-h-full">
-    <div class="min-h-screen flex flex-col" x-data="appController({{ badge_label|tojson }}, {{ providers|tojson }}, {{ model_options|tojson }}, {{ model_dir|tojson }})">
+    <div
+      class="min-h-screen flex flex-col"
+      x-data="bgrApp({{ badge_label|tojson }}, {{ providers|tojson }}, {{ model_options|tojson }}, {{ model_dir|tojson }})"
+      x-init="init()"
+    >
       <header class="border-b border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-900/60 backdrop-blur">
         <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div class="flex items-center gap-3">
@@ -47,7 +51,7 @@
             <button
               type="button"
               class="inline-flex items-center gap-2 rounded-full border border-slate-300/70 dark:border-slate-700 px-3 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-800"
-              @click="toggleTheme"
+              @click="toggleTheme()"
             >
               <span class="material-symbols-rounded text-base" aria-hidden="true">contrast</span>
               <span x-text="themeLabel"></span>

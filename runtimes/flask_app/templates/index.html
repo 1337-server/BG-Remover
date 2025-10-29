@@ -12,10 +12,10 @@
         <button
           type="button"
           class="text-sm text-indigo-500 hover:text-indigo-400"
-          @click="resetSelections"
+          @click="resetSelections()"
         >Reset</button>
       </header>
-      <form id="process-form" class="mt-4 space-y-4" @submit.prevent="processImages">
+      <form id="process-form" class="mt-4 space-y-4" @submit.prevent="processImages()">
         <div
           id="drop-zone"
           class="drop-zone"
@@ -35,7 +35,7 @@
               <span class="material-symbols-rounded text-base">folder_open</span>
               <span>Browse</span>
             </label>
-            <input id="image-input" name="images" type="file" class="hidden" multiple accept="image/*" @change="updateSelections" />
+            <input id="image-input" name="images" type="file" class="hidden" multiple accept="image/*" @change="updateSelections($event)" />
           </div>
         </div>
         <div class="selected-files" x-show="selectedFiles.length">
@@ -53,9 +53,9 @@
           <label class="field">
             <span class="field-label">Background fill</span>
             <div class="flex items-center gap-3">
-              <input type="color" name="background_color" x-model="settings.background_color" class="h-10 w-16 rounded border border-slate-300 dark:border-slate-700" @input="persistSettings" />
+              <input type="color" name="background_color" x-model="settings.background_color" class="h-10 w-16 rounded border border-slate-300 dark:border-slate-700" @input="persistSettings()" />
               <label class="inline-flex items-center gap-2 text-sm">
-                <input type="checkbox" name="transparent" value="true" x-model="settings.transparent" @change="persistSettings" />
+                <input type="checkbox" name="transparent" value="true" x-model="settings.transparent" @change="persistSettings()" />
                 Transparent
               </label>
             </div>
@@ -63,7 +63,7 @@
           </label>
           <label class="field">
             <span class="field-label">Output format</span>
-            <select name="output_format" x-model="settings.output_format" @change="persistSettings" class="input">
+            <select name="output_format" x-model="settings.output_format" @change="persistSettings()" class="input">
               <option value="PNG">PNG (transparent)</option>
               <option value="JPEG">JPEG</option>
               <option value="WEBP">WebP</option>
@@ -91,9 +91,9 @@
           <h2 class="text-lg font-semibold">Folder &amp; batch processing</h2>
           <p class="text-sm text-slate-500 dark:text-slate-400">Upload a ZIP archive to process every image inside.</p>
         </div>
-        <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetBatch">Reset</button>
+        <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetBatch()">Reset</button>
       </header>
-      <form id="batch-form" class="mt-4 space-y-4" @submit.prevent="processBatch">
+      <form id="batch-form" class="mt-4 space-y-4" @submit.prevent="processBatch()">
         <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-slate-800/40 p-5 text-center">
           <p class="font-medium">Upload a folder as ZIP</p>
           <p class="text-sm text-slate-500 dark:text-slate-400">Each image will be processed with the same settings.</p>
@@ -101,7 +101,7 @@
             <span class="material-symbols-rounded text-base">folder_zip</span>
             <span>Select ZIP</span>
           </label>
-          <input id="batch-input" type="file" name="archive" accept="application/zip" class="hidden" @change="updateBatchSelection" />
+          <input id="batch-input" type="file" name="archive" accept="application/zip" class="hidden" @change="updateBatchSelection($event)" />
           <p class="mt-2 text-sm" x-text="batchFileName || 'No archive selected yet.'"></p>
         </div>
         <button type="submit" class="btn-secondary w-full" :disabled="isBatchProcessing">
@@ -138,7 +138,7 @@
       <h2 class="text-lg font-semibold">Processing history</h2>
       <p class="text-sm text-slate-500 dark:text-slate-400">Recent results are stored locally on this machine.</p>
     </div>
-    <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="loadHistory">Refresh</button>
+    <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="loadHistory()">Refresh</button>
   </header>
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-left text-sm">

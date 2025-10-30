@@ -645,6 +645,18 @@ def process_folder(
     output_root = resolve_batch_output_dir(source_dir, output_dir)
     session = _prepare_session(resolved_model, config=active_config)
     options = ProcessingOptions.from_kwargs(feather_radius=feather_radius, **advanced_options)
+
+    primary_provider = getattr(session, "primary_provider", "")
+    # Guard against excessive GPU memory pressure by avoiding concurrent inference when
+    # the session is backed by a GPU execution provider.
+    gpu_keywords = ("CUDA", "GPU", "DML", "ROCM")
+    is_gpu_provider = any(keyword in primary_provider.upper() for keyword in gpu_keywords)
+    if options.max_workers > 1 and is_gpu_provider:
+        LOGGER.info(
+            "Parallel processing downgraded to a single worker for GPU provider %s.",
+            primary_provider or "unknown",
+        )
+        options.max_workers = 1
     entries: list[ReportEntry] = []
     candidates = [
         path

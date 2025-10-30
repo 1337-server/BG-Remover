@@ -306,11 +306,11 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
 
     app._init_styles()
 
-    app.config = load_config()
-    init_logging(app.config.log_level)
-    app._default_log_level = app.config.log_level
+    app.app_config = load_config()
+    init_logging(app.app_config.log_level)
+    app._default_log_level = app.app_config.log_level
     app._debug_logging_enabled = False
-    app.settings = app._load_settings(app.config)
+    app.settings = app._load_settings(app.app_config)
     app.settings.setdefault("theme", app.themename)
     app._apply_logging_preferences(initial=True)
     app._tooltips: dict[object, ToolTip] = {}
@@ -1021,7 +1021,7 @@ class BackgroundRemoverApp(_TkRoot):
             return ("CUDAExecutionProvider", "CPUExecutionProvider")
         if device == "cpu":
             return ("CPUExecutionProvider",)
-        return self.config.provider_hints
+        return self.app_config.provider_hints
 
     def _active_config(self) -> Config:
         """Return a :class:`Config` reflecting interactive selections."""
@@ -1039,9 +1039,9 @@ class BackgroundRemoverApp(_TkRoot):
         if model_dir_text:
             updates["model_dir"] = Path(model_dir_text)
         provider_hints = self._provider_hints()
-        if provider_hints != self.config.provider_hints:
+        if provider_hints != self.app_config.provider_hints:
             updates["provider_hints"] = provider_hints
-        return self.config.with_updates(**updates) if updates else self.config
+        return self.app_config.with_updates(**updates) if updates else self.app_config
 
     def _processing_kwargs(self) -> dict[str, Any]:
         """Return advanced processing keyword arguments."""
@@ -1496,7 +1496,9 @@ class BackgroundRemoverApp(_TkRoot):
         general.columnconfigure(1, weight=1)
 
         tb.Label(general, text="Model").grid(row=0, column=0, sticky=W)
-        self.model_var = tb.StringVar(value=self.settings.get("model_key", self.config.default_model))
+        self.model_var = tb.StringVar(
+            value=self.settings.get("model_key", self.app_config.default_model)
+        )
         model_combo = tb.Combobox(
             general,
             values=sorted(MODEL_SPECS.keys()),
@@ -1550,7 +1552,9 @@ class BackgroundRemoverApp(_TkRoot):
         )
 
         tb.Label(general, text="Model directory").grid(row=3, column=0, sticky=W)
-        self.model_dir_var = tb.StringVar(value=self.settings.get("model_dir", str(self.config.model_dir)))
+        self.model_dir_var = tb.StringVar(
+            value=self.settings.get("model_dir", str(self.app_config.model_dir))
+        )
         model_dir_frame = tb.Frame(general)
         model_dir_frame.grid(row=3, column=1, sticky="we", padx=8)
         model_dir_frame.grid_columnconfigure(0, weight=1)
@@ -1958,11 +1962,11 @@ class BackgroundRemoverApp(_TkRoot):
         self._update_setting("debug_logging", enabled)
         self._apply_logging_preferences()
         target_level = getattr(self, "_default_log_level", "INFO")
-        if self.config.log_level != target_level:
+        if self.app_config.log_level != target_level:
             try:
-                updated = self.config.with_updates(log_level=target_level)
+                updated = self.app_config.with_updates(log_level=target_level)
                 persist_config(updated)
-                self.config = updated
+                self.app_config = updated
             except Exception:  # pragma: no cover - best effort persistence
                 LOGGER.debug("Failed to persist logging preference", exc_info=True)
         self._log_thread_snapshot("debug-toggle")
@@ -1974,10 +1978,10 @@ class BackgroundRemoverApp(_TkRoot):
         if not model_dir_text:
             messagebox.showerror("Error", "Please choose a directory before saving.")
             return
-        updated = self.config.with_updates(model_dir=Path(model_dir_text))
+        updated = self.app_config.with_updates(model_dir=Path(model_dir_text))
         try:
             persist_config(updated)
-            self.config = updated
+            self.app_config = updated
             self._log("Model directory saved.")
             self._update_setting("model_dir", model_dir_text)
         except Exception as error:  # pragma: no cover - GUI feedback only

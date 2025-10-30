@@ -10,7 +10,7 @@ from runtimes.gui.bg_remover_gui import BackgroundRemoverApp
 
 def test_active_config_uses_override(tmp_path: Path) -> None:
     app = BackgroundRemoverApp.__new__(BackgroundRemoverApp)
-    app.config = Config(model_dir=tmp_path)
+    app.app_config = Config(model_dir=tmp_path)
     app.model_dir_var = SimpleNamespace(get=lambda: str(tmp_path / "custom"))
     result = app._active_config()
     assert result.model_dir == tmp_path / "custom"

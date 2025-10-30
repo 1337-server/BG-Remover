@@ -106,7 +106,12 @@ window.bgrApp = function bgrApp(rawConfig) {
     failed: 0,
     size_bytes: 0,
     download_url: '',
+    output_dir: '',
+    status: 'idle',
+    message: '',
   });
+
+  const SUPPORTED_BATCH_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp'];
 
   const buildInitialSettings = () => {
     const stored = readStoredSettings();
@@ -148,6 +153,17 @@ window.bgrApp = function bgrApp(rawConfig) {
     isDragging: false,
     batchFile: null,
     batchFileName: '',
+    batchMode: 'zip',
+    batchFolderFiles: [],
+    batchFolderLabel: '',
+    batchServerFolderPath: '',
+    batchServerFolderLabel: '',
+    batchImageCount: 0,
+    batchRecursive: false,
+    batchJobId: '',
+    batchEventSource: null,
+    batchOutputFiles: [],
+    batchShowFiles: false,
     batchSummary: createEmptyBatchSummary(),
     settings: buildInitialSettings(),
     optionHelp: {},
@@ -168,6 +184,56 @@ window.bgrApp = function bgrApp(rawConfig) {
         if (value) {
           this.settings.removal_model = value;
           this.persistSettings();
+        }
+      });
+      this.$watch('batchMode', (mode) => {
+        switch (mode) {
+          case 'zip':
+            this.batchFolderFiles = [];
+            this.batchFolderLabel = '';
+            this.batchServerFolderPath = '';
+            this.batchServerFolderLabel = '';
+            this.batchImageCount = 0;
+            {
+              const folderInput = document.getElementById('batch-folder-input');
+              if (folderInput) {
+                folderInput.value = '';
+              }
+            }
+            break;
+          case 'folder':
+            this.batchFile = null;
+            this.batchFileName = '';
+            this.batchServerFolderPath = '';
+            this.batchServerFolderLabel = '';
+            {
+              const zipInput = document.getElementById('batch-input');
+              if (zipInput) {
+                zipInput.value = '';
+              }
+            }
+            break;
+          case 'server':
+            this.batchFile = null;
+            this.batchFileName = '';
+            this.batchFolderFiles = [];
+            this.batchFolderLabel = '';
+            this.batchImageCount = 0;
+            {
+              const folderInput = document.getElementById('batch-folder-input');
+              if (folderInput) {
+                folderInput.value = '';
+              }
+            }
+            {
+              const zipInput = document.getElementById('batch-input');
+              if (zipInput) {
+                zipInput.value = '';
+              }
+            }
+            break;
+          default:
+            break;
         }
       });
       console.log('✅ Alpine initialized successfully with config:', this.initialConfig);
@@ -367,18 +433,96 @@ window.bgrApp = function bgrApp(rawConfig) {
 
     updateBatchSelection(event) {
       const [file] = Array.from(event?.target?.files || []);
+      this.batchMode = 'zip';
       this.batchFile = file || null;
       this.batchFileName = file ? file.name : '';
+      if (file) {
+        this.batchFolderFiles = [];
+        this.batchFolderLabel = '';
+        this.batchServerFolderPath = '';
+        this.batchServerFolderLabel = '';
+        this.batchImageCount = 0;
+      }
+    },
+
+    updateBatchFolderSelection(event) {
+      const files = Array.from(event?.target?.files || []);
+      this.batchMode = 'folder';
+      this.batchFolderFiles = files;
+      this.batchFile = null;
+      this.batchFileName = '';
+      this.batchServerFolderPath = '';
+      this.batchServerFolderLabel = '';
+      this.batchSummary = createEmptyBatchSummary();
+      this.batchOutputFiles = [];
+      this.batchShowFiles = false;
+      if (!files.length) {
+        this.batchFolderLabel = '';
+        this.batchImageCount = 0;
+        return;
+      }
+      this.batchImageCount = files.filter((file) => this.isSupportedBatchFile(file.name)).length;
+      const relative = files[0]?.webkitRelativePath || files[0]?.name || '';
+      const parts = relative.split(/[\\/]/).filter(Boolean);
+      this.batchFolderLabel = parts.length > 1 ? parts[0] : parts[0] || 'Selected files';
+      if (!this.batchImageCount) {
+        this.addBatchLog('info', 'No supported images found in the selected folder.');
+      } else {
+        this.addBatchLog('info', `Prepared ${this.batchImageCount} image(s) from ${this.batchFolderLabel}.`);
+      }
+    },
+
+    updateServerFolderPath(value) {
+      const trimmed = (value || '').trim();
+      this.batchServerFolderPath = trimmed;
+      this.batchSummary = createEmptyBatchSummary();
+      this.batchOutputFiles = [];
+      this.batchShowFiles = false;
+      this.batchFolderFiles = [];
+      this.batchFolderLabel = '';
+      this.batchImageCount = 0;
+      if (!trimmed) {
+        this.batchServerFolderLabel = '';
+        return;
+      }
+      const segments = trimmed.replace(/\\/g, '/').split('/').filter(Boolean);
+      this.batchServerFolderLabel = segments.length ? segments[segments.length - 1] : trimmed;
+      this.addBatchLog('info', `Server folder selected: ${trimmed}`);
     },
 
     resetBatch() {
+      this.closeBatchStream();
       this.batchFile = null;
       this.batchFileName = '';
+      this.batchFolderFiles = [];
+      this.batchFolderLabel = '';
+      this.batchServerFolderPath = '';
+      this.batchServerFolderLabel = '';
+      this.batchImageCount = 0;
+      this.batchRecursive = false;
+      this.batchJobId = '';
       this.batchSummary = createEmptyBatchSummary();
+      this.batchOutputFiles = [];
+      this.batchShowFiles = false;
       this.batchLog = [];
       const input = document.getElementById('batch-input');
       if (input) {
         input.value = '';
+      }
+      const folderInput = document.getElementById('batch-folder-input');
+      if (folderInput) {
+        folderInput.value = '';
+      }
+      const serverInput = document.getElementById('batch-server-input');
+      if (serverInput) {
+        serverInput.value = '';
+      }
+    },
+
+    closeBatchStream() {
+      if (this.batchEventSource) {
+        this.batchEventSource.close();
+        this.batchEventSource = null;
       }
     },
 
@@ -429,12 +573,36 @@ window.bgrApp = function bgrApp(rawConfig) {
     },
 
     async processBatch() {
-      if (!this.batchFile) {
+      const usingFolderUpload = this.batchMode === 'folder';
+      const usingServerFolder = this.batchMode === 'server';
+      if (usingFolderUpload && !this.batchFolderFiles.length) {
+        this.showToast('error', 'Select a folder containing images to process.');
+        return;
+      }
+      if (usingServerFolder && !this.batchServerFolderPath) {
+        this.showToast('error', 'Enter a valid server folder path to process.');
+        return;
+      }
+      if (!usingFolderUpload && !usingServerFolder && !this.batchFile) {
         this.showToast('error', 'Select a ZIP archive to process.');
         return;
       }
+
       const form = new FormData();
-      form.append('archive', this.batchFile, this.batchFile.name);
+      if (usingFolderUpload) {
+        this.batchFolderFiles.forEach((file) => {
+          const relativePath = file.webkitRelativePath || file.name;
+          form.append('folder_files', file, relativePath);
+        });
+        if (this.batchFolderLabel) {
+          form.append('folder_path', this.batchFolderLabel);
+        }
+      } else if (usingServerFolder) {
+        form.append('folder_path', this.batchServerFolderPath);
+      } else if (this.batchFile) {
+        form.append('zip_file', this.batchFile, this.batchFile.name);
+      }
+      form.append('recursive', this.batchRecursive ? 'true' : 'false');
       Object.entries(this.settings).forEach(([key, value]) => {
         if (typeof value === 'boolean') {
           form.append(key, value ? 'true' : 'false');
@@ -442,50 +610,196 @@ window.bgrApp = function bgrApp(rawConfig) {
           form.append(key, value ?? '');
         }
       });
+
+      this.closeBatchStream();
       this.isBatchProcessing = true;
       this.batchLog = [];
+      this.batchOutputFiles = [];
+      this.batchShowFiles = false;
+      this.batchSummary = createEmptyBatchSummary();
+      const descriptor = usingFolderUpload
+        ? this.batchFolderLabel || 'selected folder'
+        : usingServerFolder
+        ? this.batchServerFolderLabel || this.batchServerFolderPath || 'server folder'
+        : this.batchFileName || 'selected archive';
       this.setStatus('Processing…', 'processing');
-      const batchName = this.batchFile.name;
-      this.addActivity('info', `Batch processing started for ${batchName}…`);
-      this.addBatchLog('info', `Batch processing started for ${batchName}`);
+      this.addActivity('info', `Batch processing started for ${descriptor}…`);
+      this.addBatchLog('info', `Batch processing started for ${descriptor}`);
       try {
-        const response = await fetch('/batch', { method: 'POST', body: form });
+        const response = await fetch('/api/process/batch', { method: 'POST', body: form });
         const payload = await response.json();
         if (!response.ok) {
           throw new Error(payload.error || 'Batch processing failed');
         }
-        this.batchSummary = payload.summary
-          ? { ...payload.summary, download_url: payload.download_url }
-          : createEmptyBatchSummary();
-        if (payload.summary) {
-          this.showToast(
-            'success',
-            `Batch completed — ${payload.summary.success} succeeded, ${payload.summary.failed} failed.`,
-          );
-          const summaryMessage = `Completed: ${payload.summary.success} succeeded, ${payload.summary.failed} failed.`;
-          this.addBatchLog(
-            payload.summary.failed ? 'info' : 'success',
-            summaryMessage,
-          );
+        this.batchJobId = payload.job_id;
+        this.batchSummary.status = 'processing';
+        this.batchSummary.message = 'Processing images…';
+        if (typeof payload.total === 'number') {
+          this.batchSummary.total = payload.total;
+        } else if (usingFolderUpload) {
+          this.batchSummary.total = this.batchImageCount;
         }
-        (payload.entries || []).forEach((entry) => {
-          const message = entry.success
-            ? `${entry.input} processed successfully ✓`
-            : `${entry.input} failed ✗ — Reason: ${entry.error || 'Unknown error'}`;
-          this.addActivity(entry.success ? 'success' : 'error', message);
-          this.addBatchLog(entry.success ? 'success' : 'error', message);
-        });
-        this.loadHistory();
-        this.setStatus('Ready', 'ready');
+        this.listenToBatchJob(this.batchJobId);
       } catch (error) {
         console.error(error);
         this.addActivity('error', `Batch failed ✗ — Reason: ${error.message}`);
         this.showToast('error', error.message);
         this.addBatchLog('error', `Batch failed — ${error.message}`);
         this.setStatus(`Error: ${error.message}`, 'error');
-      } finally {
         this.isBatchProcessing = false;
       }
+    },
+
+    listenToBatchJob(jobId) {
+      if (!jobId) {
+        return;
+      }
+      this.closeBatchStream();
+      const source = new EventSource(`/api/process/batch/${jobId}/stream`);
+      this.batchEventSource = source;
+      source.addEventListener('started', (event) => {
+        try {
+          const data = JSON.parse(event.data || '{}');
+          if (typeof data.total === 'number') {
+            this.batchSummary.total = data.total;
+          }
+          const label = data.label ? `“${data.label}”` : 'batch';
+          this.addBatchLog('info', `Batch job started for ${label}.`);
+        } catch (error) {
+          console.warn('Unable to parse batch start payload', error);
+        }
+      });
+      source.addEventListener('item_success', (event) => {
+        try {
+          const data = JSON.parse(event.data || '{}');
+          const message = data.output
+            ? `${data.input || 'Image'} processed → ${data.output}`
+            : `${data.input || 'Image'} processed successfully.`;
+          this.addBatchLog('success', `${message} ✓`);
+          this.batchSummary.success += 1;
+        } catch (error) {
+          console.warn('Unable to parse success event', error);
+        }
+      });
+      source.addEventListener('item_error', (event) => {
+        try {
+          const data = JSON.parse(event.data || '{}');
+          const reason = data.error || 'Unknown error';
+          const label = data.input || 'Image';
+          this.addBatchLog('error', `${label} failed ✗ — Reason: ${reason}`);
+          this.batchSummary.failed += 1;
+        } catch (error) {
+          console.warn('Unable to parse error event', error);
+        }
+      });
+      source.addEventListener('finished', (event) => {
+        try {
+          const data = JSON.parse(event.data || '{}');
+          this.handleBatchFinished(data);
+        } catch (error) {
+          console.warn('Unable to parse finished event', error);
+          this.handleBatchFinished({ status: 'error', message: 'Batch finished with an invalid response.' });
+        }
+      });
+      source.onerror = (event) => {
+        console.warn('Batch stream error', event);
+        if (this.isBatchProcessing) {
+          this.addBatchLog('error', 'Connection to batch progress stream lost.');
+          this.setStatus('Error: connection lost', 'error');
+          this.isBatchProcessing = false;
+        }
+        this.closeBatchStream();
+      };
+    },
+
+    handleBatchFinished(data) {
+      this.isBatchProcessing = false;
+      this.closeBatchStream();
+      const summary = data.summary || {};
+      this.batchSummary = {
+        ...createEmptyBatchSummary(),
+        ...summary,
+        download_url: data.download_url || summary.download_url || '',
+        output_dir: data.output_dir || summary.output_dir || this.batchSummary.output_dir,
+        status: data.status || 'finished',
+        message: data.message || '',
+      };
+      switch (this.batchSummary.status) {
+        case 'error':
+          this.addBatchLog('error', this.batchSummary.message || 'Batch failed.');
+          this.showToast('error', this.batchSummary.message || 'Batch failed.');
+          this.setStatus(`Error: ${this.batchSummary.message || 'Batch failed.'}`, 'error');
+          break;
+        case 'cancelled':
+          if (!this.batchSummary.message) {
+            this.batchSummary.message = 'Batch cancelled by client.';
+          }
+          this.addBatchLog('info', 'Batch cancelled by client.');
+          this.showToast('info', 'Batch cancelled.');
+          this.setStatus('Batch cancelled', 'ready');
+          break;
+        default:
+          if (!this.batchSummary.message) {
+            this.batchSummary.message = this.batchSummary.failed
+              ? 'Batch completed with some errors.'
+              : 'Batch completed successfully.';
+          }
+          this.addBatchLog(
+            this.batchSummary.failed ? 'info' : 'success',
+            `Batch completed — ${this.batchSummary.success} succeeded, ${this.batchSummary.failed} failed.`,
+          );
+          this.showToast(
+            'success',
+            `Batch completed — ${this.batchSummary.success} succeeded, ${this.batchSummary.failed} failed.`,
+          );
+          this.setStatus('Ready', 'ready');
+      }
+      this.loadHistory();
+    },
+
+    async fetchBatchFiles() {
+      if (!this.batchJobId) {
+        return;
+      }
+      try {
+        const response = await fetch(`/api/process/batch/${this.batchJobId}/files`);
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'Unable to open output folder');
+        }
+        this.batchOutputFiles = Array.isArray(payload.files) ? payload.files : [];
+        this.batchSummary.output_dir = payload.output_dir || this.batchSummary.output_dir;
+        this.batchShowFiles = true;
+      } catch (error) {
+        console.error(error);
+        this.showToast('error', error.message);
+        this.addBatchLog('error', `Unable to open output folder — ${error.message}`);
+      }
+    },
+
+    batchSelectionSummary() {
+      if (this.batchMode === 'folder') {
+        if (!this.batchFolderFiles.length) {
+          return 'No folder selected yet.';
+        }
+        const label = this.batchFolderLabel || 'selected folder';
+        return `${this.batchImageCount} supported image(s) in ${label}.`;
+      }
+      if (this.batchMode === 'server') {
+        if (!this.batchServerFolderPath) {
+          return 'No server folder specified yet.';
+        }
+        return `Server folder: ${this.batchServerFolderPath}`;
+      }
+      return this.batchFileName || 'No archive selected yet.';
+    },
+
+    isSupportedBatchFile(name) {
+      if (!name) {
+        return false;
+      }
+      const lowered = name.toLowerCase();
+      return SUPPORTED_BATCH_EXTENSIONS.some((ext) => lowered.endsWith(ext));
     },
 
     removePreview(identifier) {

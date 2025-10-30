@@ -4,11 +4,13 @@ from __future__ import annotations
 import base64
 import json
 import threading
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from queue import Empty, Queue
+from typing import Any, Callable
 
 from werkzeug.utils import secure_filename
 
@@ -165,4 +167,122 @@ __all__ = [
     "build_data_uri",
     "ensure_filename",
     "total_size",
+    "BatchEvent",
+    "BatchJob",
+    "BatchJobManager",
 ]
+
+
+@dataclass(slots=True)
+class BatchEvent:
+    """Simple container describing a single server-sent event."""
+
+    name: str
+    payload: dict[str, Any]
+
+
+class BatchJob:
+    """Represent a batch-processing job and its event stream."""
+
+    def __init__(self, identifier: str, total_items: int, *, output_dir: Path) -> None:
+        self.identifier = identifier
+        self.total_items = total_items
+        self.output_dir = output_dir
+        self.events: Queue[BatchEvent] = Queue()
+        self._cancelled = threading.Event()
+        self._finished = threading.Event()
+        self._cleanup_callbacks: deque[Callable[[], None]] = deque()
+        self.success_count = 0
+        self.failure_count = 0
+        self.size_bytes = 0
+        self.error: str | None = None
+        self.zip_path: Path | None = None
+        self._future = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle management
+    # ------------------------------------------------------------------
+    def attach_future(self, future) -> None:
+        """Associate the executor ``future`` controlling this job."""
+
+        self._future = future
+
+    def add_cleanup(self, callback: Callable[[], None]) -> None:
+        """Register ``callback`` to run once the job finishes."""
+
+        self._cleanup_callbacks.append(callback)
+
+    def mark_finished(self) -> None:
+        """Mark the job as finished and execute cleanup callbacks."""
+
+        if self._finished.is_set():
+            return
+        self._finished.set()
+        while self._cleanup_callbacks:
+            callback = self._cleanup_callbacks.popleft()
+            try:
+                callback()
+            except Exception:  # pragma: no cover - defensive cleanup
+                continue
+
+    # ------------------------------------------------------------------
+    # Event helpers
+    # ------------------------------------------------------------------
+    def emit(self, name: str, payload: dict[str, Any]) -> None:
+        """Queue an event for subscribers to consume."""
+
+        self.events.put(BatchEvent(name=name, payload=payload))
+
+    def next_event(self, timeout: float = 0.5) -> BatchEvent | None:
+        """Return the next queued event or ``None`` if timed out."""
+
+        try:
+            return self.events.get(timeout=timeout)
+        except Empty:
+            return None
+
+    # ------------------------------------------------------------------
+    # Cancellation and status helpers
+    # ------------------------------------------------------------------
+    def cancel(self) -> None:
+        """Request cancellation of the running job."""
+
+        self._cancelled.set()
+        if self._future and not self._future.done():
+            self._future.cancel()
+
+    def cancelled(self) -> bool:
+        """Return ``True`` if cancellation has been requested."""
+
+        return self._cancelled.is_set()
+
+    def finished(self) -> bool:
+        """Return ``True`` once the job has finished processing."""
+
+        return self._finished.is_set()
+
+
+class BatchJobManager:
+    """Keep track of batch jobs and expose lookup helpers."""
+
+    def __init__(self) -> None:
+        self._jobs: dict[str, BatchJob] = {}
+        self._lock = threading.Lock()
+
+    def register(self, job: BatchJob) -> None:
+        """Store ``job`` so it can be retrieved by clients."""
+
+        with self._lock:
+            self._jobs[job.identifier] = job
+
+    def get(self, identifier: str) -> BatchJob | None:
+        """Return the job with ``identifier`` if it exists."""
+
+        with self._lock:
+            return self._jobs.get(identifier)
+
+    def discard(self, identifier: str) -> None:
+        """Remove a finished job from the manager."""
+
+        with self._lock:
+            self._jobs.pop(identifier, None)

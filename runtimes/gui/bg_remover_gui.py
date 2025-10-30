@@ -291,11 +291,12 @@ class BackgroundRemoverApp(_BaseWindow):
         """Initialise custom styles for drag-and-drop affordances."""
 
         style = self.style
-        colors = getattr(style, "colors", {})
-        border_color = colors.get("info", "#38bdf8")
-        active_color = colors.get("primary", "#2563eb")
-        background = colors.get("bg", "#ffffff")
-        foreground = colors.get("body", "#111827")
+        colors = getattr(style, "colors", None)
+
+        border_color = getattr(colors, "info", "#38bdf8") if colors else "#38bdf8"
+        active_color = getattr(colors, "primary", "#2563eb") if colors else "#2563eb"
+        background = getattr(colors, "bg", "#ffffff") if colors else "#ffffff"
+        foreground = getattr(colors, "body", "#111827") if colors else "#111827"
 
         style.configure(
             "DropZone.TFrame",

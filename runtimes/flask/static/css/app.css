@@ -6,6 +6,32 @@
   display: none !important;
 }
 
+body {
+  background-color: #f8fafc;
+  color: #1e293b;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+body.dark,
+.dark body,
+body[data-bs-theme='dark'] {
+  background-color: #111827;
+  color: #f3f4f6;
+}
+
+#app-root {
+  background-color: inherit;
+  color: inherit;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+body.dark #app-root,
+.dark #app-root,
+body[data-bs-theme='dark'] #app-root {
+  background-color: #111827;
+  color: #f3f4f6;
+}
+
 .card {
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid rgba(226, 232, 240, 0.7);

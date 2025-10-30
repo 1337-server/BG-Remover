@@ -125,6 +125,7 @@ window.bgrApp = function bgrApp(rawConfig) {
     providerPill: normalizedBadgeLabel,
     providerPillClass: '',
     themeLabel: document.documentElement.classList.contains('dark') ? 'Dark' : 'Light',
+    themeIcon: document.documentElement.classList.contains('dark') ? 'dark_mode' : 'light_mode',
     selectedFiles: [],
     previewItems: [],
     history: [],
@@ -245,16 +246,32 @@ window.bgrApp = function bgrApp(rawConfig) {
       return `${base} bg-slate-200/70 text-slate-600 dark:bg-slate-700/40 dark:text-slate-200`;
     },
 
-    applyTheme() {
-      const isDark = document.documentElement.classList.contains('dark');
+    updateThemeState(isDark) {
+      const root = document.documentElement;
+      const body = document.body;
+      root.classList.toggle('dark', isDark);
+      root.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      if (body) {
+        body.classList.toggle('dark', isDark);
+        body.setAttribute('data-bs-theme', isDark ? 'dark' : 'light');
+      }
       this.themeLabel = isDark ? 'Dark' : 'Light';
+      this.themeIcon = isDark ? 'dark_mode' : 'light_mode';
+    },
+
+    applyTheme() {
+      const storedTheme = localStorage.getItem('bgr-theme');
+      const prefersDark =
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const isDark = storedTheme ? storedTheme === 'dark' : prefersDark;
+      this.updateThemeState(isDark);
     },
 
     toggleTheme() {
-      const element = document.documentElement;
-      const isDark = element.classList.toggle('dark');
+      const isDark = !document.documentElement.classList.contains('dark');
+      this.updateThemeState(isDark);
       localStorage.setItem('bgr-theme', isDark ? 'dark' : 'light');
-      this.themeLabel = isDark ? 'Dark' : 'Light';
     },
 
     setStatus(message, tone = 'ready') {

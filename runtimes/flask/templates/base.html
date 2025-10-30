@@ -20,11 +20,13 @@
 
     <script>
         const storedTheme = localStorage.getItem('bgr-theme');
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const prefersDark = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
         if (storedTheme === 'dark' || (!storedTheme && prefersDark)) {
             document.documentElement.classList.add('dark');
+            document.documentElement.setAttribute('data-theme', 'dark');
         } else {
             document.documentElement.classList.remove('dark');
+            document.documentElement.setAttribute('data-theme', 'light');
         }
     </script>
     <script src="{{ url_for('webui.static', filename='js/app.js') }}" defer></script>
@@ -77,7 +79,7 @@
                             class="inline-flex items-center gap-2 rounded-full border border-slate-300/70 dark:border-slate-700 px-3 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-800"
                             @click="toggleTheme()"
                     >
-                        <span class="material-symbols-rounded text-base" aria-hidden="true">contrast</span>
+                        <span class="material-symbols-rounded text-base" aria-hidden="true" x-text="themeIcon"></span>
                         <span x-text="themeLabel"></span>
                     </button>
                 </div>

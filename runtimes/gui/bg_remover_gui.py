@@ -45,6 +45,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "recursive": False,
     "parallel_threads": 4,
     "model_dir": "",
+    "theme": "flatly",
 }
 
 
@@ -167,7 +168,16 @@ class BackgroundRemoverApp(tb.Window):
     """Main application window for background removal."""
 
     def __init__(self) -> None:
-        super().__init__(themename="flatly")
+        theme = DEFAULT_SETTINGS.get("theme", "flatly")
+        try:
+            if GUI_SETTINGS_FILE.exists():
+                user_settings = json.loads(GUI_SETTINGS_FILE.read_text(encoding="utf-8"))
+                theme = user_settings.get("theme", theme)
+        except Exception:
+            pass
+
+        super().__init__(themename=theme)
+        self.themename = theme
         self.title("Background Remover - PRO")
         self.geometry("1920x1080")
         self.resizable(True, True)
@@ -175,6 +185,7 @@ class BackgroundRemoverApp(tb.Window):
         self.config = load_config()
         init_logging(self.config.log_level)
         self.settings = self._load_settings(self.config)
+        self.settings.setdefault("theme", self.themename)
         self._tooltips: dict[object, ToolTip] = {}
         # --- Add this block here ---
 
@@ -327,6 +338,14 @@ class BackgroundRemoverApp(tb.Window):
 
         self.badge = tb.Label(header, padding=(10, 4))
         self.badge.pack(side=RIGHT)
+        self.theme_toggle_btn = tb.Button(
+            header,
+            text="🌙" if self.themename == "flatly" else "☀️",
+            command=self._toggle_theme,
+            width=3,
+        )
+        self.theme_toggle_btn.pack(side=RIGHT, padx=(0, 10))
+        self._add_tooltip(self.theme_toggle_btn, "Toggle dark/light mode")
         self._add_tooltip(self.badge, "Providers: detecting…")
 
         notebook = tb.Notebook(control_frame, bootstyle="tabs")
@@ -880,6 +899,16 @@ class BackgroundRemoverApp(tb.Window):
             tooltip.configure(text=text)
         except AttributeError:  # pragma: no cover - fallback
             tooltip.text = text
+
+    def _toggle_theme(self) -> None:
+        """Toggle between light and dark themes and persist selection."""
+
+        new_theme = "darkly" if self.themename == "flatly" else "flatly"
+        self.style.theme_use(new_theme)
+        self.themename = new_theme
+        self._update_setting("theme", new_theme)
+        icon = "☀️" if new_theme == "darkly" else "🌙"
+        self.theme_toggle_btn.configure(text=icon)
 
     def _toggle_advanced(self) -> None:
         """Toggle visibility of the advanced settings frame."""

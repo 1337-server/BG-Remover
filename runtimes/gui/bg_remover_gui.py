@@ -1264,6 +1264,7 @@ class BackgroundRemoverApp(_TkRoot):
         self.batch_tree.column("details", anchor=W)
         self.batch_tree.pack(fill=BOTH, expand=True)
         self.batch_tree.bind("<Double-1>", self._on_batch_item_double_click)
+        self._batch_tree_output_paths: dict[str, Path] = {}
         self._add_tooltip(
             self.batch_tree,
             "Shows progress and results for each processed file.",
@@ -2404,6 +2405,7 @@ class BackgroundRemoverApp(_TkRoot):
 
         for item in self.batch_tree.get_children():
             self.batch_tree.delete(item)
+        self._batch_tree_output_paths.clear()
 
     def _run_batch(self, input_dir: Path, output_dir: Path | None) -> None:
         """Worker that performs batch processing."""
@@ -2452,7 +2454,9 @@ class BackgroundRemoverApp(_TkRoot):
 
         status = "✓" if entry.success else "✗"
         details = entry.error or "Completed"
-        self.batch_tree.insert("", END, values=(entry.path_in.name, status, details))
+        item_id = self.batch_tree.insert("", END, values=(entry.path_in.name, status, details))
+        if entry.path_out is not None:
+            self._batch_tree_output_paths[item_id] = entry.path_out
         if entry.success:
             log_message = f"{entry.path_in.name} processed successfully ✓"
         else:
@@ -2469,10 +2473,17 @@ class BackgroundRemoverApp(_TkRoot):
         values = self.batch_tree.item(item_id, "values")
         if not values or not values[0]:
             return
+        file_path = self._batch_tree_output_paths.get(item_id)
+        if file_path is None:
+            message = (
+                "Cannot preview selected batch result: no output file is available for "
+                f"{values[0]}."
+            )
+            messagebox.showinfo("Preview unavailable", message)
+            self._log(message, error=True)
+            return
 
-        filename = values[0]
-        output_dir = self.batch_output_var.get() or self.output_dir_var.get() or str(OUTPUT_DIR)
-        file_path = Path(output_dir) / filename
+        filename = file_path.name
         absolute_path = file_path.resolve(strict=False)
         if not file_path.exists():
             message = (

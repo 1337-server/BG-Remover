@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Background Remover — Batch Processing{% endblock %}
+{% block content %}
+<div class="space-y-10" x-cloak>
+  <div class="grid gap-8 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+    <section class="card">
+      <header class="flex items-center justify-between">
+        <div>
+          <h2 class="text-lg font-semibold">Batch &amp; folder processing</h2>
+          <p class="text-sm text-slate-500 dark:text-slate-400">Upload a ZIP archive to process every image inside.</p>
+        </div>
+        <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetBatch()">Reset</button>
+      </header>
+      <form id="batch-form" class="mt-4 space-y-5" @submit.prevent="processBatch()">
+        <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-slate-800/40 p-5 text-center">
+          <p class="font-medium">Upload a folder as ZIP</p>
+          <p class="text-sm text-slate-500 dark:text-slate-400">Each image will be processed with the same settings.</p>
+          <label for="batch-input" class="mt-4 inline-flex items-center gap-2 rounded-full bg-slate-900 text-white dark:bg-indigo-500 px-4 py-2 hover:bg-slate-800 dark:hover:bg-indigo-400">
+            <span class="material-symbols-rounded text-base">folder_zip</span>
+            <span>Select ZIP</span>
+          </label>
+          <input id="batch-input" type="file" name="archive" accept="application/zip" class="hidden" @change="updateBatchSelection($event)" />
+          <p class="mt-2 text-sm" x-text="batchFileName || 'No archive selected yet.'"></p>
+        </div>
+        <button type="submit" class="btn-primary w-full" :disabled="isBatchProcessing">
+          <span class="material-symbols-rounded text-base" aria-hidden="true">sync</span>
+          <span x-show="!isBatchProcessing">Process archive</span>
+          <span x-show="isBatchProcessing" class="flex items-center gap-2">
+            <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle class="opacity-25" cx="12" cy="12" r="10"></circle><path class="opacity-75" d="M4 12a8 8 0 018-8"></path></svg>
+            Processing…
+          </span>
+        </button>
+        <div class="batch-summary" x-show="batchSummary">
+          <h3 class="text-sm font-medium text-slate-500 dark:text-slate-300">Last batch summary</h3>
+          <dl class="mt-2 grid grid-cols-2 gap-2 text-sm">
+            <div><dt class="text-slate-500 dark:text-slate-400">Total</dt><dd x-text="batchSummary.total"></dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Success</dt><dd class="text-emerald-500" x-text="batchSummary.success"></dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Failed</dt><dd class="text-rose-500" x-text="batchSummary.failed"></dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Size</dt><dd x-text="formatBytes(batchSummary.size_bytes)"></dd></div>
+          </dl>
+          <a :href="batchSummary.download_url" class="btn-link mt-3 inline-flex items-center gap-2" x-show="batchSummary.download_url">
+            <span class="material-symbols-rounded text-base">download</span>
+            Download ZIP
+          </a>
+        </div>
+      </form>
+    </section>
+    <section class="space-y-6">
+      {% include "preview.html" %}
+    </section>
+  </div>
+  {% include "settings.html" %}
+  <section class="card">
+    <header class="flex items-center justify-between">
+      <div>
+        <h2 class="text-lg font-semibold">Batch job log</h2>
+        <p class="text-sm text-slate-500 dark:text-slate-400">Detailed progress for the most recent archive.</p>
+      </div>
+      <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="batchLog = []">Clear log</button>
+    </header>
+    <ul class="mt-4 space-y-2 max-h-48 overflow-y-auto log-list">
+      <template x-for="entry in batchLog" :key="entry.id">
+        <li :class="entry.class">
+          <span class="material-symbols-rounded text-base" :class="entry.iconClass" aria-hidden="true" x-text="entry.icon"></span>
+          <span x-text="entry.message"></span>
+        </li>
+      </template>
+      <li class="text-sm text-slate-500 dark:text-slate-400" x-show="!batchLog.length">Run a batch to see progress details.</li>
+    </ul>
+  </section>
+</div>
+{% endblock %}

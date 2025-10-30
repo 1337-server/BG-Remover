@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Background Remover — Flask UI{% endblock %}
 {% block content %}
-<div class="grid gap-8 lg:grid-cols-2" x-cloak>
-  <div class="space-y-6">
+<div class="space-y-10" x-cloak>
+  <div class="grid gap-8 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
     <section class="card">
       <header class="flex items-center justify-between">
         <div>
@@ -15,7 +15,7 @@
           @click="resetSelections()"
         >Reset</button>
       </header>
-      <form id="process-form" class="mt-4 space-y-4" @submit.prevent="processImages()">
+      <form id="process-form" class="mt-4 space-y-5" @submit.prevent="processImages()">
         <div
           id="drop-zone"
           class="drop-zone"
@@ -51,18 +51,30 @@
         </div>
         <div class="grid gap-4 md:grid-cols-2">
           <label class="field">
-            <span class="field-label">Background fill</span>
-            <div class="flex items-center gap-3">
-              <input type="color" name="background_color" x-model="settings.background_color" class="h-10 w-16 rounded border border-slate-300 dark:border-slate-700" @input="persistSettings()" />
-              <label class="inline-flex items-center gap-2 text-sm">
-                <input type="checkbox" name="transparent" value="true" x-model="settings.transparent" @change="persistSettings()" />
-                Transparent
-              </label>
-            </div>
-            <p class="field-help">Pick a solid background color or keep transparency.</p>
+            <span class="field-label">
+              Background mode
+              <span class="info-icon" :title="getOptionHelp('background_mode')">i</span>
+            </span>
+            <select name="background_mode" class="input" x-model="settings.background_mode" @change="persistSettings()">
+              <option value="clear">Transparent (clear)</option>
+              <option value="fill">Fill with colour</option>
+              <option value="none">Keep original background</option>
+            </select>
+            <p class="field-help">Control how the resulting background is composed.</p>
           </label>
           <label class="field">
-            <span class="field-label">Output format</span>
+            <span class="field-label">
+              Fill colour
+              <span class="info-icon" :title="getOptionHelp('background_color')">i</span>
+            </span>
+            <input type="color" name="background_color" class="h-10 w-16 rounded border border-slate-300 dark:border-slate-700" x-model="settings.background_color" @input="persistSettings()" />
+            <p class="field-help">Applies when background mode is set to Fill.</p>
+          </label>
+          <label class="field">
+            <span class="field-label">
+              Output format
+              <span class="info-icon" :title="getOptionHelp('output_format')">i</span>
+            </span>
             <select name="output_format" x-model="settings.output_format" @change="persistSettings()" class="input">
               <option value="PNG">PNG (transparent)</option>
               <option value="JPEG">JPEG</option>
@@ -70,8 +82,15 @@
             </select>
             <p class="field-help">Choose the export format for processed images.</p>
           </label>
+          <label class="field">
+            <span class="field-label">
+              Output folder
+              <span class="info-icon" :title="getOptionHelp('output_dir')">i</span>
+            </span>
+            <input type="text" name="output_dir" class="input" placeholder="optional" x-model="settings.output_dir" @change="persistSettings()" />
+            <p class="field-help">Optional subdirectory for results inside the cache.</p>
+          </label>
         </div>
-        {% include "settings.html" %}
         <div class="flex flex-wrap items-center justify-between gap-4 pt-2">
           <div class="text-sm text-slate-500 dark:text-slate-400">Settings persist automatically in this browser.</div>
           <button type="submit" class="btn-primary" :disabled="isProcessing">
@@ -85,54 +104,12 @@
         </div>
       </form>
     </section>
-    <section class="card">
-      <header class="flex items-center justify-between">
-        <div>
-          <h2 class="text-lg font-semibold">Folder &amp; batch processing</h2>
-          <p class="text-sm text-slate-500 dark:text-slate-400">Upload a ZIP archive to process every image inside.</p>
-        </div>
-        <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetBatch()">Reset</button>
-      </header>
-      <form id="batch-form" class="mt-4 space-y-4" @submit.prevent="processBatch()">
-        <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-slate-800/40 p-5 text-center">
-          <p class="font-medium">Upload a folder as ZIP</p>
-          <p class="text-sm text-slate-500 dark:text-slate-400">Each image will be processed with the same settings.</p>
-          <label for="batch-input" class="mt-4 inline-flex items-center gap-2 rounded-full bg-slate-900 text-white dark:bg-indigo-500 px-4 py-2 hover:bg-slate-800 dark:hover:bg-indigo-400">
-            <span class="material-symbols-rounded text-base">folder_zip</span>
-            <span>Select ZIP</span>
-          </label>
-          <input id="batch-input" type="file" name="archive" accept="application/zip" class="hidden" @change="updateBatchSelection($event)" />
-          <p class="mt-2 text-sm" x-text="batchFileName || 'No archive selected yet.'"></p>
-        </div>
-        <button type="submit" class="btn-secondary w-full" :disabled="isBatchProcessing">
-          <span class="material-symbols-rounded text-base" aria-hidden="true">folder_open</span>
-          <span x-show="!isBatchProcessing">Process folder</span>
-          <span x-show="isBatchProcessing" class="flex items-center gap-2">
-            <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle class="opacity-25" cx="12" cy="12" r="10"></circle><path class="opacity-75" d="M4 12a8 8 0 018-8"></path></svg>
-            Processing…
-          </span>
-        </button>
-        <div class="batch-summary" x-show="batchSummary">
-          <h3 class="text-sm font-medium text-slate-500 dark:text-slate-300">Last batch summary</h3>
-          <dl class="mt-2 grid grid-cols-2 gap-2 text-sm">
-            <div><dt class="text-slate-500 dark:text-slate-400">Total</dt><dd x-text="batchSummary.total"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Success</dt><dd class="text-emerald-500" x-text="batchSummary.success"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Failed</dt><dd class="text-rose-500" x-text="batchSummary.failed"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Size</dt><dd x-text="formatBytes(batchSummary.size_bytes)"></dd></div>
-          </dl>
-          <a :href="batchSummary.download_url" class="btn-link mt-3 inline-flex items-center gap-2" x-show="batchSummary.download_url">
-            <span class="material-symbols-rounded text-base">download</span>
-            Download ZIP
-          </a>
-        </div>
-      </form>
+    <section class="space-y-6">
+      {% include "preview.html" %}
     </section>
   </div>
-  <div class="space-y-6">
-    {% include "preview.html" %}
-  </div>
-</div>
-<section class="card mt-10">
+  {% include "settings.html" %}
+  <section class="card">
   <header class="flex items-center justify-between">
     <div>
       <h2 class="text-lg font-semibold">Processing history</h2>
@@ -184,4 +161,5 @@
     </table>
   </div>
 </section>
+</div>
 {% endblock %}

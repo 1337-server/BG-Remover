@@ -63,15 +63,28 @@ def _image_bytes(color: tuple[int, int, int, int] = (255, 255, 255, 255)) -> byt
     return buffer.getvalue()
 
 
-def test_index_renders(client) -> None:
-    response = client.get("/")
+def test_home_redirects(client) -> None:
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/single")
+
+
+def test_single_page_renders(client) -> None:
+    response = client.get("/single")
     assert response.status_code == 200
     assert b"Upload images" in response.data
-    assert b"Processing history" in response.data
+    assert b"Advanced settings" in response.data
     html = response.data.decode("utf-8")
     assert '"model_specs"' in html
     assert '"isnet-general-use"' in html
     assert "Input size" in html
+
+
+def test_batch_page_renders(client) -> None:
+    response = client.get("/batch")
+    assert response.status_code == 200
+    assert b"Batch job log" in response.data
+    assert b"Advanced settings" in response.data
 
 
 def test_process_images_success(monkeypatch: pytest.MonkeyPatch, client) -> None:

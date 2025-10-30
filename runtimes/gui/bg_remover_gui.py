@@ -1043,6 +1043,8 @@ class BackgroundRemoverApp(_TkRoot):
         self.preview_canvas.bind("<MouseWheel>", self._on_preview_mouse_wheel)
         self.preview_canvas.bind("<Button-4>", self._on_preview_mouse_wheel)
         self.preview_canvas.bind("<Button-5>", self._on_preview_mouse_wheel)
+        self.preview_canvas.bind("<ButtonPress-1>", self._on_preview_drag_start)
+        self.preview_canvas.bind("<B1-Motion>", self._on_preview_drag_motion)
 
         self.preview_overlay_frame = tb.Frame(canvas_container, bootstyle="dark")
         self.preview_overlay_label = tb.Label(
@@ -2239,6 +2241,16 @@ class BackgroundRemoverApp(_TkRoot):
         anchor = self._build_anchor_from_event(event)
         new_zoom = float(self.preview_zoom_var.get()) + delta * PREVIEW_ZOOM_WHEEL_STEP
         self._apply_preview_zoom(new_zoom, anchor=anchor, manual_override=True)
+
+    def _on_preview_drag_start(self, event: Any) -> None:
+        """Record the initial pointer position for preview panning."""
+
+        self.preview_canvas.scan_mark(event.x, event.y)
+
+    def _on_preview_drag_motion(self, event: Any) -> None:
+        """Pan the image preview while the left mouse button is held."""
+
+        self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
 
     def _on_preview_zoom(self) -> None:
         """Handle zoom slider changes by re-rendering the preview image."""

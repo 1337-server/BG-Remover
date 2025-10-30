@@ -1,22 +1,36 @@
 """Tkinter GUI for the background remover runtimes."""
 from __future__ import annotations
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import json
 import logging
-import os
+import shutil
 import threading
 import webbrowser
 from pathlib import Path
 from tkinter import Canvas, filedialog, messagebox
 from typing import Any
+from urllib.parse import urlparse, unquote
+from urllib.request import url2pathname
 
 import ttkbootstrap as tb
 from PIL import Image, ImageTk
 from ttkbootstrap.constants import BOTH, END, LEFT, RIGHT, W
 from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.tooltip import ToolTip
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+
+    _DND_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency
+    _DND_AVAILABLE = False
+    DND_FILES = None
+    TkinterDnD = None
 
 from bgremover_core import Config, init_logging, load_config, persist_config, process_folder
 from bgremover_core.background_remover import process_image
@@ -52,6 +66,35 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 VALID_RESIZE_MODES: tuple[str, ...] = ("auto", "keep-aspect", "crop", "stretch")
+
+SUPPORTED_IMAGE_SUFFIXES: tuple[str, ...] = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".bmp",
+    ".tif",
+    ".tiff",
+)
+
+
+if _DND_AVAILABLE:
+
+    class _BaseWindow(TkinterDnD.Tk, tb.Window):
+        """Window base class with drag-and-drop support via TkinterDnD2."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            TkinterDnD.Tk.__init__(self)
+            tb.Window.__init__(self, *args, **kwargs)
+
+
+else:
+
+    class _BaseWindow(tb.Window):
+        """Fallback window base class when TkinterDnD2 is unavailable."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
 
 
 def _format_meta(format_name: str) -> tuple[str, str]:
@@ -166,7 +209,7 @@ class CollapsibleSection(tb.Frame):
         self.content_visible = not self.content_visible
 
 
-class BackgroundRemoverApp(tb.Window):
+class BackgroundRemoverApp(_BaseWindow):
     """Main application window for background removal."""
 
     def __init__(self) -> None:
@@ -183,6 +226,18 @@ class BackgroundRemoverApp(tb.Window):
         self.title("Background Remover - PRO")
         self.geometry("1920x1080")
         self.resizable(True, True)
+
+        self.drop_zone_message_var = tb.StringVar()
+        self._drop_queue: list[Path] = []
+        self._drop_seen: set[Path] = set()
+        self._drop_active = False
+        self._current_drop_path: Path | None = None
+        self._drop_highlight_depth = 0
+        self._processing_context: str | None = None
+        self.drop_zone_frame: tb.Frame | None = None
+        self.drop_zone_label: tb.Label | None = None
+
+        self._init_styles()
 
         self.config = load_config()
         init_logging(self.config.log_level)
@@ -226,10 +281,302 @@ class BackgroundRemoverApp(tb.Window):
         self.preview_zoom_var = tb.DoubleVar(value=100.0)
 
         self._build_ui()
+        self._register_root_drop_target()
         self._clear_preview_state()
         self._refresh_badge()
 
     # ------------------------------------------------------------------
+    # Drag-and-drop helpers
+    # ------------------------------------------------------------------
+    def _init_styles(self) -> None:
+        """Initialise custom styles for drag-and-drop affordances."""
+
+        style = self.style
+        colors = getattr(style, "colors", {})
+        border_color = colors.get("info", "#38bdf8")
+        active_color = colors.get("primary", "#2563eb")
+        background = colors.get("bg", "#ffffff")
+        foreground = colors.get("body", "#111827")
+
+        style.configure(
+            "DropZone.TFrame",
+            bordercolor=border_color,
+            borderwidth=2,
+            relief="ridge",
+            background=background,
+        )
+        style.configure(
+            "DropZoneActive.TFrame",
+            bordercolor=active_color,
+            borderwidth=3,
+            relief="ridge",
+            background=background,
+        )
+        style.configure(
+            "DropZone.TLabel",
+            foreground=foreground,
+            font=("Helvetica", 12, "bold"),
+            background=background,
+        )
+        style.configure(
+            "DropZoneActive.TLabel",
+            foreground=active_color,
+            font=("Helvetica", 12, "bold"),
+            background=background,
+        )
+
+    def _register_root_drop_target(self) -> None:
+        """Register the main window as a drop target when supported."""
+
+        if not _DND_AVAILABLE:
+            self._update_drop_zone_badge()
+            return
+
+        try:
+            if hasattr(self, "drop_target_register") and DND_FILES is not None:
+                self.drop_target_register(DND_FILES)
+                self.dnd_bind("<<Drop>>", self._on_drop_files)
+                self.dnd_bind("<<DragEnter>>", self._on_drop_enter)
+                self.dnd_bind("<<DragLeave>>", self._on_drop_leave)
+        except Exception as error:  # pragma: no cover - optional path
+            LOGGER.warning("Unable to register root window for drag-and-drop: %s", error)
+
+        self._update_drop_zone_badge()
+
+    def _set_drop_zone_active(self, active: bool) -> None:
+        """Toggle the drop zone highlight to reflect drag state."""
+
+        frame = getattr(self, "drop_zone_frame", None)
+        label = getattr(self, "drop_zone_label", None)
+        style_name = "DropZoneActive.TFrame" if active else "DropZone.TFrame"
+        label_style = "DropZoneActive.TLabel" if active else "DropZone.TLabel"
+        if frame is not None:
+            try:
+                frame.configure(style=style_name)
+            except Exception:  # pragma: no cover - visual hint only
+                pass
+        if label is not None:
+            try:
+                label.configure(style=label_style)
+            except Exception:  # pragma: no cover - visual hint only
+                pass
+
+    def _update_drop_zone_badge(self) -> None:
+        """Refresh the instructional text shown inside the drop zone."""
+
+        base = "Drop images here (PNG/JPG/WebP/BMP/TIFF) or click ‘Browse’"
+        if not _DND_AVAILABLE:
+            base += "\n(Install `tkinterdnd2` to enable drag-and-drop)"
+        queued = len(self._drop_queue)
+        if self._drop_active and self._current_drop_path is not None:
+            queued += 1
+        if queued:
+            suffix = "s" if queued != 1 else ""
+            base += f"\n{queued} file{suffix} queued"
+        self.drop_zone_message_var.set(base)
+
+    def _on_drop_enter(self, _event: Any) -> None:
+        """Highlight the drop zone when files enter its bounds."""
+
+        if not _DND_AVAILABLE:
+            return
+        self._drop_highlight_depth += 1
+        self._set_drop_zone_active(True)
+
+    def _on_drop_leave(self, _event: Any) -> None:
+        """Remove drop zone highlight when drag leaves the widget."""
+
+        if not _DND_AVAILABLE:
+            return
+        self._drop_highlight_depth = max(0, self._drop_highlight_depth - 1)
+        if self._drop_highlight_depth == 0:
+            self._set_drop_zone_active(False)
+
+    def _on_drop_files(self, event: Any) -> None:
+        """Handle TkinterDnD drop events by queueing supported images."""
+
+        self._drop_highlight_depth = 0
+        self._set_drop_zone_active(False)
+        data = getattr(event, "data", "")
+        if not data:
+            self._log("Drop ignored — no data received.")
+            return
+
+        try:
+            paths = self._parse_dropped_files(str(data))
+        except Exception as error:  # pragma: no cover - defensive parsing
+            LOGGER.warning("Failed to parse dropped data: %s", error)
+            self._log("Drop failed ✗ — Reason: unable to parse file list.", error=True)
+            return
+
+        valid_paths: list[Path] = []
+        ignored = 0
+        for candidate in paths:
+            if not candidate.exists() or not candidate.is_file():
+                ignored += 1
+                continue
+            if not self._is_supported_image(candidate):
+                ignored += 1
+                continue
+            try:
+                staged = self._ensure_in_input_dir(candidate)
+            except Exception as staging_error:
+                LOGGER.warning("Unable to stage dropped file %s: %s", candidate, staging_error)
+                self._log(
+                    f"Failed to queue {candidate.name} ✗ — Reason: {staging_error}",
+                    error=True,
+                )
+                continue
+            valid_paths.append(staged)
+
+        if not valid_paths:
+            self._log("No supported images found in drop.")
+            self._update_drop_zone_badge()
+            return
+
+        if ignored:
+            plural = "s" if ignored != 1 else ""
+            self._log(f"Ignored {ignored} non-image file{plural} in drop.")
+
+        self._enqueue_dropped_files(valid_paths)
+
+    def _enqueue_dropped_files(self, files: list[Path]) -> None:
+        """Add ``files`` to the background processing queue."""
+
+        newly_added: list[Path] = []
+        for file_path in files:
+            try:
+                resolved = file_path.resolve(strict=False)
+            except Exception:
+                resolved = file_path
+            if resolved in self._drop_seen:
+                continue
+            self._drop_queue.append(resolved)
+            self._drop_seen.add(resolved)
+            newly_added.append(resolved)
+
+        if not newly_added:
+            self._log("Dropped images were already queued.")
+            self._update_drop_zone_badge()
+            return
+
+        if len(newly_added) == 1:
+            self._log(f"Queued {newly_added[0].name} for processing via drag-and-drop.")
+        else:
+            self._log(f"Queued {len(newly_added)} images for processing via drag-and-drop.")
+
+        self._update_drop_zone_badge()
+        self.after(150, self._process_next_dropped_file)
+
+    def _process_next_dropped_file(self) -> None:
+        """Start processing the next queued file when the UI is idle."""
+
+        if self._drop_active or not self._drop_queue:
+            return
+        if self._processing_context is not None:
+            # Re-check shortly once the current task finishes.
+            self.after(300, self._process_next_dropped_file)
+            return
+
+        next_path = self._drop_queue.pop(0)
+        self._drop_active = True
+        self._current_drop_path = next_path
+        self.single_input_var.set(str(next_path))
+        self._update_drop_zone_badge()
+        try:
+            self._process_single()
+        except Exception as error:  # pragma: no cover - defensive
+            LOGGER.exception("Failed to start processing for %s", next_path)
+            self._log(f"Failed to start processing {next_path.name} ✗ — Reason: {error}", error=True)
+            self._drop_active = False
+            self._current_drop_path = None
+            self._update_drop_zone_badge()
+            self.after(300, self._process_next_dropped_file)
+
+    def _parse_dropped_files(self, data: str) -> list[Path]:
+        """Return file system paths parsed from a TkinterDnD payload."""
+
+        if not data:
+            return []
+        try:
+            items = self.tk.splitlist(data)
+        except Exception:
+            items = data.split()
+
+        paths: list[Path] = []
+        for item in items:
+            text = item.strip()
+            if not text:
+                continue
+            candidate: Path
+            if text.startswith("file://"):
+                parsed = urlparse(text)
+                path_part = unquote(parsed.path or "")
+                if parsed.netloc:
+                    path_part = f"//{parsed.netloc}{path_part}"
+                candidate = Path(url2pathname(path_part))
+            else:
+                candidate = Path(unquote(text))
+            candidate = candidate.expanduser()
+            try:
+                candidate = candidate.resolve(strict=False)
+            except Exception:
+                pass
+            paths.append(candidate)
+        return paths
+
+    def _is_supported_image(self, path: Path) -> bool:
+        """Return ``True`` when ``path`` has a supported image suffix."""
+
+        return path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+
+    def _ensure_in_input_dir(self, path: Path) -> Path:
+        """Stage ``path`` inside the project input directory if required."""
+
+        source = path.expanduser()
+        try:
+            source_resolved = source.resolve(strict=True)
+        except FileNotFoundError as error:
+            raise FileNotFoundError(f"Dropped file not found: {source}") from error
+
+        input_root = INPUT_DIR
+        input_root.mkdir(parents=True, exist_ok=True)
+        input_root_resolved = input_root.resolve()
+        try:
+            source_resolved.relative_to(input_root_resolved)
+            return source_resolved
+        except ValueError:
+            pass
+
+        destination = input_root_resolved / source_resolved.name
+        stem = destination.stem
+        suffix = destination.suffix
+        counter = 1
+        while destination.exists():
+            try:
+                if destination.samefile(source_resolved):
+                    return destination.resolve(strict=True)
+            except Exception:
+                # If the file exists but cannot be compared, keep searching.
+                pass
+            destination = input_root_resolved / f"{stem}-{counter}{suffix}"
+            counter += 1
+
+        shutil.copy2(source_resolved, destination)
+        return destination.resolve(strict=True)
+
+    def _on_single_run_complete(self, _input_path: Path) -> None:
+        """Clear drag-and-drop state after a single image run finishes."""
+
+        if self._drop_active:
+            self._drop_active = False
+            self._current_drop_path = None
+            self._update_drop_zone_badge()
+            if self._drop_queue:
+                self.after(250, self._process_next_dropped_file)
+        else:
+            self._update_drop_zone_badge()
+
     # Settings helpers
     # ------------------------------------------------------------------
     def _load_settings(self, base_config: Config) -> dict[str, Any]:
@@ -511,6 +858,36 @@ class BackgroundRemoverApp(tb.Window):
         self.single_spinner.pack(fill="x", pady=(6, 0))
         self.single_spinner.stop()
         self.single_spinner.pack_forget()
+
+        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame")
+        drop_zone.pack(fill=BOTH, expand=True, pady=(15, 5))
+        drop_zone.columnconfigure(0, weight=1)
+        drop_zone.rowconfigure(0, weight=1)
+
+        drop_label = tb.Label(
+            drop_zone,
+            textvariable=self.drop_zone_message_var,
+            style="DropZone.TLabel",
+            anchor="center",
+            justify="center",
+            wraplength=480,
+        )
+        drop_label.grid(row=0, column=0, sticky="nsew")
+
+        self.drop_zone_frame = drop_zone
+        self.drop_zone_label = drop_label
+        self._set_drop_zone_active(False)
+
+        if _DND_AVAILABLE:
+            try:
+                drop_zone.drop_target_register(DND_FILES)
+                drop_zone.dnd_bind("<<Drop>>", self._on_drop_files)
+                drop_zone.dnd_bind("<<DragEnter>>", self._on_drop_enter)
+                drop_zone.dnd_bind("<<DragLeave>>", self._on_drop_leave)
+            except Exception as error:  # pragma: no cover - optional path
+                LOGGER.warning("Unable to enable drag-and-drop on drop zone: %s", error)
+
+        self._update_drop_zone_badge()
 
     def _build_batch_tab(self, parent: tb.Frame) -> None:
         """Create widgets for batch folder processing."""
@@ -1370,12 +1747,14 @@ class BackgroundRemoverApp(tb.Window):
                 ),
             )
             self.after(0, lambda: self._set_processing_state(False, "single"))
+            self.after(0, lambda: self._on_single_run_complete(input_path))
         except Exception as error:
             LOGGER.exception("Single image processing failed")
             message = str(error)
             self.after(0, lambda: self._log(f"{input_path.name} failed ✗ — Reason: {message}", error=True))
             self.after(0, lambda: messagebox.showerror("Processing failed", message))
             self.after(0, lambda: self._set_processing_state(False, "single"))
+            self.after(0, lambda: self._on_single_run_complete(input_path))
 
     def _load_source_image(self, path: Path) -> Image.Image:
         """Return a freshly loaded RGBA image from ``path``."""
@@ -1621,6 +2000,7 @@ class BackgroundRemoverApp(tb.Window):
         }
         target_spinner = spinners.get(context)
         if active:
+            self._processing_context = context
             if target_spinner is not None:
                 target_spinner.pack(**pack_options.get(context, {"fill": "x"}))
                 target_spinner.start(10)
@@ -1634,6 +2014,8 @@ class BackgroundRemoverApp(tb.Window):
             self.preview_fill_button.configure(state="disabled")
             self.preview_clear_button.configure(state="disabled")
         else:
+            if self._processing_context == context:
+                self._processing_context = None
             for spinner in spinners.values():
                 if spinner is not None:
                     spinner.stop()

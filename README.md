@@ -78,6 +78,12 @@ configuration stored at the project root. Highlights include:
 python -m runtimes.gui.bg_remover_gui
 ```
 
+Optional: install ``tkinterdnd2`` to enable drag-and-drop in the desktop GUI:
+
+```bash
+pip install tkinterdnd2
+```
+
 The GUI remembers the selected theme, advanced settings, and model directory.
 Advanced panels are restored from the previous session and start collapsed to
 keep the interface focused. Each advanced option now features a tooltip with the

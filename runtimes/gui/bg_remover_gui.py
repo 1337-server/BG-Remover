@@ -80,12 +80,11 @@ SUPPORTED_IMAGE_SUFFIXES: tuple[str, ...] = (
 
 if _DND_AVAILABLE:
 
-    class _BaseWindow(TkinterDnD.Tk, tb.Window):
+    class _BaseWindow(tb.Window, TkinterDnD.Tk):
         """Window base class with drag-and-drop support via TkinterDnD2."""
 
         def __init__(self, *args: object, **kwargs: object) -> None:
-            TkinterDnD.Tk.__init__(self)
-            tb.Window.__init__(self, *args, **kwargs)
+            super().__init__(*args, **kwargs)
 
 
 else:

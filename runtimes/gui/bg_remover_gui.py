@@ -15,7 +15,7 @@ from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 import ttkbootstrap as tb
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 from ttkbootstrap.constants import BOTH, END, LEFT, RIGHT, W
 from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.tooltip import ToolTip
@@ -319,6 +319,7 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
     app._preview_canvas_image: int | None = None
     app._preview_display_override: Image.Image | None = None
     app._preview_last_fill_color: tuple[int, int, int] | None = None
+    app._preview_fill_color: tuple[int, int, int] | None = None
     app.preview_zoom_var = tb.DoubleVar(value=PREVIEW_ZOOM_DEFAULT)
     app._preview_zoom_manual_override = False
     app._preview_zoom_updating = False
@@ -1703,169 +1704,71 @@ class BackgroundRemoverApp(_TkRoot):
         tooltip_text = "Providers: " + ", ".join(self.providers or ["CPUExecutionProvider"])
         self._add_tooltip(self.badge, tooltip_text)
 
-    from PIL import Image
+    def _preview_fill_bg(self) -> None:
+        """Prompt for a fill colour, store it, and apply it to the preview."""
 
-    def _preview_fill_bg(self):
-        """Always ask user to choose a background colour, remember it, and apply it."""
         from tkinter import colorchooser
-        if not self._preview_image:
-            # Allow user to preselect a colour for future images
-            chosen = colorchooser.askcolor(title="Select background colour")
-            if chosen and chosen[0]:
-                self.bg_fill_color = tuple(map(int, chosen[0]))
-                self._log(f"Background colour set to {self.bg_fill_color}.")
-            return
 
-        from PIL import Image
-
-        # Always ask user for colour each time button is clicked
         chosen = colorchooser.askcolor(title="Select background colour")
         if not chosen or not chosen[0]:
             return
-        self.bg_fill_color = tuple(map(int, chosen[0]))
-        fill = self.bg_fill_color
 
-        rgba = self._preview_image.convert("RGBA")
-        bg = Image.new("RGBA", rgba.size, fill + (255,))
-        composed = Image.alpha_composite(bg, rgba).convert("RGB")
-
-        self._preview_display_override = composed
-        self._preview_last_fill_color = fill
-        self._render_preview_image()
-        self._update_preview_controls()
-
-    def _preview_clear_bg(self):
-        """Fully reset background fill to transparent/white and update the preview immediately."""
-        # Remove stored fill colour
-        if hasattr(self, "bg_fill_color"):
-            self.bg_fill_color = None
-
-        # If no preview image loaded, nothing to do
-        if not self._preview_image:
-            return
-
-        # Reset any display overrides (e.g., filled colour image)
-        self._preview_display_override = None
+        fill = tuple(map(int, chosen[0]))
+        self._preview_fill_color = fill
         self._preview_last_fill_color = None
 
-        # Build checkerboard pattern for transparency visualization
-        from PIL import Image, ImageDraw
-        rgba = self._preview_image.convert("RGBA")
-        w, h = rgba.size
-        checker_size = 16
-        checker = Image.new("RGB", (w, h), "white")
-        draw = ImageDraw.Draw(checker)
-        for y in range(0, h, checker_size):
-            for x in range(0, w, checker_size):
-                if (x // checker_size + y // checker_size) % 2 == 0:
-                    draw.rectangle([x, y, x + checker_size, y + checker_size], fill=(200, 200, 200))
+        if not self._preview_image:
+            self._log(
+                f"Background colour set to {self._preview_fill_color} for future previews."
+            )
+            return
 
-        composed = Image.alpha_composite(checker.convert("RGBA"), rgba)
+        if self._apply_background_fill():
+            self._render_preview_image()
+            self._log(
+                f"Background colour set to {self._preview_fill_color} and applied to the preview."
+            )
+        else:
+            self._log(f"Background colour set to {self._preview_fill_color}.")
+        self._update_preview_controls()
 
-        # Immediately display the transparent version
-        self._preview_display_override = composed
+    def _preview_clear_bg(self) -> None:
+        """Clear the stored fill colour and visualise transparency in the preview."""
+
+        self._preview_fill_color = None
+        self._preview_last_fill_color = None
+
+        if not self._preview_image:
+            self._preview_display_override = None
+            self._update_preview_controls()
+            return
+
+        transparent = self._compose_transparency_preview()
+        if transparent is None:
+            return
+
+        self._preview_display_override = transparent
         self._render_preview_image()
         self._update_preview_controls()
         self._log("Background cleared — transparency restored.")
-    def _preview_clear_bg(self):
-        """Fully reset background fill to transparent/white and update the preview immediately."""
-        # Remove stored fill colour
-        if hasattr(self, "bg_fill_color"):
-            self.bg_fill_color = None
 
-        # If no preview image loaded, nothing to do
+    def _compose_transparency_preview(self) -> Image.Image | None:
+        """Return the preview composited over a checkerboard background."""
+
         if not self._preview_image:
-            return
+            return None
 
-        # Reset any display overrides (e.g., filled colour image)
-        self._preview_display_override = None
-        self._preview_last_fill_color = None
-
-        # Build checkerboard pattern for transparency visualization
-        from PIL import Image, ImageDraw
         rgba = self._preview_image.convert("RGBA")
-        w, h = rgba.size
+        width, height = rgba.size
         checker_size = 16
-        checker = Image.new("RGB", (w, h), "white")
+        checker = Image.new("RGB", (width, height), "white")
         draw = ImageDraw.Draw(checker)
-        for y in range(0, h, checker_size):
-            for x in range(0, w, checker_size):
+        for y in range(0, height, checker_size):
+            for x in range(0, width, checker_size):
                 if (x // checker_size + y // checker_size) % 2 == 0:
                     draw.rectangle([x, y, x + checker_size, y + checker_size], fill=(200, 200, 200))
 
-        composed = Image.alpha_composite(checker.convert("RGBA"), rgba)
-
-        # Immediately display the transparent version
-        self._preview_display_override = composed
-        self._render_preview_image()
-        self._update_preview_controls()
-        self._log("Background cleared — transparency restored.")
-    def _preview_clear_bg(self):
-        """Fully reset background fill to transparent/white and update the preview immediately."""
-        # Remove stored fill colour
-        if hasattr(self, "bg_fill_color"):
-            self.bg_fill_color = None
-
-        # If no preview image loaded, nothing to do
-        if not self._preview_image:
-            return
-
-        # Reset any display overrides (e.g., filled colour image)
-        self._preview_display_override = None
-        self._preview_last_fill_color = None
-
-        # Build checkerboard pattern for transparency visualization
-        from PIL import Image, ImageDraw
-        rgba = self._preview_image.convert("RGBA")
-        w, h = rgba.size
-        checker_size = 16
-        checker = Image.new("RGB", (w, h), "white")
-        draw = ImageDraw.Draw(checker)
-        for y in range(0, h, checker_size):
-            for x in range(0, w, checker_size):
-                if (x // checker_size + y // checker_size) % 2 == 0:
-                    draw.rectangle([x, y, x + checker_size, y + checker_size], fill=(200, 200, 200))
-
-        composed = Image.alpha_composite(checker.convert("RGBA"), rgba)
-
-        # Immediately display the transparent version
-        self._preview_display_override = composed
-        self._render_preview_image()
-        self._update_preview_controls()
-        self._log("Background cleared — transparency restored.")
-    def _preview_clear_bg(self):
-        """Fully reset background fill to transparent/white and update the preview immediately."""
-        # Remove stored fill colour
-        if hasattr(self, "bg_fill_color"):
-            self.bg_fill_color = None
-
-        # If no preview image loaded, nothing to do
-        if not self._preview_image:
-            return
-
-        # Reset any display overrides (e.g., filled colour image)
-        self._preview_display_override = None
-        self._preview_last_fill_color = None
-
-        # Build checkerboard pattern for transparency visualization
-        from PIL import Image, ImageDraw
-        rgba = self._preview_image.convert("RGBA")
-        w, h = rgba.size
-        checker_size = 16
-        checker = Image.new("RGB", (w, h), "white")
-        draw = ImageDraw.Draw(checker)
-        for y in range(0, h, checker_size):
-            for x in range(0, w, checker_size):
-                if (x // checker_size + y // checker_size) % 2 == 0:
-                    draw.rectangle([x, y, x + checker_size, y + checker_size], fill=(200, 200, 200))
-
-        composed = Image.alpha_composite(checker.convert("RGBA"), rgba)
-
-        # Immediately display the transparent version
-        self._preview_display_override = composed
-        self._render_preview_image()
-        self._update_preview_controls()
-        self._log("Background cleared — transparency restored.")
+        return Image.alpha_composite(checker.convert("RGBA"), rgba)
     def _on_model_change(self) -> None:
         """Handle updates to the selected model."""
 
@@ -2131,6 +2034,20 @@ class BackgroundRemoverApp(_TkRoot):
         self.preview_zoom_value.configure(text=f"{int(PREVIEW_ZOOM_DEFAULT)}%")
         self.preview_info.configure(text="No preview available yet.")
         self._update_preview_controls()
+
+    def _apply_background_fill(self) -> bool:
+        """Apply the stored fill colour beneath the preview image when available."""
+
+        if not self._preview_image or self._preview_fill_color is None:
+            return False
+
+        fill = self._preview_fill_color
+        rgba = self._preview_image.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, fill + (255,))
+        composed = Image.alpha_composite(background, rgba).convert("RGB")
+        self._preview_display_override = composed
+        self._preview_last_fill_color = fill
+        return True
 
     def _render_preview_image(self, anchor: PreviewAnchor | None = None) -> None:
         """Render the in-memory preview image respecting the zoom slider."""
@@ -2427,6 +2344,7 @@ class BackgroundRemoverApp(_TkRoot):
         self._preview_original_name = original_name
         self._preview_saved_path = None
         self._preview_display_override = None
+        self._preview_last_fill_color = None
         self._preview_zoom_manual_override = False
         self._preview_zoom_updating = True
         try:
@@ -2438,9 +2356,16 @@ class BackgroundRemoverApp(_TkRoot):
             max(1, self.preview_canvas.winfo_height()),
         )
         self.preview_info.configure(text=f"Preview ready: {original_name}")
+        applied_fill = self._apply_background_fill()
         self._render_preview_image()
         self._auto_fit_preview()
-        self._log("Preview generated successfully ✔")
+        if applied_fill and self._preview_fill_color is not None:
+            self._log(
+                "Preview generated successfully ✔ — "
+                f"background colour {self._preview_fill_color} applied."
+            )
+        else:
+            self._log("Preview generated successfully ✔")
         self._update_preview_controls()
 
     def _process_batch(self) -> None:

@@ -317,7 +317,7 @@ def preprocess(img_rgb: np.ndarray, spec: Any) -> np.ndarray:
     if not hasattr(spec, "input_size") or not hasattr(spec, "mean") or not hasattr(spec, "std"):
         raise ValueError("spec must expose input_size, mean, and std attributes")
 
-    height, width = spec.input_size
+    width, height = spec.input_size
     resized = cv2.resize(img_rgb, (width, height), interpolation=cv2.INTER_LINEAR)
     tensor = resized.astype(np.float32) / 255.0
     mean = np.asarray(spec.mean, dtype=np.float32)

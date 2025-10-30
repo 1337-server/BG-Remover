@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,9 +20,24 @@ from bgremover_core import (
     remove_background,
 )
 from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
+from bgremover_core.paths import CONFIG_FILE, INPUT_DIR, OUTPUT_DIR
 
 STATUS_SUCCESS = "✓"
 STATUS_FAILURE = "✗"
+
+
+class _StoreWithFlag(argparse.Action):
+    """Store an argument value and flag that it was provided explicitly."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str,
+        option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"{self.dest}_provided", True)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -33,8 +49,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Remove backgrounds from images",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    remove_parser.add_argument("--input", required=True, help="Input file or folder path")
-    remove_parser.add_argument("--output", help="Output file or directory path")
+    remove_parser.set_defaults(
+        input_provided=False,
+        output_provided=False,
+    )
+    remove_parser.add_argument(
+        "-i",
+        "--input",
+        default=str(INPUT_DIR),
+        action=_StoreWithFlag,
+        help="Input file or directory path.",
+    )
+    remove_parser.add_argument(
+        "-o",
+        "--output",
+        default=str(OUTPUT_DIR),
+        action=_StoreWithFlag,
+        help="Output file or directory path.",
+    )
+    remove_parser.add_argument(
+        "-c",
+        "--config",
+        default=str(CONFIG_FILE),
+        action=_StoreWithFlag,
+        help="Config file path.",
+    )
     remove_parser.add_argument("--model", help="Model key to use for inference")
     remove_parser.add_argument(
         "--batch",
@@ -100,11 +139,18 @@ def _handle_single(args: argparse.Namespace, config: Config) -> int:
         print(f"Input file not found: {input_path}", file=sys.stderr)
         return 2
 
-    output_path = (
-        Path(args.output).expanduser()
-        if args.output
-        else input_path.with_stem(f"{input_path.stem}_no_bg")
-    )
+    if getattr(args, "output_provided", False):
+        output_candidate = Path(args.output).expanduser()
+        if output_candidate.suffix:
+            output_path = output_candidate
+        else:
+            output_candidate.mkdir(parents=True, exist_ok=True)
+            suffix = input_path.suffix or ".png"
+            output_path = output_candidate / f"{input_path.stem}_no_bg{suffix}"
+    else:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = input_path.suffix or ".png"
+        output_path = OUTPUT_DIR / f"{input_path.stem}_no_bg{suffix}"
     try:
         image_array = _load_image(input_path)
         result_array = remove_background(
@@ -142,9 +188,14 @@ def _handle_batch(args: argparse.Namespace, config: Config) -> int:
     if not input_path.exists() or not input_path.is_dir():
         print(f"Input directory not found: {input_path}", file=sys.stderr)
         return 2
+    if getattr(args, "output_provided", False):
+        batch_output_dir = Path(args.output).expanduser()
+    else:
+        batch_output_dir = OUTPUT_DIR
+    batch_output_dir.mkdir(parents=True, exist_ok=True)
     report = process_folder(
         input_path,
-        args.output,
+        batch_output_dir,
         "*",
         model_key=args.model or config.default_model,
         config=config,
@@ -162,7 +213,14 @@ def _handle_batch(args: argparse.Namespace, config: Config) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    config = _apply_overrides(load_config(), args)
+    config_path = Path(getattr(args, "config", str(CONFIG_FILE))).expanduser()
+    load_config_fn = load_config
+    signature = inspect.signature(load_config_fn)
+    if "config_path" in signature.parameters:
+        base_config = load_config_fn(config_path=config_path)
+    else:  # pragma: no cover - compatibility with patched tests
+        base_config = load_config_fn()
+    config = _apply_overrides(base_config, args)
     init_logging(config.log_level)
     _persist_if_requested(config, args)
 

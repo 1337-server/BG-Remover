@@ -26,8 +26,8 @@ def _build_pyinstaller_command(
     """Return the PyInstaller command for bundling ``entry_point`` with optimized settings."""
 
     add_data_sep = ";" if os.name == "nt" else ":"
-    templates_dir = PROJECT_ROOT / "runtimes" / "flask_app" / "templates"
-    static_dir = PROJECT_ROOT / "runtimes" / "flask_app" / "static"
+    templates_dir = PROJECT_ROOT / "runtimes" / "flask" / "templates"
+    static_dir = PROJECT_ROOT / "runtimes" / "flask" / "static"
 
     command = [
         sys.executable,

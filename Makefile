@@ -21,7 +21,7 @@ run-cli:
 	python -m runtimes.cli.bgr_cli --help
 
 run-flask:
-	python -m runtimes.flask_app.app
+python -m runtimes.flask.app
 
 build-docker:
 	docker build --build-arg RUNTIME=$(RUNTIME) -t $(IMAGE) .

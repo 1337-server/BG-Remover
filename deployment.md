@@ -23,7 +23,7 @@ docker run --rm -it \
 | Runtime | Default command |
 |---------|-----------------|
 | CLI | `python -m runtimes.cli.bgr_cli --help` |
-| Flask | `gunicorn "runtimes.flask_app.app:create_app()" --bind 0.0.0.0:8080` |
+| Flask | `gunicorn "runtimes.flask.app:create_app()" --bind 0.0.0.0:8080` |
 | GUI | `python -m runtimes.gui.bg_remover_gui` (requires host display forwarding) |
 
 The Flask variant exposes port `8080`. Map it to the host when running containers: `-p 8080:8080`.

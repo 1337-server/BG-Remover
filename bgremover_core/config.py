@@ -9,8 +9,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .paths import CONFIG_FILE
+
 DEFAULT_MODEL_KEY = "isnet-general-use"
-CONFIG_FILENAME = ".bgremover.json"
+CONFIG_FILENAME = CONFIG_FILE.name
 ERROR_LOG_NAME = "error.log"
 
 
@@ -43,10 +45,10 @@ class Config:
 def _default_config_path() -> Path:
     """Return the default path used to persist user configuration."""
 
-    xdg_config = os.getenv("XDG_CONFIG_HOME")
-    if xdg_config:
-        return Path(xdg_config).expanduser() / CONFIG_FILENAME
-    return Path.home() / CONFIG_FILENAME
+    custom_path = os.getenv("BGR_CONFIG_PATH")
+    if custom_path:
+        return Path(custom_path).expanduser()
+    return CONFIG_FILE
 
 
 def _normalise_provider_hints(raw: Iterable[str] | None) -> tuple[str, ...]:
@@ -126,7 +128,14 @@ def persist_config(config: Config, *, path: Path | None = None) -> Path:
     }
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        existing: dict[str, Any] = {}
+        if target.exists():
+            try:
+                existing = json.loads(target.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                existing = {}
+        existing.update(payload)
+        target.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     except Exception as exc:  # pragma: no cover - defensive
         raise ConfigError(f"Failed to persist configuration: {exc}") from exc
     return target

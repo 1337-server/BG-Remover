@@ -31,7 +31,7 @@ set -e
 
 case "${RUNTIME:-cli}" in
     flask)
-        exec gunicorn "runtimes.flask_app.app:create_app()" --bind 0.0.0.0:8080
+        exec gunicorn "runtimes.flask.app:create_app()" --bind 0.0.0.0:8080
         ;;
     gui)
         exec python -m runtimes.gui.bg_remover_gui

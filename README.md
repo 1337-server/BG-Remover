@@ -6,6 +6,10 @@ Unified tooling for removing image backgrounds with ONNX Runtime. The project no
 
 ```
 .
+├── config/
+│   └── config.json
+├── input/
+├── output/
 ├── bgremover_core/
 │   ├── config.py
 │   ├── io/
@@ -13,7 +17,7 @@ Unified tooling for removing image backgrounds with ONNX Runtime. The project no
 │   └── processing/
 ├── runtimes/
 │   ├── cli/
-│   ├── flask_app/
+│   ├── flask/
 │   └── gui/
 ├── scripts/
 ├── tests/
@@ -56,10 +60,10 @@ Exit status is `0` when every image succeeds and non-zero otherwise.
 ### Flask web app
 
 ```
-python -m runtimes.flask_app.app
+python -m runtimes.flask.app
 ```
 
-The factory (`runtimes.flask_app.app:create_app`) works for local development and production servers such as Gunicorn. The refreshed UI now includes:
+The factory (`runtimes.flask.app:create_app`) works for local development and production servers such as Gunicorn. The refreshed UI now includes:
 
 * **Drag & drop uploads** with instant previews and support for multiple images per run.
 * A **live preview panel** that streams results, provides per-image downloads, and mirrors the structured activity log.
@@ -94,7 +98,7 @@ python -m runtimes.gui.bg_remover_gui
 
 The GUI mirrors the CLI options with single-image and batch tabs. It shows a coloured pill indicating GPU or CPU execution providers, allows selecting and persisting a custom model directory, and logs status lines for each processed file (failures render in red and trigger a message box).
 
-Batch mode defaults to an `output` sibling next to the input directory when no destination is selected.
+Batch mode defaults to the shared `output/` directory at the project root when no destination is selected.
 
 ## Configuration & environment variables
 
@@ -105,7 +109,7 @@ Batch mode defaults to an `output` sibling next to the input directory when no d
 * `BGR_PROVIDER_HINTS` – comma-separated provider hints (e.g. `CUDAExecutionProvider,CPUExecutionProvider`).
 * `BGR_LOGLEVEL` – root log level (`INFO`, `DEBUG`, etc.).
 
-`persist_config()` writes settings to `~/.bgremover.json`. The GUI provides a “Save” action, while the CLI exposes `--persist-config`.
+`persist_config()` writes settings to `config/config.json`. The GUI provides a “Save” action, while the CLI exposes `--persist-config`.
 
 ## Model catalogue
 
@@ -130,7 +134,7 @@ Weights download automatically on first use. Hugging Face downloads honour `HUGG
 
 * Old modules such as `bg_removal.py`, `main.py`, and `app.py` have been replaced by the `bgremover_core` package and the runtime-specific entry points under `runtimes/`.
 * CLI invocation is now `python -m runtimes.cli.bgr_cli remove ...`.
-* Flask app factory lives at `python -m runtimes.flask_app.app`.
+* Flask app factory lives at `python -m runtimes.flask.app`.
 * GUI entry point is `python -m runtimes.gui.bg_remover_gui`.
 
 ## Testing

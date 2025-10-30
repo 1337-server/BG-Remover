@@ -11,11 +11,11 @@ __all__ = ["create_app", "routes"]
 
 
 def create_app(*args: Any, **kwargs: Any):
-    """Defer to :func:`runtimes.flask_app.app.create_app` at call time.
+    """Defer to :func:`runtimes.flask.app.create_app` at call time.
 
     Importing lazily avoids double-import runtime warnings when running the
-    module via ``python -m runtimes.flask_app.app`` while keeping the public API
-    unchanged for callers that expect ``runtimes.flask_app.create_app``.
+    module via ``python -m runtimes.flask.app`` while keeping the public API
+    unchanged for callers that expect ``runtimes.flask.create_app``.
     """
 
     from .app import create_app as _create_app

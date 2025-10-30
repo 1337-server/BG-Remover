@@ -11,8 +11,8 @@ from PIL import Image
 
 from bgremover_core.config import Config
 from bgremover_core.processing.pipeline import PipelineError, Report, ReportEntry
-from runtimes.flask_app import routes
-from runtimes.flask_app.app import create_app
+from runtimes.flask import routes
+from runtimes.flask.app import create_app
 
 
 @pytest.fixture()
@@ -21,7 +21,7 @@ def flask_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     config = Config(model_dir=tmp_path)
     monkeypatch.setattr(routes, "detect_providers", lambda _hints=None: ["CPUExecutionProvider"])
-    monkeypatch.setattr(routes, "load_config", lambda: config)
+    monkeypatch.setattr(routes, "load_config", lambda *_, **__: config)
     monkeypatch.setattr(routes, "persist_config", lambda *_args, **_kwargs: tmp_path / "config.json")
 
     def fake_remove_background(image_array, model_key, **_kwargs):  # pragma: no cover - patched per test

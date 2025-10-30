@@ -2473,8 +2473,14 @@ class BackgroundRemoverApp(_TkRoot):
         filename = values[0]
         output_dir = self.batch_output_var.get() or self.output_dir_var.get() or str(OUTPUT_DIR)
         file_path = Path(output_dir) / filename
+        absolute_path = file_path.resolve(strict=False)
         if not file_path.exists():
-            messagebox.showerror("File not found", f"Cannot preview {filename}: file not found.")
+            message = (
+                "Cannot preview selected batch result: file not found at "
+                f"{absolute_path}."
+            )
+            messagebox.showerror("File not found", message)
+            self._log(message, error=True)
             return
 
         try:
@@ -2484,8 +2490,12 @@ class BackgroundRemoverApp(_TkRoot):
             self._show_preview(img, file_path, format_hint, filename)
             self._log(f"Loaded preview for {filename} from batch output ✓")
         except Exception as error:  # pragma: no cover - defensive log for preview failures
-            messagebox.showerror("Preview failed", f"Unable to load {filename}: {error}")
-            self._log(f"Failed to load preview for {filename} ✗ — Reason: {error}", error=True)
+            message = f"Unable to load preview from {absolute_path}: {error}"
+            messagebox.showerror("Preview failed", message)
+            self._log(
+                f"Failed to load preview for {filename} ✗ — Reason: {message}",
+                error=True,
+            )
 
     def _set_processing_state(self, active: bool, context: str) -> None:
         """Toggle interactive widgets and visual indicators for processing state."""

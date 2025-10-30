@@ -1,152 +1,142 @@
-# Background Remover
+# BG-Remover
 
-Unified tooling for removing image backgrounds with ONNX Runtime. The project now separates a framework-agnostic core from dedicated runtimes so the CLI, Flask app, and ttkbootstrap GUI can share the same pipeline, configuration, and logging logic.
+BG-Remover is a multi-runtime background removal toolkit that exposes the same
+ONNX Runtime-powered pipeline through a command-line interface (CLI), a Flask
+web application, and a desktop GUI. Every runtime supports CPU-only execution
+and GPU acceleration through CUDA, DirectML, or ROCm, automatically falling back
+when a preferred provider is unavailable.
 
-## Repository layout
+All runtimes share the same directory layout so assets and configuration stay in
+sync regardless of how you launch the tool:
 
 ```
-.
-├── config/
-│   └── config.json
-├── input/
-├── output/
-├── bgremover_core/
-│   ├── config.py
-│   ├── io/
-│   ├── models/
-│   └── processing/
-├── runtimes/
-│   ├── cli/
-│   ├── flask/
-│   └── gui/
-├── scripts/
-├── tests/
-├── Dockerfile
-├── requirements.txt
-└── README.md
+bg-remover/
+├─ input/          # Default input images
+├─ output/         # Processed results
+├─ config/config.json
+├─ runtimes/
+│  ├─ gui/
+│  ├─ flask/
+│  └─ cli/
 ```
 
-The `bgremover_core` package exposes the shared pipeline (`processing.pipeline.remove_background`), filesystem helpers, model specifications, and configuration helpers. Each runtime imports exclusively from this core layer.
+The shared `bgremover_core` package provides filesystem helpers, configuration
+loading, logging, model management, and the processing pipeline. CLI, Flask, and
+GUI entry points simply import and orchestrate these shared utilities.
 
 ## Quickstart
 
 ### Prerequisites
 
-* Python 3.12+
-* `pip install -r requirements.txt`
-* Optional GPU acceleration requires `pip install onnxruntime-gpu` and NVIDIA drivers.
+- Python 3.10+
+- `pip install -r requirements.txt`
+- Optional GPU acceleration: install an ONNX Runtime build for your platform
+  (e.g. `onnxruntime-gpu`, `onnxruntime-directml`, or `onnxruntime-rocm`).
+- Latest NVIDIA/AMD/Intel GPU drivers when using hardware acceleration.
 
-### CLI
+### CLI runtime
 
-```
-python -m runtimes.cli.bgr_cli remove --input path/to/image.png --output result.png
-```
-
-Batch mode processes an entire folder and prints a summary table:
-
-```
-python -m runtimes.cli.bgr_cli remove --input ./photos --batch
+```bash
+python -m runtimes.cli.bgr_cli remove --input ./input/sample.png --output ./output/sample_no_bg.png
 ```
 
-Key options:
+Key flags:
 
-* `--model <key>` – one of `isnet-general-use`, `u2net`, `u2net_human_seg`, `isnet-anime`, `briaai/RMBG-2.0`, `matting-by-generation`, `sam_segmentation_model`.
-* `--provider cuda|cpu|directml` – hint the preferred execution provider; defaults to automatic detection favouring CUDA.
-* `--model-dir <path>` – override the ONNX model cache (persists when `--persist-config` is supplied).
-* `--feather-radius` – control post-processing softness (0–50 px).
+- `--batch` — process an entire folder; defaults to `bg-remover/input` and
+  writes results to `bg-remover/output`.
+- `--provider cuda|directml|cpu` — hint the preferred execution provider.
+  The CLI gracefully falls back to CPU when a GPU provider fails to initialise.
+- `--model <key>` — select any registered model (see the configuration
+  reference for available keys).
+- `--model-dir <path>` — choose where ONNX weights are cached.
+- `--persist-config` — write CLI selections back to `config/config.json`.
 
-Exit status is `0` when every image succeeds and non-zero otherwise.
+Exit code `0` indicates success for every processed image. The batch command
+prints a table with per-file status, timings, and any raised errors.
 
-### Flask web app
+### Flask runtime
 
+```bash
+export FLASK_APP=runtimes.flask.app
+python -m flask run --debug
 ```
-python -m runtimes.flask.app
-```
 
-The factory (`runtimes.flask.app:create_app`) works for local development and production servers such as Gunicorn. The refreshed UI now includes:
+The Flask UI now offers separate pages for single-image and batch/folder
+processing. A navigation bar links both views, and each view shares the same
+configuration stored at the project root. Highlights include:
 
-* **Drag & drop uploads** with instant previews and support for multiple images per run.
-* A **live preview panel** that streams results, provides per-image downloads, and mirrors the structured activity log.
-* **Advanced controls** on par with the GUI runtime: model selector, feather radius, provider preference (auto/GPU/CPU), optional alpha-matting toggles, mask smoothing, custom output folder naming, and a persistent model directory field.
-* A **background fill picker** with a transparent toggle so users can composite against any colour.
-* **Dark/light mode** toggle with system preference detection and full localStorage persistence for theme and runtime options.
-* **Folder/batch processing** that accepts ZIP archives, reports per-file success/failure, and exposes a combined ZIP download of all outputs.
-* **History management** powered by the shared `ResultStore`, showing thumbnails, metadata, and quick preview/download links for previous jobs.
+- Embedded preview cards directly within the upload grid.
+- Advanced settings spanning the full page width beneath the preview with
+  tooltips describing valid ranges.
+- Dark mode styling applied to the entire page (`body`, `app-root`, cards, and
+  modals).
+- Batch page designed for folders and ZIP uploads with consolidated downloads.
 
-The front-end stores preferences client-side and optionally syncs server-side configuration when “Remember settings” is enabled.
+### GUI runtime
 
-#### HTTP endpoints
-
-The Flask runtime exposes a small JSON API that powers the interface and can be consumed programmatically:
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Render the interactive UI with theme + provider context. |
-| `POST` | `/process` | Process one or more uploaded images. Returns metadata, previews, and download IDs. |
-| `POST` | `/batch` | Accept a ZIP archive, run the batch pipeline, and return a summary plus a ZIP download handle. |
-| `GET` | `/result/<id>` | Serve a processed image for inline previews. |
-| `GET` | `/download/<id>` | Download a processed asset (image or batch ZIP). |
-| `GET` | `/history` | Retrieve persisted result metadata for the current server instance. |
-
-All routes honour the shared configuration object (`bgremover_core.config.Config`), so provider hints and model directories stay in sync with the other runtimes.
-
-### GUI
-
-```
+```bash
 python -m runtimes.gui.bg_remover_gui
 ```
 
-The GUI mirrors the CLI options with single-image and batch tabs. It shows a coloured pill indicating GPU or CPU execution providers, allows selecting and persisting a custom model directory, and logs status lines for each processed file (failures render in red and trigger a message box).
+The GUI remembers the selected theme, advanced settings, and model directory.
+Advanced panels are restored from the previous session and start collapsed to
+keep the interface focused. Each advanced option now features a tooltip with the
+expected range and hints. You can also choose where model weights are stored so
+that cached downloads can be shared between runtimes or stored on fast local
+media.
 
-Batch mode defaults to the shared `output/` directory at the project root when no destination is selected.
+## Configuration
 
-## Configuration & environment variables
+Configuration lives in `config/config.json`. All runtimes read and write to this
+location and default to the project directories defined above. Environment
+variables can override persisted options:
 
-`bgremover_core.config.load_config()` merges persisted settings with environment variables:
+| Variable | Description |
+| --- | --- |
+| `BGR_CONFIG_PATH` | Custom path for `config.json` if you need a different project root. |
+| `MODEL_DIR` | Override the shared model cache directory. |
+| `BGR_DEFAULT_MODEL` | Change the default model key used when none is specified. |
+| `BGR_PROVIDER_HINTS` | Comma-separated providers to prioritise (e.g. `CUDAExecutionProvider,CPUExecutionProvider`). |
+| `BGR_LOGLEVEL` | Logging level for every runtime (default `INFO`). |
 
-* `MODEL_DIR` – custom cache directory for ONNX models (default: `~/.cache/bg-remover/models`).
-* `BGR_DEFAULT_MODEL` – fallback model key when none is supplied.
-* `BGR_PROVIDER_HINTS` – comma-separated provider hints (e.g. `CUDAExecutionProvider,CPUExecutionProvider`).
-* `BGR_LOGLEVEL` – root log level (`INFO`, `DEBUG`, etc.).
-
-`persist_config()` writes settings to `config/config.json`. The GUI provides a “Save” action, while the CLI exposes `--persist-config`.
+Persisted configuration is updated automatically when the GUI saves settings or
+when the CLI runs with `--persist-config`.
 
 ## Model catalogue
 
 | Model key | Input size | Notes |
 |-----------|------------|-------|
-| `isnet-general-use` | 1024×1024 | General purpose |
-| `u2net_human_seg` | 320×320 | Portrait focused |
+| `isnet-general-use` | 1024×1024 | General purpose backgrounds |
+| `u2net_human_seg` | 320×320 | Portrait-focused matte |
 | `u2net` | 320×320 | Object isolation |
-| `isnet-anime` | 1024×1024 | Illustration/anime |
-| `briaai/RMBG-2.0` | 1024×1024 | High-quality general scenes |
+| `isnet-anime` | 1024×1024 | Illustration/anime scenes |
+| `briaai/RMBG-2.0` | 1024×1024 | High-quality universal model |
 | `matting-by-generation` | 1024×1024 | Portrait matting variant |
 | `sam_segmentation_model` | 1024×1024 | Alias of BRIA 2.0 |
 | `sam_vit_b_01ec64_encoder` / `decoder` | 1024×1024 | Segment Anything weights |
 
-Weights download automatically on first use. Hugging Face downloads honour `HUGGINGFACEHUB_API_TOKEN` or `HF_API_TOKEN` when private repos are required.
+Weights download on demand and honour `HUGGINGFACEHUB_API_TOKEN` or
+`HF_API_TOKEN` for private repositories.
 
 ## Logging
 
-`init_logging()` configures structured console logging and writes `error.log` in the current working directory (or alongside the packaged executable). GUI status entries mirror these logs and colourise failures.
+Structured logging is initialised across runtimes via
+`bgremover_core.config.init_logging`. Logs stream to STDOUT/STDERR and to
+`error.log` in the current working directory (or next to the packaged GUI
+executable).
 
-## Migration guide
+## Deployment
 
-* Old modules such as `bg_removal.py`, `main.py`, and `app.py` have been replaced by the `bgremover_core` package and the runtime-specific entry points under `runtimes/`.
-* CLI invocation is now `python -m runtimes.cli.bgr_cli remove ...`.
-* Flask app factory lives at `python -m runtimes.flask.app`.
-* GUI entry point is `python -m runtimes.gui.bg_remover_gui`.
+See [`deployment.md`](deployment.md) for runtime-specific build and packaging
+instructions, including Docker usage and GUI bundling with PyInstaller.
 
 ## Testing
 
 Run the consolidated test suite with:
 
-```
+```bash
 python -m pytest -q
 ```
 
-The new tests cover provider detection, session creation, pipeline happy/error paths, CLI exit codes, Flask routes, and GUI helper logic.
-
-## Docker
-
-See `deployment.md` for runtime-specific build arguments, compose examples, and GPU notes.
+The tests cover provider detection, session creation, pipeline success/error
+paths, CLI exit codes, Flask routes, and GUI helper logic.

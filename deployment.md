@@ -1,84 +1,145 @@
 # Deployment
 
-The repo ships with a single Dockerfile that builds any runtime. Use the `RUNTIME` build argument to choose between the CLI, Flask app, or GUI.
+This document collects build, packaging, and hosting tips for every BG-Remover
+runtime. All runtimes share the same project directories (`input/`, `output/`,
+and `config/config.json`) so configuration persists regardless of how an
+executable is launched.
 
-## Building images
+## Building from source
 
+Start by installing shared dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
-docker build -t br-remover-cli --build-arg RUNTIME=cli .
-docker build -t br-remover-flask --build-arg RUNTIME=flask .
-docker build -t br-remover-gui --build-arg RUNTIME=gui .
+
+### CLI runtime
+
+```bash
+python -m runtimes.cli.bgr_cli remove --input ./input/example.png --output ./output/example_no_bg.png
 ```
 
-The image configures `MODEL_DIR=/models`, so you can mount a persistent cache:
+Useful flags:
 
+- `--batch` to process entire folders.
+- `--provider cuda|directml|cpu` to request a specific execution provider.
+- `--config` to load a custom `config.json` (defaults to `config/config.json`).
+- `--persist-config` to store CLI preferences for future runs.
+
+### Flask runtime
+
+Run the development server with auto-reload:
+
+```bash
+export FLASK_APP=runtimes.flask.app
+python -m flask run --debug
 ```
+
+For production, create a WSGI server configuration:
+
+```bash
+gunicorn "runtimes.flask.app:create_app()" --bind 0.0.0.0:8080 --workers 4
+```
+
+The Flask UI ships with distinct pages for single-image and batch/folder
+processing. The navigation bar links both views, each embedding a live preview
+pane and advanced settings that stretch across the page beneath the preview.
+Dark mode applies to the full layout, including the `<body>`, root element, and
+all cards.
+
+### GUI runtime
+
+Launch the desktop GUI directly from source:
+
+```bash
+python -m runtimes.gui.bg_remover_gui
+```
+
+The GUI preserves dark/light mode selection across sessions, restores the full
+set of advanced controls (collapsed by default), surfaces tooltips describing
+valid ranges, and lets users choose the ONNX model storage directory.
+
+## Packaging the GUI
+
+Use PyInstaller to build a standalone executable with the project icon:
+
+```bash
+pyinstaller runtimes/gui/bg_remover_gui.py --noconfirm --onefile --windowed --icon=assets/icon.ico
+```
+
+The generated binary reads and writes configuration to `config/config.json` in
+the project directory, so bundle that file alongside the executable when
+redistributing. Ship the `input/` and `output/` folders to preserve defaults.
+
+## Docker
+
+The repository Dockerfile supports every runtime via the `RUNTIME` build
+argument:
+
+```bash
+docker build -t bg-remover-cli --build-arg RUNTIME=cli .
+docker build -t bg-remover-flask --build-arg RUNTIME=flask .
+docker build -t bg-remover-gui --build-arg RUNTIME=gui .
+```
+
+### Running the CLI container
+
+```bash
 docker run --rm -it \
   -v $(pwd)/models:/models \
-  br-remover-cli python -m runtimes.cli.bgr_cli remove --help
+  -v $(pwd)/input:/app/input \
+  -v $(pwd)/output:/app/output \
+  bg-remover-cli python -m runtimes.cli.bgr_cli remove --input /app/input/sample.png
 ```
 
-## Runtime commands
+Mount `config/config.json` if you want to persist configuration across runs.
 
-| Runtime | Default command |
-|---------|-----------------|
-| CLI | `python -m runtimes.cli.bgr_cli --help` |
-| Flask | `gunicorn "runtimes.flask.app:create_app()" --bind 0.0.0.0:8080` |
-| GUI | `python -m runtimes.gui.bg_remover_gui` (requires host display forwarding) |
+### Running the Flask container
 
-The Flask variant exposes port `8080`. Map it to the host when running containers: `-p 8080:8080`.
-
-### Flask UI highlights
-
-* Drag & drop uploads, batch ZIP support, and a responsive layout optimised for desktops and tablets.
-* Persistent preferences stored in the browser (theme, advanced settings) with optional server-side sync via `remember_preferences`.
-* Dark/light theme toggle, GPU/CPU provider badge, and a background colour picker with transparency toggle.
-* Live activity log, thumbnail previews, and a `/history` endpoint that surfaces all processed files for the current container.
-
-By default processed assets are written to `<instance_path>/results`. Override this location via `OUTPUT_DIR` if you prefer to mount a dedicated volume:
-
-```
+```bash
 docker run --rm -it \
   -p 8080:8080 \
   -v $(pwd)/models:/models \
-  -v $(pwd)/web-results:/var/lib/bgremover/results \
-  -e OUTPUT_DIR=/var/lib/bgremover/results \
-  br-remover-flask
+  -v $(pwd)/input:/app/input \
+  -v $(pwd)/output:/app/output \
+  bg-remover-flask
 ```
 
-## Docker Compose example
+The container entrypoint launches Gunicorn bound to `0.0.0.0:8080`. The batch
+page mirrors the desktop workflow by accepting ZIP/folder uploads and listing
+results beneath the preview grid.
+
+### Optional Docker Compose
 
 ```yaml
 services:
-  br-remover:
+  bg-remover:
     build:
       context: .
       args:
         RUNTIME: flask
-    image: br-remover-flask
+    image: bg-remover-flask
     ports:
       - "8080:8080"
     volumes:
       - ./models:/models
-      - ./web-results:/var/lib/bgremover/results
+      - ./input:/app/input
+      - ./output:/app/output
     environment:
       - MODEL_DIR=/models
-      - BGR_LOGLEVEL=INFO
-      - OUTPUT_DIR=/var/lib/bgremover/results
+      - BGR_PROVIDER_HINTS=CUDAExecutionProvider,CPUExecutionProvider
 ```
 
-## GPU acceleration
+Enable GPU acceleration by installing the NVIDIA container toolkit and passing
+`--gpus all` (or the ROCm equivalent) to `docker run`. ONNX Runtime automatically
+falls back to CPU when a requested GPU provider fails.
 
-* Install the NVIDIA container toolkit on the host.
-* Build with the CUDA-enabled ONNX Runtime (e.g. `pip install onnxruntime-gpu`) or extend the image accordingly.
-* Run containers with the appropriate runtime:
+## Local Dockerless deployment checklist
 
-  ```
-  docker run --rm -it \
-    --gpus all \
-    -e BGR_PROVIDER_HINTS=CUDAExecutionProvider,CPUExecutionProvider \
-    -v $(pwd)/models:/models \
-    br-remover-cli python -m runtimes.cli.bgr_cli remove --input sample.png --output result.png
-  ```
-
-The GUI image is intended for development. To use it in Docker you must configure X11 or Wayland forwarding (Linux) or rely on host execution.
+1. Create a Python virtual environment and install dependencies.
+2. Copy or symlink `input/`, `output/`, and `config/` into your deployment
+   location.
+3. Launch the runtime of choice using the commands above.
+4. Set `MODEL_DIR` if you want to share model caches across machines or disks.

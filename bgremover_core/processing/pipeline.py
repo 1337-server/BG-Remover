@@ -97,6 +97,11 @@ class ProcessingOptions:
     smoothing: float = 0.0
     mask_blur: float = 0.0
     edge_refinement: bool = False
+    post_process_mask: bool = True
+    only_mask: bool = False
+    mask_threshold: float = 0.0
+    cut_out_mode: str = "object"
+    background_mode: str = "clear"
     background_color: tuple[int, int, int] | None = None
     output_format: str = "PNG"
     preserve_names: bool = False
@@ -149,6 +154,20 @@ class ProcessingOptions:
             minimum=1,
             maximum=16,
         )
+        post_process_mask = bool(kwargs.get("post_process_mask", True))
+        only_mask = bool(kwargs.get("only_mask", False))
+        mask_threshold = _coerce_float(
+            kwargs.get("mask_threshold"),
+            default=0.0,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        cut_out_mode = str(kwargs.get("cut_out_mode") or "object").strip().lower()
+        if cut_out_mode not in {"object", "mask", "bbox"}:
+            cut_out_mode = "object"
+        background_mode = str(kwargs.get("background_mode") or "clear").strip().lower()
+        if background_mode not in {"none", "fill", "clear"}:
+            background_mode = "clear"
         resolved_feather = _coerce_int(feather_radius, default=3, minimum=0, maximum=50)
         return cls(
             resize_mode=resize_mode,
@@ -160,6 +179,11 @@ class ProcessingOptions:
             smoothing=smoothing,
             mask_blur=mask_blur,
             edge_refinement=edge_refinement,
+            post_process_mask=post_process_mask,
+            only_mask=only_mask,
+            mask_threshold=mask_threshold,
+            cut_out_mode=cut_out_mode,
+            background_mode=background_mode,
             background_color=background_color,
             output_format=output_format,
             preserve_names=preserve_names,
@@ -283,6 +307,23 @@ def _apply_background(image: Image.Image, color: tuple[int, int, int] | None) ->
         return image
     background = Image.new("RGBA", image.size, (*color, 255))
     return Image.alpha_composite(background, image)
+
+
+def _crop_to_mask_bounds(
+    image: Image.Image,
+    mask: Image.Image,
+    mask_array: np.ndarray,
+) -> tuple[Image.Image, Image.Image, np.ndarray]:
+    """Return ``image`` and mask data cropped to the non-zero mask bounding box."""
+
+    bbox = mask.getbbox()
+    if not bbox:
+        return image, mask, mask_array
+    left, upper, right, lower = bbox
+    cropped_image = image.crop((left, upper, right, lower))
+    cropped_mask = mask.crop((left, upper, right, lower))
+    cropped_array = mask_array[upper:lower, left:right]
+    return cropped_image, cropped_mask, cropped_array
 
 
 def _infer_output_suffix(format_name: str) -> tuple[str, str]:
@@ -428,25 +469,45 @@ def _process_loaded_image(
     resized_mask = cv2.resize(mask_pre, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
     resized_mask = np.clip(resized_mask, 0.0, 1.0).astype(np.float32)
     mask_image = Image.fromarray((resized_mask * 255.0).round().astype(np.uint8), mode="L")
-    refined = refine_mask(
-        mask_image,
-        source_rgba,
-        alpha_matting=options.alpha_matting,
-        foreground_threshold=options.foreground_threshold,
-        background_threshold=options.background_threshold,
-        erode_size=options.erode_size,
-        smoothing=options.smoothing,
-        mask_blur=options.mask_blur,
-        edge_refinement=options.edge_refinement,
-    )
+    if options.post_process_mask:
+        refined = refine_mask(
+            mask_image,
+            source_rgba,
+            alpha_matting=options.alpha_matting,
+            foreground_threshold=options.foreground_threshold,
+            background_threshold=options.background_threshold,
+            erode_size=options.erode_size,
+            smoothing=options.smoothing,
+            mask_blur=options.mask_blur,
+            edge_refinement=options.edge_refinement,
+        )
+    else:
+        refined = mask_image
     refined_array = np.asarray(refined, dtype=np.float32) / 255.0
     refined_array = np.clip(refined_array, 0.0, 1.0).astype(np.float32)
+    if options.mask_threshold > 0.0:
+        threshold = max(0.0, min(float(options.mask_threshold), 1.0))
+        refined_array = np.where(refined_array >= threshold, 1.0, 0.0).astype(np.float32)
     LOGGER.info("POST2 min=%.6f max=%.6f", float(refined_array.min()), float(refined_array.max()))
     if np.any((refined_array < 0.0) | (refined_array > 1.0)):
         raise PipelineError("Mask values must be within [0, 1] before composing alpha")
     mask_to_apply = Image.fromarray((refined_array * 255.0).round().astype(np.uint8), mode="L")
-    result_image = apply_mask_to_image(source_rgba, mask_to_apply, feather_radius=options.feather_radius)
-    result_image = _apply_background(result_image, options.background_color)
+    if options.only_mask or options.cut_out_mode == "mask":
+        result_image = Image.merge("RGBA", (mask_to_apply, mask_to_apply, mask_to_apply, mask_to_apply))
+    elif options.background_mode == "none":
+        result_image = source_rgba.copy()
+        if options.cut_out_mode == "bbox":
+            result_image, mask_to_apply, refined_array = _crop_to_mask_bounds(
+                result_image, mask_to_apply, refined_array
+            )
+    else:
+        result_image = apply_mask_to_image(source_rgba, mask_to_apply, feather_radius=options.feather_radius)
+        if options.cut_out_mode == "bbox":
+            result_image, mask_to_apply, refined_array = _crop_to_mask_bounds(
+                result_image, mask_to_apply, refined_array
+            )
+        fill_color = options.background_color if options.background_mode == "fill" else None
+        result_image = _apply_background(result_image, fill_color)
     alpha_channel = np.asarray(result_image.getchannel("A"), dtype=np.uint8)
     LOGGER.info("OUT alpha_unique=%s", _format_unique_values(alpha_channel))
     debug = _prepare_debug(tensor, logits, mask_pre_stats, refined_array)

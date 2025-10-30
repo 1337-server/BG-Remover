@@ -6,83 +6,228 @@
     </div>
     <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetSettings()">Reset defaults</button>
   </header>
-  <div class="mt-4 grid gap-4 md:grid-cols-2">
-    <label class="field">
-      <span class="field-label">Model</span>
-      <select name="model_key" class="input" x-model="settings.model_key" @change="persistSettings()">
-        <template x-for="option in modelOptions" :key="option">
-          <option :value="option" x-text="option"></option>
-        </template>
-      </select>
-      <p class="field-help">Choose the neural network best suited to your images.</p>
-    </label>
-    <label class="field">
-      <span class="field-label">Feather radius</span>
-      <div class="flex items-center gap-3">
-        <input type="range" min="0" max="50" name="feather_radius" x-model="settings.feather_radius" @input="persistSettings()" class="w-full" />
-        <span class="font-semibold w-10 text-right" x-text="settings.feather_radius"></span>
-      </div>
-      <p class="field-help">Softens the mask edges to avoid harsh cut-outs.</p>
-    </label>
-    <div class="field">
-      <span class="field-label">Device preference</span>
-      <div class="flex flex-wrap gap-3 text-sm">
-        <label class="chip"><input type="radio" name="provider" value="auto" x-model="settings.provider" @change="persistSettings()" />Auto</label>
-        <label class="chip"><input type="radio" name="provider" value="gpu" x-model="settings.provider" @change="persistSettings()" />GPU</label>
-        <label class="chip"><input type="radio" name="provider" value="cpu" x-model="settings.provider" @change="persistSettings()" />CPU</label>
-      </div>
-      <p class="field-help">Override provider selection for troubleshooting and GPU usage.</p>
-    </div>
-    <label class="field">
-      <span class="field-label">Model directory</span>
-      <input type="text" name="model_dir" class="input" placeholder="~/models" x-model="settings.model_dir" @change="persistSettings()" />
-      <p class="field-help">Where downloaded ONNX models are stored on the server.</p>
-    </label>
-    <label class="field">
-      <span class="field-label">Output subfolder</span>
-      <input type="text" name="output_directory" class="input" placeholder="optional" x-model="settings.output_directory" @change="persistSettings()" />
-      <p class="field-help">Store processed files inside this folder under the server cache.</p>
-    </label>
-    <label class="field">
-      <span class="field-label">File naming</span>
-      <label class="inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" name="preserve_names" value="true" x-model="settings.preserve_names" @change="persistSettings()" />
-        Keep original filenames
-      </label>
-      <p class="field-help">When disabled the app adds a unique suffix per export.</p>
-    </label>
-    <label class="field">
-      <span class="field-label">Alpha matting</span>
-      <label class="inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" name="alpha_matting" value="true" x-model="settings.alpha_matting" @change="persistSettings()" />
-        Enable refined matting
-      </label>
-      <p class="field-help">Improves edge quality for tricky hair or fur. (Experimental)</p>
-    </label>
-    <label class="field">
-      <span class="field-label">Mask smoothing</span>
-      <input type="number" name="mask_blur" min="0" max="25" class="input" x-model="settings.mask_blur" @change="persistSettings()" />
-      <p class="field-help">Applies an additional blur pass to the generated alpha mask.</p>
-    </label>
-    <label class="field">
-      <span class="field-label">Remember settings</span>
-      <label class="inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" name="remember_preferences" value="true" x-model="settings.remember_preferences" @change="persistSettings()" />
-        Sync settings to config file
-      </label>
-      <p class="field-help">Persists model directory and provider choice server-side.</p>
-    </label>
-    <div class="field md:col-span-2" x-show="activeModelSpecsEntries().length">
-      <span class="field-label">Model profile</span>
-      <p class="field-help">Inspect the normalisation and download details for the selected neural network.</p>
-      <dl class="mt-3 grid gap-2 sm:grid-cols-2">
-        <template x-for="[label, value] in activeModelSpecsEntries()" :key="label">
-          <div class="rounded border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-800/40 px-3 py-2 text-sm">
-            <dt class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400" x-text="label"></dt>
-            <dd class="mt-1 font-medium text-slate-900 dark:text-slate-100 break-words" x-text="value"></dd>
+  <input type="hidden" name="removal_model" :value="settings.removal_model">
+  <div class="mt-6 space-y-8">
+    <div>
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Model &amp; processing</h3>
+      <div class="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <label class="field">
+          <span class="field-label">
+            Removal model
+            <span class="info-icon" :title="getOptionHelp('removal_model')">i</span>
+          </span>
+          <select name="model_key" class="input" x-model="settings.model_key" @change="persistSettings()">
+            <template x-for="option in modelOptions" :key="option">
+              <option :value="option" x-text="option"></option>
+            </template>
+          </select>
+          <p class="field-help">Choose the neural network best suited to your images.</p>
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Model precision
+            <span class="info-icon" :title="getOptionHelp('model_precision')">i</span>
+          </span>
+          <select name="model_precision" class="input" x-model="settings.model_precision" @change="persistSettings()">
+            <option value="auto">Auto</option>
+            <option value="fp32">FP32</option>
+            <option value="fp16">FP16</option>
+          </select>
+          <p class="field-help">Hint the ONNX runtime precision where multiple weights exist.</p>
+        </label>
+        <div class="field">
+          <span class="field-label">
+            Provider
+            <span class="info-icon" :title="getOptionHelp('provider')">i</span>
+          </span>
+          <div class="flex flex-wrap gap-3 text-sm">
+            <label class="chip"><input type="radio" name="provider" value="auto" x-model="settings.provider" @change="persistSettings()" />Auto</label>
+            <label class="chip"><input type="radio" name="provider" value="gpu" x-model="settings.provider" @change="persistSettings()" />GPU</label>
+            <label class="chip"><input type="radio" name="provider" value="cpu" x-model="settings.provider" @change="persistSettings()" />CPU</label>
           </div>
-        </template>
-      </dl>
+          <p class="field-help">Override provider selection for troubleshooting and GPU usage.</p>
+        </div>
+        <label class="field md:col-span-2">
+          <span class="field-label">
+            Model directory
+            <span class="info-icon" :title="getOptionHelp('model_dir')">i</span>
+          </span>
+          <input type="text" name="model_dir" class="input" placeholder="~/models" x-model="settings.model_dir" @change="persistSettings()" />
+          <p class="field-help">Where downloaded ONNX models are stored on the server.</p>
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Feather radius
+            <span class="info-icon" :title="getOptionHelp('feather_radius')">i</span>
+          </span>
+          <div class="flex items-center gap-3">
+            <input type="range" min="0" max="50" name="feather_radius" x-model.number="settings.feather_radius" @input="persistSettings()" class="w-full" />
+            <span class="font-semibold w-10 text-right" x-text="settings.feather_radius"></span>
+          </div>
+          <p class="field-help">Softens the mask edges to avoid harsh cut-outs.</p>
+        </label>
+      </div>
+      <div class="mt-4" x-show="activeModelSpecsEntries().length">
+        <h4 class="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Model profile</h4>
+        <dl class="mt-3 grid gap-2 md:grid-cols-2">
+          <template x-for="[label, value] in activeModelSpecsEntries()" :key="label">
+            <div class="rounded border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-800/40 px-3 py-2 text-sm">
+              <dt class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400" x-text="label"></dt>
+              <dd class="mt-1 font-medium text-slate-900 dark:text-slate-100 break-words" x-text="value"></dd>
+            </div>
+          </template>
+        </dl>
+      </div>
+    </div>
+    <div class="settings-divider"></div>
+    <div>
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Alpha matting</h3>
+      <div class="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <label class="field md:col-span-2">
+          <span class="field-label">
+            Enable alpha matting
+            <span class="info-icon" :title="getOptionHelp('alpha_matting')">i</span>
+          </span>
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" name="alpha_matting" value="true" x-model="settings.alpha_matting" @change="persistSettings()" />
+            Use refined matting for detailed edges
+          </label>
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Foreground threshold
+            <span class="info-icon" :title="getOptionHelp('alpha_matting_foreground_threshold')">i</span>
+          </span>
+          <input type="number" min="0" max="255" name="alpha_matting_foreground_threshold" class="input" x-model.number="settings.alpha_matting_foreground_threshold" @change="persistSettings()" />
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Background threshold
+            <span class="info-icon" :title="getOptionHelp('alpha_matting_background_threshold')">i</span>
+          </span>
+          <input type="number" min="0" max="255" name="alpha_matting_background_threshold" class="input" x-model.number="settings.alpha_matting_background_threshold" @change="persistSettings()" />
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Erode size
+            <span class="info-icon" :title="getOptionHelp('alpha_matting_erode_size')">i</span>
+          </span>
+          <input type="number" min="0" max="30" name="alpha_matting_erode_size" class="input" x-model.number="settings.alpha_matting_erode_size" @change="persistSettings()" />
+        </label>
+      </div>
+    </div>
+    <div class="settings-divider"></div>
+    <div>
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Mask options</h3>
+      <div class="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <label class="field md:col-span-2">
+          <span class="field-label">
+            Post-process mask
+            <span class="info-icon" :title="getOptionHelp('post_process_mask')">i</span>
+          </span>
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" name="post_process_mask" value="true" x-model="settings.post_process_mask" @change="persistSettings()" />
+            Apply smoothing and refinement heuristics
+          </label>
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Mask threshold
+            <span class="info-icon" :title="getOptionHelp('mask_threshold')">i</span>
+          </span>
+          <input type="number" min="0" max="1" step="0.05" name="mask_threshold" class="input" x-model.number="settings.mask_threshold" @change="persistSettings()" />
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Mask blur (px)
+            <span class="info-icon" :title="getOptionHelp('mask_blur')">i</span>
+          </span>
+          <input type="number" min="0" max="25" step="1" name="mask_blur" class="input" x-model.number="settings.mask_blur" @change="persistSettings()" />
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Cut-out mode
+            <span class="info-icon" :title="getOptionHelp('cut_out_mode')">i</span>
+          </span>
+          <select name="cut_out_mode" class="input" x-model="settings.cut_out_mode" @change="persistSettings()">
+            <option value="object">Full object</option>
+            <option value="bbox">Crop to bounding box</option>
+            <option value="mask">Mask only</option>
+          </select>
+        </label>
+        <label class="field md:col-span-2">
+          <span class="field-label">
+            Mask only export
+            <span class="info-icon" :title="getOptionHelp('only_mask')">i</span>
+          </span>
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" name="only_mask" value="true" x-model="settings.only_mask" @change="persistSettings()" />
+            Export the alpha mask instead of a composited image
+          </label>
+        </label>
+      </div>
+    </div>
+    <div class="settings-divider"></div>
+    <div>
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Output</h3>
+      <div class="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <label class="field">
+          <span class="field-label">
+            Background mode
+            <span class="info-icon" :title="getOptionHelp('background_mode')">i</span>
+          </span>
+          <select name="background_mode" class="input" x-model="settings.background_mode" @change="persistSettings()">
+            <option value="clear">Transparent (clear)</option>
+            <option value="fill">Fill with colour</option>
+            <option value="none">Keep original background</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Fill colour
+            <span class="info-icon" :title="getOptionHelp('background_color')">i</span>
+          </span>
+          <input type="color" name="background_color" class="h-10 w-16 rounded border border-slate-300 dark:border-slate-700" x-model="settings.background_color" @input="persistSettings()" />
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Output format
+            <span class="info-icon" :title="getOptionHelp('output_format')">i</span>
+          </span>
+          <select name="output_format" class="input" x-model="settings.output_format" @change="persistSettings()">
+            <option value="PNG">PNG (transparent)</option>
+            <option value="JPEG">JPEG</option>
+            <option value="WEBP">WebP</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Output folder
+            <span class="info-icon" :title="getOptionHelp('output_dir')">i</span>
+          </span>
+          <input type="text" name="output_dir" class="input" placeholder="optional" x-model="settings.output_dir" @change="persistSettings()" />
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Preserve names
+            <span class="info-icon" :title="getOptionHelp('preserve_names')">i</span>
+          </span>
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" name="preserve_names" value="true" x-model="settings.preserve_names" @change="persistSettings()" />
+            Keep original filenames when exporting
+          </label>
+        </label>
+        <label class="field">
+          <span class="field-label">
+            Remember preferences
+            <span class="info-icon" :title="getOptionHelp('remember_preferences')">i</span>
+          </span>
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" name="remember_preferences" value="true" x-model="settings.remember_preferences" @change="persistSettings()" />
+            Persist model directory and provider choices server-side
+          </label>
+        </label>
+      </div>
     </div>
   </div>
 </section>

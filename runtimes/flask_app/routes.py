@@ -18,9 +18,11 @@ from flask import (
     Response,
     current_app,
     jsonify,
+    redirect,
     render_template,
     request,
     send_file,
+    url_for,
 )
 from PIL import Image, UnidentifiedImageError
 
@@ -43,6 +45,30 @@ webui = Blueprint(
 )
 
 __all__ = ["webui"]
+
+
+OPTION_HELP: dict[str, str] = {
+    "removal_model": "Neural network architecture used for background removal.",
+    "model_precision": "Hint the ONNX runtime precision. Auto selects the best available backend.",
+    "provider": "Preferred hardware backend. Auto selects GPU if available, otherwise CPU.",
+    "model_dir": "Directory on the server where downloaded model weights are stored.",
+    "feather_radius": "Feather the mask edges for smoother blending. Range: 0–50.",
+    "alpha_matting": "Enable refined matting for detailed edges such as hair or fur.",
+    "alpha_matting_foreground_threshold": "Minimum intensity considered foreground. Range: 0–255. Default: 240.",
+    "alpha_matting_background_threshold": "Maximum intensity considered background. Range: 0–255. Default: 10.",
+    "alpha_matting_erode_size": "Number of pixels to erode the mask. Range: 0–30. Default: 10.",
+    "post_process_mask": "Apply smoothing and refinement heuristics to the raw alpha mask.",
+    "mask_blur": "Gaussian blur radius (in pixels) applied to the mask. Set to 0 to disable.",
+    "mask_threshold": "Clamp mask values below this ratio to zero. Range: 0.0–1.0.",
+    "only_mask": "Export only the alpha mask instead of a composited image.",
+    "cut_out_mode": "Control the final crop: keep the full object, output the mask, or crop to the bounding box.",
+    "background_mode": "Choose how the background is composed: keep the original, clear it, or fill with a colour.",
+    "background_color": "Colour used when filling the background. Applies when background mode is Fill.",
+    "output_format": "Select the file format for exported results.",
+    "output_dir": "Optional subdirectory under the cache where processed files are written.",
+    "preserve_names": "Reuse original filenames instead of appending a unique suffix.",
+    "remember_preferences": "Persist model directory and provider preferences on the server.",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +142,8 @@ def _options_from_request(config: Config) -> dict[str, Any]:
     """Return sanitised processing options parsed from the active request."""
 
     form = request.form
-    model_key = form.get("model_key") or config.default_model
+    removal_model = (form.get("removal_model") or "").strip()
+    model_key = removal_model or form.get("model_key") or config.default_model
     try:
         feather_radius = int(form.get("feather_radius", 3))
     except (TypeError, ValueError):
@@ -125,34 +152,82 @@ def _options_from_request(config: Config) -> dict[str, Any]:
 
     background_color = _hex_to_rgb(form.get("background_color"))
     transparent = _parse_bool(form.get("transparent"), default=True)
+    background_mode_raw = (form.get("background_mode") or "").strip().lower()
+    if background_mode_raw not in {"none", "fill", "clear"}:
+        background_mode = "clear" if transparent else ("fill" if background_color else "clear")
+    else:
+        background_mode = background_mode_raw
+    if background_mode == "fill" and background_color is None:
+        background_color = (255, 255, 255)
+    if background_mode == "fill":
+        transparent = False
+    elif background_mode == "clear":
+        transparent = True
     output_format = (form.get("output_format") or "PNG").upper()
     provider_choice = form.get("provider")
     preserve_names = _parse_bool(form.get("preserve_names"))
-    raw_output_dir = (form.get("output_directory") or "").strip()
+    raw_output_dir = (form.get("output_dir") or form.get("output_directory") or "").strip()
     output_subdir = ensure_filename(raw_output_dir) if raw_output_dir else ""
     model_dir = form.get("model_dir")
     remember = _parse_bool(form.get("remember_preferences"), default=True)
+    model_precision_raw = (form.get("model_precision") or "auto").strip().lower()
+    model_precision = model_precision_raw if model_precision_raw in {"auto", "fp32", "fp16"} else "auto"
 
     alpha_matting = _parse_bool(form.get("alpha_matting"))
+    try:
+        alpha_fg = int(form.get("alpha_matting_foreground_threshold", 240))
+    except (TypeError, ValueError):
+        alpha_fg = 240
+    alpha_fg = max(0, min(255, alpha_fg))
+    try:
+        alpha_bg = int(form.get("alpha_matting_background_threshold", 10))
+    except (TypeError, ValueError):
+        alpha_bg = 10
+    alpha_bg = max(0, min(255, alpha_bg))
+    try:
+        alpha_erode = int(form.get("alpha_matting_erode_size", 10))
+    except (TypeError, ValueError):
+        alpha_erode = 10
+    alpha_erode = max(0, min(30, alpha_erode))
     try:
         mask_blur_value = float(form.get("mask_blur", 0))
     except (TypeError, ValueError):
         mask_blur_value = 0.0
-    mask_blur = int(max(0.0, min(25.0, mask_blur_value)))
+    mask_blur = float(max(0.0, min(25.0, mask_blur_value)))
+    post_process_mask = _parse_bool(form.get("post_process_mask"), default=True)
+    only_mask = _parse_bool(form.get("only_mask"))
+    try:
+        mask_threshold_value = float(form.get("mask_threshold", 0.0))
+    except (TypeError, ValueError):
+        mask_threshold_value = 0.0
+    mask_threshold = max(0.0, min(1.0, mask_threshold_value))
+    cut_out_mode_raw = (form.get("cut_out_mode") or "").strip().lower()
+    cut_out_mode = cut_out_mode_raw if cut_out_mode_raw in {"object", "mask", "bbox"} else "object"
 
     options = {
         "model_key": model_key,
+        "removal_model": model_key,
         "feather_radius": feather_radius,
         "background_color": background_color,
         "transparent": transparent,
         "output_format": output_format,
         "preserve_names": preserve_names,
         "output_subdir": output_subdir,
+        "output_dir": output_subdir,
         "provider_choice": provider_choice,
         "model_dir": model_dir,
         "remember": remember,
         "alpha_matting": alpha_matting,
         "mask_blur": mask_blur,
+        "alpha_matting_foreground_threshold": alpha_fg,
+        "alpha_matting_background_threshold": alpha_bg,
+        "alpha_matting_erode_size": alpha_erode,
+        "post_process_mask": post_process_mask,
+        "only_mask": only_mask,
+        "mask_threshold": mask_threshold,
+        "cut_out_mode": cut_out_mode,
+        "background_mode": background_mode,
+        "model_precision": model_precision,
     }
     return options
 
@@ -163,8 +238,20 @@ def _pipeline_kwargs(options: dict[str, Any]) -> dict[str, Any]:
     forwarded: dict[str, Any] = {
         "alpha_matting": bool(options.get("alpha_matting", False)),
         "mask_blur": float(options.get("mask_blur", 0.0)),
+        "alpha_matting_foreground_threshold": int(options.get("alpha_matting_foreground_threshold", 240)),
+        "alpha_matting_background_threshold": int(options.get("alpha_matting_background_threshold", 10)),
+        "alpha_matting_erode_size": int(options.get("alpha_matting_erode_size", 10)),
+        "post_process_mask": bool(options.get("post_process_mask", True)),
+        "only_mask": bool(options.get("only_mask", False)),
+        "mask_threshold": float(options.get("mask_threshold", 0.0)),
+        "cut_out_mode": options.get("cut_out_mode", "object"),
+        "background_mode": options.get("background_mode", "clear"),
     }
-    if not options.get("transparent", True) and options.get("background_color"):
+    background_mode = options.get("background_mode")
+    if (
+        (not options.get("transparent", True) or background_mode == "fill")
+        and options.get("background_color")
+    ):
         forwarded["background_color"] = options["background_color"]
     return forwarded
 
@@ -244,10 +331,28 @@ def _serialise_model_specs() -> dict[str, dict[str, str]]:
     return serialised
 
 
+def _template_context(active_page: str) -> dict[str, Any]:
+    """Return common template context shared across UI pages."""
+
+    config = _get_config()
+    providers = detect_providers(config.provider_hints)
+    badge_label, provider_list = _provider_badge(providers)
+    return {
+        "badge_label": badge_label,
+        "providers": provider_list,
+        "model_options": sorted(MODEL_SPECS.keys()),
+        "default_model": config.default_model,
+        "model_dir": str(config.model_dir),
+        "model_specs": _serialise_model_specs(),
+        "current_year": datetime.now(UTC).year,
+        "active_page": active_page,
+    }
+
+
 def _serialise_options(options: dict[str, Any]) -> dict[str, Any]:
     serialisable: dict[str, Any] = {}
     for key, value in options.items():
-        if key in {"model_dir", "remember"}:
+        if key in {"model_dir", "remember", "output_subdir"}:
             continue
         if key == "background_color" and value:
             serialisable[key] = f"#{value[0]:02x}{value[1]:02x}{value[2]:02x}"
@@ -329,21 +434,28 @@ def _process_single_request(
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+@webui.route("/api/help/options", methods=["GET"])
+def options_help() -> Response:
+    """Return helper text describing the available form options."""
+
+    return jsonify({"options": OPTION_HELP})
+
+
 @webui.route("/", methods=["GET"])
 def index() -> Response:
-    config = _get_config()
-    providers = detect_providers(config.provider_hints)
-    badge_label, provider_list = _provider_badge(providers)
-    context = {
-        "badge_label": badge_label,
-        "providers": provider_list,
-        "model_options": sorted(MODEL_SPECS.keys()),
-        "default_model": config.default_model,
-        "model_dir": str(config.model_dir),
-        "model_specs": _serialise_model_specs(),
-        "current_year": datetime.now(UTC).year,
-    }
+    return redirect(url_for("webui.single"))
+
+
+@webui.route("/single", methods=["GET"])
+def single() -> Response:
+    context = _template_context("single")
     return render_template("index.html", **context)
+
+
+@webui.route("/batch", methods=["GET"])
+def batch_page() -> Response:
+    context = _template_context("batch")
+    return render_template("batch.html", **context)
 
 
 @webui.route("/process", methods=["POST"])

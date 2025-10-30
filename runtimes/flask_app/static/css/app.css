@@ -55,6 +55,9 @@
   font-size: 0.9rem;
   font-weight: 600;
   color: #1f2937;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .dark .field-label {
@@ -181,13 +184,145 @@
   accent-color: #6366f1;
 }
 
-#status-log {
+.nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.nav-link:hover {
+  background: rgba(99, 102, 241, 0.12);
+  color: #4338ca;
+}
+
+.nav-link--active {
+  background: #4338ca;
+  color: #fff;
+  box-shadow: 0 10px 25px -18px rgba(67, 56, 202, 0.8);
+}
+
+.dark .nav-link--active {
+  background: rgba(99, 102, 241, 0.75);
+  color: #fff;
+}
+
+.info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.12);
+  color: #4338ca;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: help;
+}
+
+.dark .info-icon {
+  background: rgba(99, 102, 241, 0.25);
+  color: #c7d2fe;
+}
+
+.preview-stage {
+  border-radius: 1rem;
+  padding: 1rem;
+  background: rgba(248, 250, 252, 0.8);
+  border: 1px solid rgba(203, 213, 225, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dark .preview-stage {
+  background: rgba(30, 41, 59, 0.6);
+  border-color: rgba(71, 85, 105, 0.7);
+}
+
+.preview-transparent {
+  background-image: linear-gradient(45deg, rgba(148, 163, 184, 0.35) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(148, 163, 184, 0.35) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.35) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.35) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+
+.dark .preview-transparent {
+  background-image: linear-gradient(45deg, rgba(71, 85, 105, 0.45) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(71, 85, 105, 0.45) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(71, 85, 105, 0.45) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(71, 85, 105, 0.45) 75%);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.18);
+  color: #475569;
+}
+
+.status-pill--processing {
+  background: rgba(99, 102, 241, 0.18);
+  color: #4338ca;
+}
+
+.status-pill--error {
+  background: rgba(248, 113, 113, 0.18);
+  color: #b91c1c;
+}
+
+.status-pill--ready {
+  background: rgba(16, 185, 129, 0.18);
+  color: #047857;
+}
+
+.dark .status-pill {
+  background: rgba(71, 85, 105, 0.4);
+  color: #cbd5f5;
+}
+
+.dark .status-pill--processing {
+  background: rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+}
+
+.dark .status-pill--error {
+  background: rgba(239, 68, 68, 0.3);
+  color: #fecaca;
+}
+
+.dark .status-pill--ready {
+  background: rgba(34, 197, 94, 0.25);
+  color: #bbf7d0;
+}
+
+.settings-divider {
+  border-top: 1px solid rgba(226, 232, 240, 0.75);
+  margin-top: 1.75rem;
+  padding-top: 1.75rem;
+}
+
+.dark .settings-divider {
+  border-top-color: rgba(71, 85, 105, 0.6);
+}
+
+.log-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-#status-log li {
+.log-list li {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -196,37 +331,37 @@
   font-size: 0.85rem;
 }
 
-#status-log li.success {
+.log-list li.success {
   background: rgba(16, 185, 129, 0.12);
   border: 1px solid rgba(16, 185, 129, 0.35);
   color: #047857;
 }
 
-#status-log li.error {
+.log-list li.error {
   background: rgba(244, 63, 94, 0.12);
   border: 1px solid rgba(244, 63, 94, 0.35);
   color: #b91c1c;
 }
 
-#status-log li.info {
+.log-list li.info {
   background: rgba(148, 163, 184, 0.12);
   border: 1px solid rgba(148, 163, 184, 0.35);
   color: #475569;
 }
 
-.dark #status-log li.success {
+.dark .log-list li.success {
   background: rgba(16, 185, 129, 0.2);
   border-color: rgba(16, 185, 129, 0.35);
   color: #6ee7b7;
 }
 
-.dark #status-log li.error {
+.dark .log-list li.error {
   background: rgba(244, 63, 94, 0.2);
   border-color: rgba(244, 63, 94, 0.35);
   color: #fda4af;
 }
 
-.dark #status-log li.info {
+.dark .log-list li.info {
   background: rgba(30, 41, 59, 0.6);
   border-color: rgba(71, 85, 105, 0.45);
   color: #cbd5f5;

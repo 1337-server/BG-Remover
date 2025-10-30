@@ -57,22 +57,33 @@ window.bgrApp = function bgrApp(rawConfig) {
 
   const baseDefaults = {
     model_key: normalizedDefaultModel,
+    removal_model: normalizedDefaultModel,
+    model_precision: 'auto',
     feather_radius: 3,
     provider: 'auto',
     background_color: '#ffffff',
+    background_mode: 'clear',
     transparent: true,
     output_format: 'PNG',
     model_dir: normalizedModelDir,
-    output_directory: '',
+    output_dir: '',
     preserve_names: false,
     alpha_matting: false,
+    alpha_matting_foreground_threshold: 240,
+    alpha_matting_background_threshold: 10,
+    alpha_matting_erode_size: 10,
+    post_process_mask: true,
+    only_mask: false,
     mask_blur: 0,
+    mask_threshold: 0,
+    cut_out_mode: 'object',
     remember_preferences: true,
   };
 
   const createDefaults = () => ({
     ...baseDefaults,
     model_key: normalizedModels.length ? normalizedModels[0] : baseDefaults.model_key,
+    removal_model: normalizedModels.length ? normalizedModels[0] : baseDefaults.model_key,
     model_dir: normalizedModelDir,
   });
 
@@ -90,10 +101,14 @@ window.bgrApp = function bgrApp(rawConfig) {
     if (!stored) {
       return defaults;
     }
+    if (stored.output_directory && !stored.output_dir) {
+      stored.output_dir = stored.output_directory;
+    }
     return {
       ...defaults,
       ...stored,
       model_key: stored.model_key || defaults.model_key,
+      removal_model: stored.removal_model || stored.model_key || defaults.model_key,
       model_dir: stored.model_dir ?? defaults.model_dir,
       provider: stored.provider || defaults.provider,
     };
@@ -114,6 +129,7 @@ window.bgrApp = function bgrApp(rawConfig) {
     previewItems: [],
     history: [],
     activityLog: [],
+    batchLog: [],
     isProcessing: false,
     isBatchProcessing: false,
     isDragging: false,
@@ -121,14 +137,49 @@ window.bgrApp = function bgrApp(rawConfig) {
     batchFileName: '',
     batchSummary: createEmptyBatchSummary(),
     settings: buildInitialSettings(),
+    optionHelp: {},
+    status: { message: 'Ready', tone: 'ready' },
+    previewBackground: 'clear',
 
     init() {
       this.providerPillClass = this.computeProviderClass(this.providerPill);
       this.applyTheme();
       this.ensureModelDefaults();
+      this.normaliseBackgroundSettings();
+      this.previewBackground = this.settings.background_mode === 'fill' ? 'fill' : 'clear';
       this.persistSettings();
       this.loadHistory();
+      this.fetchOptionHelp();
+      this.status = { message: 'Ready', tone: 'ready' };
+      this.$watch('settings.model_key', (value) => {
+        if (value) {
+          this.settings.removal_model = value;
+          this.persistSettings();
+        }
+      });
       console.log('✅ Alpine initialized successfully with config:', this.initialConfig);
+    },
+
+    async fetchOptionHelp() {
+      try {
+        const response = await fetch('/api/help/options');
+        if (!response.ok) {
+          throw new Error('Unable to load option help');
+        }
+        const payload = await response.json();
+        if (payload && typeof payload === 'object' && payload.options) {
+          this.optionHelp = payload.options;
+        }
+      } catch (error) {
+        console.warn('Option help request failed', error);
+      }
+    },
+
+    getOptionHelp(key) {
+      if (!key) {
+        return '';
+      }
+      return this.optionHelp?.[key] || '';
     },
 
     activeModelSpecs() {
@@ -164,6 +215,26 @@ window.bgrApp = function bgrApp(rawConfig) {
       if (!this.settings.provider || !['auto', 'gpu', 'cpu'].includes(this.settings.provider)) {
         this.settings.provider = (this.provider || 'auto').toLowerCase();
       }
+      if (!this.settings.removal_model) {
+        this.settings.removal_model = this.settings.model_key;
+      }
+      if (!this.settings.background_mode) {
+        this.settings.background_mode = 'clear';
+      }
+    },
+
+    normaliseBackgroundSettings() {
+      if (!this.settings) {
+        return;
+      }
+      if (this.settings.background_mode === 'fill') {
+        this.settings.transparent = false;
+      } else if (this.settings.background_mode === 'clear') {
+        this.settings.transparent = true;
+      }
+      if (!['object', 'mask', 'bbox'].includes(this.settings.cut_out_mode)) {
+        this.settings.cut_out_mode = 'object';
+      }
     },
 
     computeProviderClass(label) {
@@ -186,8 +257,58 @@ window.bgrApp = function bgrApp(rawConfig) {
       this.themeLabel = isDark ? 'Dark' : 'Light';
     },
 
+    setStatus(message, tone = 'ready') {
+      this.status = { message, tone };
+    },
+
+    statusClass() {
+      const tone = this.status?.tone || 'ready';
+      return {
+        'status-pill': true,
+        'status-pill--processing': tone === 'processing',
+        'status-pill--error': tone === 'error',
+        'status-pill--ready': tone === 'ready',
+      };
+    },
+
+    previewBackgroundClasses() {
+      return {
+        'preview-stage': true,
+        'preview-transparent': this.previewBackground !== 'fill',
+      };
+    },
+
+    previewContainerStyle() {
+      if (this.previewBackground === 'fill') {
+        const colour = this.settings.background_color || '#ffffff';
+        return { backgroundColor: colour };
+      }
+      return {};
+    },
+
+    applyPreviewFill() {
+      this.previewBackground = 'fill';
+    },
+
+    applyPreviewClear() {
+      this.previewBackground = 'clear';
+    },
+
+    createLogEntry(level, message) {
+      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const iconMap = {
+        success: { icon: 'task_alt', iconClass: 'text-emerald-500' },
+        error: { icon: 'error', iconClass: 'text-rose-500' },
+        info: { icon: 'info', iconClass: 'text-slate-400' },
+      };
+      const meta = iconMap[level] || iconMap.info;
+      return { id, message, icon: meta.icon, iconClass: meta.iconClass, class: level };
+    },
+
     persistSettings() {
       try {
+        this.settings.removal_model = this.settings.model_key;
+        this.normaliseBackgroundSettings();
         localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(this.settings));
       } catch (error) {
         console.warn('Unable to persist settings', error);
@@ -196,7 +317,9 @@ window.bgrApp = function bgrApp(rawConfig) {
 
     resetSettings() {
       this.settings = createDefaults();
+      this.normaliseBackgroundSettings();
       this.persistSettings();
+      this.previewBackground = this.settings.background_mode === 'fill' ? 'fill' : 'clear';
     },
 
     updateSelections(event) {
@@ -232,6 +355,7 @@ window.bgrApp = function bgrApp(rawConfig) {
       this.batchFile = null;
       this.batchFileName = '';
       this.batchSummary = createEmptyBatchSummary();
+      this.batchLog = [];
       const input = document.getElementById('batch-input');
       if (input) {
         input.value = '';
@@ -254,6 +378,7 @@ window.bgrApp = function bgrApp(rawConfig) {
       });
 
       this.isProcessing = true;
+      this.setStatus('Processing…', 'processing');
       this.addActivity('info', `Starting processing for ${this.selectedFiles.length} image(s)…`);
       try {
         const response = await fetch('/process', {
@@ -272,10 +397,12 @@ window.bgrApp = function bgrApp(rawConfig) {
         this.previewItems = [...results, ...this.previewItems].slice(0, 10);
         this.showToast('success', `Processed ${results.length} image(s) successfully.`);
         this.loadHistory();
+        this.setStatus('Ready', 'ready');
       } catch (error) {
         console.error(error);
         this.addActivity('error', `Processing failed ✗ — Reason: ${error.message}`);
         this.showToast('error', error.message);
+        this.setStatus(`Error: ${error.message}`, 'error');
       } finally {
         this.isProcessing = false;
       }
@@ -296,7 +423,11 @@ window.bgrApp = function bgrApp(rawConfig) {
         }
       });
       this.isBatchProcessing = true;
-      this.addActivity('info', `Batch processing started for ${this.batchFile.name}…`);
+      this.batchLog = [];
+      this.setStatus('Processing…', 'processing');
+      const batchName = this.batchFile.name;
+      this.addActivity('info', `Batch processing started for ${batchName}…`);
+      this.addBatchLog('info', `Batch processing started for ${batchName}`);
       try {
         const response = await fetch('/batch', { method: 'POST', body: form });
         const payload = await response.json();
@@ -311,18 +442,27 @@ window.bgrApp = function bgrApp(rawConfig) {
             'success',
             `Batch completed — ${payload.summary.success} succeeded, ${payload.summary.failed} failed.`,
           );
+          const summaryMessage = `Completed: ${payload.summary.success} succeeded, ${payload.summary.failed} failed.`;
+          this.addBatchLog(
+            payload.summary.failed ? 'info' : 'success',
+            summaryMessage,
+          );
         }
         (payload.entries || []).forEach((entry) => {
           const message = entry.success
             ? `${entry.input} processed successfully ✓`
             : `${entry.input} failed ✗ — Reason: ${entry.error || 'Unknown error'}`;
           this.addActivity(entry.success ? 'success' : 'error', message);
+          this.addBatchLog(entry.success ? 'success' : 'error', message);
         });
         this.loadHistory();
+        this.setStatus('Ready', 'ready');
       } catch (error) {
         console.error(error);
         this.addActivity('error', `Batch failed ✗ — Reason: ${error.message}`);
         this.showToast('error', error.message);
+        this.addBatchLog('error', `Batch failed — ${error.message}`);
+        this.setStatus(`Error: ${error.message}`, 'error');
       } finally {
         this.isBatchProcessing = false;
       }
@@ -351,17 +491,13 @@ window.bgrApp = function bgrApp(rawConfig) {
     },
 
     addActivity(level, message) {
-      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const iconMap = {
-        success: { icon: 'task_alt', iconClass: 'text-emerald-500' },
-        error: { icon: 'error', iconClass: 'text-rose-500' },
-        info: { icon: 'info', iconClass: 'text-slate-400' },
-      };
-      const meta = iconMap[level] || iconMap.info;
-      this.activityLog = [
-        { id, message, icon: meta.icon, iconClass: meta.iconClass, class: level },
-        ...this.activityLog,
-      ].slice(0, 50);
+      const entry = this.createLogEntry(level, message);
+      this.activityLog = [entry, ...this.activityLog].slice(0, 50);
+    },
+
+    addBatchLog(level, message) {
+      const entry = this.createLogEntry(level, message);
+      this.batchLog = [entry, ...this.batchLog].slice(0, 100);
     },
 
     showToast(type, message) {

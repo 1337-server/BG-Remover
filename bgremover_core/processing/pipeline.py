@@ -357,12 +357,6 @@ def _run_session(session: BackgroundRemovalSession, tensor: np.ndarray) -> np.nd
     return prediction
 
 
-def _sigmoid(array: np.ndarray) -> np.ndarray:
-    """Return ``array`` squashed into the ``0`` – ``1`` range using sigmoid."""
-
-    return 1.0 / (1.0 + np.exp(-array))
-
-
 def _format_unique_values(alpha: np.ndarray) -> str:
     """Return a compact textual summary of unique alpha values in ``alpha``."""
 
@@ -414,13 +408,22 @@ def _process_loaded_image(
         float(tensor.min()),
         float(tensor.max()),
     )
-    logits = _run_session(session, tensor)
-    mask_pre = np.squeeze(_sigmoid(logits)).astype(np.float32)
-    LOGGER.info("POST1 min=%.6f max=%.6f", float(mask_pre.min()), float(mask_pre.max()))
-    mask_pre_stats = mask_pre.copy()
-    mask_min, mask_max = float(mask_pre.min()), float(mask_pre.max())
-    if mask_max - mask_min > 1e-6:
-        mask_pre = (mask_pre - mask_min) / (mask_max - mask_min)
+    raw_logits = _run_session(session, tensor)
+    logits = np.asarray(raw_logits, dtype=np.float32)
+    mask_raw = np.squeeze(logits).astype(np.float32)
+    mask_min, mask_max = float(mask_raw.min()), float(mask_raw.max())
+    should_normalise = mask_max - mask_min > 1e-6
+    LOGGER.info(
+        "POST1 raw_min=%.6f raw_max=%.6f normalised=%s",
+        mask_min,
+        mask_max,
+        should_normalise,
+    )
+    mask_pre_stats = mask_raw.copy()
+    if should_normalise:
+        mask_pre = (mask_raw - mask_min) / (mask_max - mask_min)
+    else:
+        mask_pre = np.zeros_like(mask_raw, dtype=np.float32)
     original_width, original_height = source_rgba.size
     resized_mask = cv2.resize(mask_pre, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
     resized_mask = np.clip(resized_mask, 0.0, 1.0).astype(np.float32)

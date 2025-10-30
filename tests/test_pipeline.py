@@ -1,6 +1,7 @@
 """Tests for the shared processing pipeline."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -75,3 +76,40 @@ def test_process_folder_reports_results(tmp_path: Path, stub_session: None) -> N
     assert report.successes == 1
     assert report.failures == 0
     assert report.entries[0].path_out is not None
+
+
+def test_prepare_session_normalises_custom_providers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Explicit provider hints should be normalised before session creation."""
+
+    config = Config(model_dir=tmp_path)
+    observed: dict[str, object] = {}
+
+    def fake_detect_providers(hints: Sequence[str] | None = None) -> list[str]:
+        observed["hints"] = tuple(hints or ())
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def fake_get_session(
+        model_key: str,
+        *,
+        providers: Sequence[str],
+        model_dir: Path,
+    ) -> str:
+        observed["providers"] = list(providers)
+        observed["model_dir"] = model_dir
+        return "session"
+
+    monkeypatch.setattr(pipeline, "detect_providers", fake_detect_providers)
+    monkeypatch.setattr(pipeline, "get_session", fake_get_session)
+
+    result = pipeline._prepare_session(
+        "test-model",
+        config=config,
+        providers=["cuda"],
+    )
+
+    assert result == "session"
+    assert observed["hints"] == ("cuda",)
+    assert observed["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    assert observed["model_dir"] == tmp_path

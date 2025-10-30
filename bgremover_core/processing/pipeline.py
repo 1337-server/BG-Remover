@@ -344,8 +344,23 @@ def _prepare_session(
     config: Config,
     providers: Sequence[str] | None = None,
 ) -> BackgroundRemovalSession:
-    providers = list(providers or detect_providers(config.provider_hints))
-    return get_session(model_key, providers=providers, model_dir=config.resolved_model_dir())
+    """Return a :class:`BackgroundRemovalSession` honouring provider hints."""
+
+    # When explicit provider hints are supplied they may use shorthand labels
+    # such as ``"cuda"``.  Normalise them through :func:`detect_providers`
+    # so ``onnxruntime`` always receives canonical provider names.  Falling
+    # back to the configuration hints preserves the existing prioritisation.
+    requested_hints: Sequence[str] | tuple[str, ...]
+    if providers:
+        requested_hints = providers
+    else:
+        requested_hints = config.provider_hints
+    normalised_providers = detect_providers(requested_hints)
+    return get_session(
+        model_key,
+        providers=normalised_providers,
+        model_dir=config.resolved_model_dir(),
+    )
 
 
 def preprocess(img_rgb: np.ndarray, spec: Any) -> np.ndarray:

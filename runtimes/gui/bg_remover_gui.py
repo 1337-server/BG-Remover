@@ -90,6 +90,27 @@ SUPPORTED_IMAGE_SUFFIXES: tuple[str, ...] = (
     ".tif",
     ".tiff",
 )
+
+
+def _resolve_style_color(colors: Any, key: str, default: str) -> str:
+    """Return ``key`` from a ttkbootstrap ``colors`` mapping with fallback."""
+
+    getter = getattr(colors, "get", None)
+    if callable(getter):
+        try:
+            value = getter(key)
+        except TypeError:
+            try:
+                value = getter(key, default)
+            except TypeError:  # pragma: no cover - defensive for exotic signatures
+                value = None
+        if value not in (None, ""):
+            return str(value)
+    if isinstance(colors, dict):
+        value = colors.get(key, default)
+        if value not in (None, ""):
+            return str(value)
+    return default
 def _format_meta(format_name: str) -> tuple[str, str]:
     """Return the Pillow format hint and file suffix for ``format_name``."""
 
@@ -311,10 +332,10 @@ class BackgroundRemoverApp(_TkRoot):
 
         style = self.style
         colors = getattr(style, "colors", {})
-        border_color = colors.get("info", "#38bdf8")
-        active_color = colors.get("primary", "#2563eb")
-        background = colors.get("bg", "#ffffff")
-        foreground = colors.get("body", "#111827")
+        border_color = _resolve_style_color(colors, "info", "#38bdf8")
+        active_color = _resolve_style_color(colors, "primary", "#2563eb")
+        background = _resolve_style_color(colors, "bg", "#ffffff")
+        foreground = _resolve_style_color(colors, "body", "#111827")
 
         style.configure(
             "DropZone.TFrame",

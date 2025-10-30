@@ -5,10 +5,12 @@ import gc
 import json
 import logging
 import os
+import queue
 import shutil
 import sys
 import threading
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -285,6 +287,8 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
     app._current_drop_path: Path | None = None
     app._drop_highlight_depth = 0
     app._batch_drop_highlight_depth = 0
+    app._ui_queue: queue.Queue[Callable[[], None]] = queue.Queue()
+    app._queue_poll_interval_ms = 100
     app._processing_context: str | None = None
     app.drop_zone_frame: tb.Frame | None = None
     app.drop_zone_label: tb.Label | None = None
@@ -356,6 +360,7 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
     app._register_root_drop_target()
     app._clear_preview_state()
     app._refresh_badge()
+    app.after(app._queue_poll_interval_ms, app._poll_ui_queue)
 
 
 class BackgroundRemoverApp(_TkRoot):
@@ -368,6 +373,16 @@ class BackgroundRemoverApp(_TkRoot):
     # ------------------------------------------------------------------
     # Drag-and-drop helpers
     # ------------------------------------------------------------------
+    def _build_menus(self) -> None:
+        """Create the application menubar including developer tools."""
+
+        menubar = tk.Menu(self)
+        developer_menu = tk.Menu(menubar, tearoff=0)
+        developer_menu.add_command(label="Debug Threads", command=self._debug_active_threads)
+        menubar.add_cascade(label="Developer", menu=developer_menu)
+        self.config(menu=menubar)
+        self._developer_menu = developer_menu
+
     def _init_styles(self) -> None:
         """Initialise custom styles for drag-and-drop affordances."""
 
@@ -990,6 +1005,13 @@ class BackgroundRemoverApp(_TkRoot):
             bool(self.winfo_exists()),
         )
 
+    def _debug_active_threads(self) -> None:
+        """Log the current thread list from the developer menu."""
+
+        LOGGER.debug("Developer menu requested active thread listing")
+        LOGGER.debug("Active threads: %s", threading.enumerate())
+        self._log_thread_snapshot("developer-menu")
+
     def _provider_hints(self) -> tuple[str, ...]:
         """Return provider hints derived from current settings."""
 
@@ -1043,6 +1065,7 @@ class BackgroundRemoverApp(_TkRoot):
     def _build_ui(self) -> None:
         """Construct the main UI layout."""
 
+        self._build_menus()
         container = tb.Frame(self, padding=20)
         container.pack(fill=BOTH, expand=True)
 
@@ -2071,6 +2094,33 @@ class BackgroundRemoverApp(_TkRoot):
     # ------------------------------------------------------------------
     # Processing helpers
     # ------------------------------------------------------------------
+    def _queue_ui(self, callback: Callable[[], None], *, description: str | None = None) -> None:
+        """Queue ``callback`` for execution on the Tkinter main thread."""
+
+        if description:
+            LOGGER.debug("Queueing UI task: %s", description)
+        self._ui_queue.put(callback)
+
+    def _poll_ui_queue(self) -> None:
+        """Flush queued UI callbacks from worker threads."""
+
+        processed = 0
+        try:
+            while True:
+                callback = self._ui_queue.get_nowait()
+                try:
+                    callback()
+                except Exception:  # pragma: no cover - UI best effort
+                    LOGGER.exception("Queued UI callback failed")
+                finally:
+                    self._ui_queue.task_done()
+                processed += 1
+        except queue.Empty:
+            if processed:
+                LOGGER.debug("Processed %s queued UI task(s)", processed)
+        finally:
+            self.after(self._queue_poll_interval_ms, self._poll_ui_queue)
+
     def _log(self, message: str, *, error: bool = False) -> None:
         """Append ``message`` to the activity log."""
 
@@ -2121,6 +2171,7 @@ class BackgroundRemoverApp(_TkRoot):
         """Worker that performs single image processing."""
 
         thread_name = threading.current_thread().name
+        LOGGER.debug("Started thread %s for %s", thread_name, input_path)
         LOGGER.debug(
             "Worker %s beginning single image processing: %s → %s",
             thread_name,
@@ -2146,18 +2197,28 @@ class BackgroundRemoverApp(_TkRoot):
                 thread_name,
                 input_path,
             )
-            self.after(
-                0,
+            self._queue_ui(
                 lambda: self._show_preview(
                     result_image,
                     output_path,
                     format_hint,
                     input_path.name,
                 ),
+                description=f"show-preview-{input_path.name}",
             )
-            self.after(0, lambda: self._set_processing_state(False, "single"))
-            self.after(0, lambda: self._on_single_run_complete(input_path))
-            LOGGER.debug("Worker %s finished single image processing for %s", thread_name, input_path)
+            self._queue_ui(
+                lambda: self._set_processing_state(False, "single"),
+                description="single-processing-state-complete",
+            )
+            self._queue_ui(
+                lambda: self._on_single_run_complete(input_path),
+                description=f"single-complete-{input_path.name}",
+            )
+            LOGGER.debug(
+                "Finished processing %s on thread %s",
+                input_path,
+                thread_name,
+            )
         except Exception as error:
             LOGGER.exception("Single image processing failed")
             LOGGER.debug(
@@ -2167,10 +2228,22 @@ class BackgroundRemoverApp(_TkRoot):
                 exc_info=True,
             )
             message = str(error)
-            self.after(0, lambda: self._log(f"{input_path.name} failed ✗ — Reason: {message}", error=True))
-            self.after(0, lambda: messagebox.showerror("Processing failed", message))
-            self.after(0, lambda: self._set_processing_state(False, "single"))
-            self.after(0, lambda: self._on_single_run_complete(input_path))
+            self._queue_ui(
+                lambda: self._log(f"{input_path.name} failed ✗ — Reason: {message}", error=True),
+                description=f"single-error-log-{input_path.name}",
+            )
+            self._queue_ui(
+                lambda: messagebox.showerror("Processing failed", message),
+                description=f"single-error-dialog-{input_path.name}",
+            )
+            self._queue_ui(
+                lambda: self._set_processing_state(False, "single"),
+                description="single-processing-state-error",
+            )
+            self._queue_ui(
+                lambda: self._on_single_run_complete(input_path),
+                description=f"single-error-complete-{input_path.name}",
+            )
         finally:
             # Ensure Python memory is reclaimed after each single-image run.
             gc.collect()
@@ -2657,6 +2730,7 @@ class BackgroundRemoverApp(_TkRoot):
         """Worker that performs batch processing."""
 
         thread_name = threading.current_thread().name
+        LOGGER.debug("Started thread %s for batch %s", thread_name, input_dir)
         LOGGER.debug(
             "Worker %s beginning batch processing for %s (output=%s)",
             thread_name,
@@ -2678,7 +2752,10 @@ class BackgroundRemoverApp(_TkRoot):
             total_items = sum(1 for _ in iter_image_files(input_dir, recursive=recursive))
             self._batch_total_count = total_items
             self._batch_processed_count = 0
-            self.after(0, lambda: self._show_batch_progress(total_items))
+            self._queue_ui(
+                lambda: self._show_batch_progress(total_items),
+                description=f"batch-progress-start-{input_dir.name}",
+            )
             LOGGER.debug(
                 "Worker %s discovered %s items to process in %s",
                 thread_name,
@@ -2704,11 +2781,25 @@ class BackgroundRemoverApp(_TkRoot):
                 report.failures,
             )
             summary = f"Batch complete: {report.successes}/{report.total} succeeded"
-            self.after(0, lambda: self._log(summary))
+            self._queue_ui(
+                lambda: self._log(summary),
+                description=f"batch-summary-{input_dir.name}",
+            )
             if report.failures:
-                self.after(0, lambda: messagebox.showerror("Batch finished with errors", summary))
-            self.after(0, lambda: self._set_processing_state(False, "batch"))
+                self._queue_ui(
+                    lambda: messagebox.showerror("Batch finished with errors", summary),
+                    description=f"batch-error-dialog-{input_dir.name}",
+                )
+            self._queue_ui(
+                lambda: self._set_processing_state(False, "batch"),
+                description="batch-processing-state-complete",
+            )
             LOGGER.debug("Worker %s scheduled completion updates for %s", thread_name, input_dir)
+            LOGGER.debug(
+                "Finished processing batch %s on thread %s",
+                input_dir,
+                thread_name,
+            )
         except Exception as error:
             LOGGER.exception("Batch processing failed")
             LOGGER.debug(
@@ -2718,9 +2809,18 @@ class BackgroundRemoverApp(_TkRoot):
                 exc_info=True,
             )
             message = str(error)
-            self.after(0, lambda: self._log(f"Batch failed ✗ — Reason: {message}", error=True))
-            self.after(0, lambda: messagebox.showerror("Processing failed", message))
-            self.after(0, lambda: self._set_processing_state(False, "batch"))
+            self._queue_ui(
+                lambda: self._log(f"Batch failed ✗ — Reason: {message}", error=True),
+                description=f"batch-error-log-{input_dir.name}",
+            )
+            self._queue_ui(
+                lambda: messagebox.showerror("Processing failed", message),
+                description=f"batch-error-dialog-{input_dir.name}",
+            )
+            self._queue_ui(
+                lambda: self._set_processing_state(False, "batch"),
+                description="batch-processing-state-error",
+            )
         finally:
             LOGGER.debug("Worker %s completed batch thread cleanup for %s", thread_name, input_dir)
 
@@ -2733,7 +2833,10 @@ class BackgroundRemoverApp(_TkRoot):
             entry.path_in,
             entry.success,
         )
-        self.after(0, lambda: self._record_batch_entry(entry))
+        self._queue_ui(
+            lambda: self._record_batch_entry(entry),
+            description=f"batch-entry-{entry.path_in.name}",
+        )
 
     def _record_batch_entry(self, entry: ReportEntry) -> None:
         """Display a :class:`ReportEntry` inside the progress table."""

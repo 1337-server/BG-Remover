@@ -1263,6 +1263,8 @@ class BackgroundRemoverApp(_TkRoot):
         self.batch_tree.column("status", width=70, anchor=W)
         self.batch_tree.column("details", anchor=W)
         self.batch_tree.pack(fill=BOTH, expand=True)
+        self.batch_tree.bind("<Double-1>", self._on_batch_item_double_click)
+        self._batch_tree_output_paths: dict[str, Path] = {}
         self._add_tooltip(
             self.batch_tree,
             "Shows progress and results for each processed file.",
@@ -2403,6 +2405,7 @@ class BackgroundRemoverApp(_TkRoot):
 
         for item in self.batch_tree.get_children():
             self.batch_tree.delete(item)
+        self._batch_tree_output_paths.clear()
 
     def _run_batch(self, input_dir: Path, output_dir: Path | None) -> None:
         """Worker that performs batch processing."""
@@ -2451,12 +2454,59 @@ class BackgroundRemoverApp(_TkRoot):
 
         status = "✓" if entry.success else "✗"
         details = entry.error or "Completed"
-        self.batch_tree.insert("", END, values=(entry.path_in.name, status, details))
+        item_id = self.batch_tree.insert("", END, values=(entry.path_in.name, status, details))
+        if entry.path_out is not None:
+            self._batch_tree_output_paths[item_id] = entry.path_out
         if entry.success:
             log_message = f"{entry.path_in.name} processed successfully ✓"
         else:
             log_message = f"{entry.path_in.name} failed ✗ — Reason: {details}"
         self._log(log_message, error=not entry.success)
+
+    def _on_batch_item_double_click(self, event: Any) -> None:
+        """Load and display the selected batch file in the preview window."""
+
+        selection = self.batch_tree.selection()
+        if not selection:
+            return
+        item_id = selection[0]
+        values = self.batch_tree.item(item_id, "values")
+        if not values or not values[0]:
+            return
+        file_path = self._batch_tree_output_paths.get(item_id)
+        if file_path is None:
+            message = (
+                "Cannot preview selected batch result: no output file is available for "
+                f"{values[0]}."
+            )
+            messagebox.showinfo("Preview unavailable", message)
+            self._log(message, error=True)
+            return
+
+        filename = file_path.name
+        absolute_path = file_path.resolve(strict=False)
+        if not file_path.exists():
+            message = (
+                "Cannot preview selected batch result: file not found at "
+                f"{absolute_path}."
+            )
+            messagebox.showerror("File not found", message)
+            self._log(message, error=True)
+            return
+
+        try:
+            with Image.open(file_path) as img:
+                img = img.convert("RGBA")
+            format_hint, _ = _format_meta(self.settings.get("output_format", "PNG"))
+            self._show_preview(img, file_path, format_hint, filename)
+            self._log(f"Loaded preview for {filename} from batch output ✓")
+        except Exception as error:  # pragma: no cover - defensive log for preview failures
+            message = f"Unable to load preview from {absolute_path}: {error}"
+            messagebox.showerror("Preview failed", message)
+            self._log(
+                f"Failed to load preview for {filename} ✗ — Reason: {message}",
+                error=True,
+            )
 
     def _set_processing_state(self, active: bool, context: str) -> None:
         """Toggle interactive widgets and visual indicators for processing state."""

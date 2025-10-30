@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import onnxruntime as ort
@@ -32,6 +33,15 @@ from ..paths import MODELS_DIR
 from .specs import MODEL_SPECS, ModelSpec
 
 LOGGER = logging.getLogger(__name__)
+
+
+ProviderEntry = str | tuple[str, Mapping[str, Any]]
+
+
+_CUDA_LIMIT_LOGGED = False
+# Default CUDA memory pool size (MiB) selected to avoid exhausting high-end GPUs
+# while still providing ample working space for batch inference.
+_DEFAULT_CUDA_LIMIT_MIB = 6144
 
 
 class ModelUnavailableError(RuntimeError):
@@ -72,6 +82,81 @@ _SESSION_CACHE: dict[tuple[Path, str], BackgroundRemovalSession] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 _DOWNLOAD_STATUS_LOCK = threading.Lock()
 _DOWNLOAD_STATUSES: dict[tuple[Path, str], DownloadStatus] = {}
+
+
+def _resolve_cuda_mem_limit_bytes() -> tuple[int, str]:
+    """Return the GPU memory pool limit in bytes and the source used."""
+
+    env_value = os.getenv("BGR_CUDA_MEM_LIMIT_MB")
+    if env_value:
+        try:
+            parsed = int(env_value)
+        except ValueError:
+            LOGGER.warning(
+                "Invalid BGR_CUDA_MEM_LIMIT_MB=%s; falling back to default %s MiB",
+                env_value,
+                _DEFAULT_CUDA_LIMIT_MIB,
+            )
+        else:
+            if parsed > 0:
+                return parsed * 1024 * 1024, "env"
+            LOGGER.warning(
+                "Ignoring non-positive BGR_CUDA_MEM_LIMIT_MB=%s; using default %s MiB",
+                env_value,
+                _DEFAULT_CUDA_LIMIT_MIB,
+            )
+    return _DEFAULT_CUDA_LIMIT_MIB * 1024 * 1024, "default"
+
+
+def _apply_cuda_provider_defaults(entry: ProviderEntry) -> ProviderEntry:
+    """Return ``entry`` with conservative CUDA provider defaults applied."""
+
+    if isinstance(entry, tuple):
+        name, options = entry
+    else:
+        name, options = entry, {}
+    if name != "CUDAExecutionProvider":
+        return entry
+
+    merged: dict[str, Any]
+    if isinstance(options, Mapping):
+        merged = {str(key): value for key, value in options.items()}
+    else:  # pragma: no cover - defensive fallback for unexpected sequences
+        merged = dict(options)  # type: ignore[arg-type]
+
+    if "arena_extend_strategy" not in merged:
+        merged["arena_extend_strategy"] = "kSameAsRequested"
+
+    if "gpu_mem_limit" not in merged and "force_2gb_memory_pool" not in merged:
+        limit_bytes, source = _resolve_cuda_mem_limit_bytes()
+        merged["gpu_mem_limit"] = str(limit_bytes)
+        global _CUDA_LIMIT_LOGGED
+        if not _CUDA_LIMIT_LOGGED:
+            limit_mib = limit_bytes // (1024 * 1024)
+            LOGGER.info(
+                "Limiting CUDAExecutionProvider memory pool to %s MiB (source=%s)",
+                limit_mib,
+                source,
+            )
+            _CUDA_LIMIT_LOGGED = True
+
+    return (name, merged)
+
+
+def _normalise_providers(providers: Sequence[ProviderEntry]) -> list[ProviderEntry]:
+    """Return ``providers`` augmented with safe defaults for GPU execution."""
+
+    normalised: list[ProviderEntry] = []
+    for entry in providers:
+        if isinstance(entry, tuple):
+            name = entry[0]
+        else:
+            name = entry
+        if name == "CUDAExecutionProvider":
+            normalised.append(_apply_cuda_provider_defaults(entry))
+        else:
+            normalised.append(entry)
+    return normalised
 
 
 def detect_providers(provider_hints: Iterable[str] | None = None) -> list[str]:
@@ -440,7 +525,7 @@ def get_session(
         return cached
 
     spec = _resolve_spec(model_key)
-    providers = list(providers or detect_providers())
+    providers = _normalise_providers(list(providers or detect_providers()))
     try:
         model_path = _download_model(spec, resolved_dir)
     except ModelUnavailableError:
@@ -455,6 +540,26 @@ def get_session(
     return session
 
 
+def release_session(session: BackgroundRemovalSession | None) -> None:
+    """Remove ``session`` from caches and drop references to release resources."""
+
+    if session is None:
+        return
+
+    with _SESSION_CACHE_LOCK:
+        keys_to_delete = [
+            key for key, cached in _SESSION_CACHE.items() if cached is session
+        ]
+        for key in keys_to_delete:
+            _SESSION_CACHE.pop(key, None)
+
+    if hasattr(session, "inner"):
+        try:
+            session.inner = None  # type: ignore[assignment]
+        except Exception:  # pragma: no cover - defensive fallback
+            pass
+
+
 __all__ = [
     "BackgroundRemovalSession",
     "DownloadStatus",
@@ -462,4 +567,5 @@ __all__ = [
     "ModelUnavailableError",
     "detect_providers",
     "get_session",
+    "release_session",
 ]

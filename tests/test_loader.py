@@ -1,4 +1,5 @@
-"""Tests for the model loader utilities."""
+"""Tests covering the ONNX model loader and provider configuration."""
+
 from __future__ import annotations
 
 import time
@@ -10,6 +11,7 @@ import pytest
 
 from bgremover_core.models import loader
 from bgremover_core.models.loader import (
+    _DEFAULT_CUDA_LIMIT_MIB,
     DOWNLOAD_AVAILABLE,
     DOWNLOAD_PENDING,
     BackgroundRemovalSession,
@@ -68,6 +70,94 @@ def test_get_session_uses_custom_model_dir(monkeypatch: pytest.MonkeyPatch, tmp_
     assert isinstance(session, BackgroundRemovalSession)
     assert session.spec.key == spec.key
     assert session.inner.get_providers() == ["CPUExecutionProvider"]
+
+
+def test_cuda_provider_uses_configured_memory_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """CUDA providers should be configured with a conservative memory limit."""
+
+    spec = next(iter(MODEL_SPECS.values()))
+    model_path = tmp_path / f"{spec.key}.onnx"
+    model_path.write_bytes(b"dummy")
+
+    monkeypatch.setenv("BGR_CUDA_MEM_LIMIT_MB", "512")
+    monkeypatch.setattr(loader, "_SESSION_CACHE", {})
+
+    def fake_download(model_spec, model_dir):
+        assert model_dir == tmp_path
+        return model_path
+
+    captured: dict[str, object] = {}
+
+    def fake_inference_session(path, sess_options, providers):  # pragma: no cover - stub
+        del path, sess_options
+        captured["providers"] = providers
+        return DummySession()
+
+    monkeypatch.setattr(loader, "_download_model", fake_download)
+    monkeypatch.setattr(loader.ort, "SessionOptions", lambda: SimpleNamespace())
+    monkeypatch.setattr(loader.ort, "InferenceSession", fake_inference_session)
+
+    session = get_session(
+        spec.key,
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        model_dir=tmp_path,
+    )
+
+    assert isinstance(session, BackgroundRemovalSession)
+    assert "providers" in captured
+    provider_entries = captured["providers"]
+    assert isinstance(provider_entries, list)
+    assert provider_entries[0][0] == "CUDAExecutionProvider"
+    options = provider_entries[0][1]
+    assert options["gpu_mem_limit"] == str(512 * 1024 * 1024)
+    assert options["arena_extend_strategy"] == "kSameAsRequested"
+    assert provider_entries[1] == "CPUExecutionProvider"
+
+
+def test_cuda_provider_uses_default_memory_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """CUDA providers should adopt the built-in default memory ceiling."""
+
+    spec = next(iter(MODEL_SPECS.values()))
+    model_path = tmp_path / f"{spec.key}.onnx"
+    model_path.write_bytes(b"dummy")
+
+    monkeypatch.delenv("BGR_CUDA_MEM_LIMIT_MB", raising=False)
+    monkeypatch.setattr(loader, "_SESSION_CACHE", {})
+    monkeypatch.setattr(loader, "_CUDA_LIMIT_LOGGED", False)
+
+    def fake_download(model_spec, model_dir):
+        assert model_dir == tmp_path
+        return model_path
+
+    captured: dict[str, object] = {}
+
+    def fake_inference_session(path, sess_options, providers):  # pragma: no cover - stub
+        del path, sess_options
+        captured["providers"] = providers
+        return DummySession()
+
+    monkeypatch.setattr(loader, "_download_model", fake_download)
+    monkeypatch.setattr(loader.ort, "SessionOptions", lambda: SimpleNamespace())
+    monkeypatch.setattr(loader.ort, "InferenceSession", fake_inference_session)
+
+    session = get_session(
+        spec.key,
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        model_dir=tmp_path,
+    )
+
+    assert isinstance(session, BackgroundRemovalSession)
+    provider_entries = captured["providers"]
+    assert isinstance(provider_entries, list)
+    assert provider_entries[0][0] == "CUDAExecutionProvider"
+    options = provider_entries[0][1]
+    assert options["gpu_mem_limit"] == str(_DEFAULT_CUDA_LIMIT_MIB * 1024 * 1024)
+    assert options["arena_extend_strategy"] == "kSameAsRequested"
+    assert provider_entries[1] == "CPUExecutionProvider"
 
 
 def test_download_with_nested_local_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

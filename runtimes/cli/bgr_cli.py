@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import inspect
 import sys
 from collections.abc import Sequence
@@ -161,6 +162,8 @@ def _handle_single(args: argparse.Namespace, config: Config) -> int:
         )
         result_image = Image.fromarray(result_array)
         save_image_to_path(result_image, output_path)
+        # Release Python objects to encourage prompt resource reclamation.
+        gc.collect()
         print(f"{STATUS_SUCCESS} {input_path} → {output_path}")
         return 0
     except Exception as error:  # pragma: no cover - defensive logging

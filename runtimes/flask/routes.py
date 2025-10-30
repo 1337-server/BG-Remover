@@ -1,6 +1,7 @@
 """HTTP routes backing the interactive Flask UI."""
 from __future__ import annotations
 
+import gc
 import io
 import json
 import logging
@@ -542,6 +543,8 @@ def _execute_batch_job(
                 if destination.exists():
                     job.size_bytes += destination.stat().st_size
                 elapsed_ms = (time.perf_counter() - start) * 1000.0
+                # Explicitly release caches after persisting each batch result.
+                gc.collect()
                 job.emit(
                     "item_success",
                     {
@@ -795,6 +798,8 @@ def _process_image(upload, *, config: Config, store: ResultStore, options: dict[
     buffer.seek(0)
     output_path.write_bytes(buffer.getvalue())
     size_bytes = output_path.stat().st_size
+    # Clear caches to keep memory usage bounded for single-image requests.
+    gc.collect()
 
     record = ResultRecord(
         identifier=identifier,

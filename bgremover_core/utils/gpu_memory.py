@@ -49,20 +49,33 @@ def _shutdown_nvml() -> None:
 
 
 def query_gpu_memory() -> GpuMemorySnapshot | None:
-    """Return the combined GPU memory statistics or ``None`` if unavailable."""
+    """Return the per-device GPU memory statistics or ``None`` if unavailable."""
 
     if not _initialise_nvml():
         return None
     try:
         device_count = pynvml.nvmlDeviceGetCount()
-        total_bytes = 0
-        free_bytes = 0
+        if device_count <= 0:
+            LOGGER.debug("No GPU devices reported by NVML.")
+            return None
+
+        min_total_bytes: int | None = None
+        min_free_bytes: int | None = None
         for index in range(device_count):
             handle = pynvml.nvmlDeviceGetHandleByIndex(index)
             memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            total_bytes += int(memory.total)
-            free_bytes += int(memory.free)
-        return GpuMemorySnapshot(total=total_bytes, free=free_bytes)
+            device_total = int(memory.total)
+            device_free = int(memory.free)
+            if min_total_bytes is None or device_total < min_total_bytes:
+                min_total_bytes = device_total
+            if min_free_bytes is None or device_free < min_free_bytes:
+                min_free_bytes = device_free
+
+        if min_total_bytes is None or min_free_bytes is None:
+            LOGGER.debug("Failed to determine per-device GPU memory statistics.")
+            return None
+
+        return GpuMemorySnapshot(total=min_total_bytes, free=min_free_bytes)
     except Exception as error:  # pragma: no cover - defensive logging
         LOGGER.debug("Failed to query NVML memory info: %s", error)
         return None
@@ -89,7 +102,9 @@ def recommend_worker_count(
         )
         return 1
 
-    capacity = max(1, active_snapshot.total // max(per_image_bytes, 1))
+    per_image = max(per_image_bytes, 1)
+    available_bytes = min(active_snapshot.total, active_snapshot.free)
+    capacity = max(1, available_bytes // per_image)
     return max(1, min(requested, int(capacity)))
 
 

@@ -227,6 +227,10 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_last_fill_color: tuple[int, int, int] | None = None
         self._preview_last_fill_mode: str | None = None
         self.bg_fill_color: tuple[int, int, int] | str | None = None
+        self._preview_min_zoom = 10.0
+        self._preview_max_zoom = 400.0
+        self._preview_zoom_step = 1.1
+        self._preview_last_scale = 1.0
         self.preview_zoom_var = tb.DoubleVar(value=100.0)
         self._preview_user_zoom_override = False
         self._suppress_zoom_callback = False
@@ -406,6 +410,11 @@ class BackgroundRemoverApp(tb.Window):
         self.preview_canvas = Canvas(canvas_container, highlightthickness=0, background="#111827")
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
         self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+        self.preview_canvas.bind("<Enter>", self._on_preview_canvas_enter)
+        self.preview_canvas.bind("<Leave>", self._on_preview_canvas_leave)
+        self.preview_canvas.bind("<MouseWheel>", self._on_preview_mousewheel)
+        self.preview_canvas.bind("<Button-4>", self._on_preview_mousewheel)
+        self.preview_canvas.bind("<Button-5>", self._on_preview_mousewheel)
 
         self.preview_overlay_frame = tb.Frame(canvas_container, bootstyle="dark")
         self.preview_overlay_label = tb.Label(
@@ -443,8 +452,8 @@ class BackgroundRemoverApp(tb.Window):
         tb.Label(zoom_controls, text="Zoom").pack(side=LEFT)
         self.preview_zoom_slider = tb.Scale(
             zoom_controls,
-            from_=25,
-            to=400,
+            from_=self._preview_min_zoom,
+            to=self._preview_max_zoom,
             orient="horizontal",
             variable=self.preview_zoom_var,
             command=lambda _: self._on_preview_zoom(),
@@ -1356,11 +1365,12 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_display_override = None
         self._preview_last_fill_color = None
         self._preview_last_fill_mode = None
+        self._preview_last_scale = 1.0
         self.preview_canvas.delete("all")
         self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
         self.preview_zoom_var.set(100.0)
         self.preview_zoom_value.configure(text="100%")
-        self.preview_zoom_slider.configure(from_=25)
+        self.preview_zoom_slider.configure(from_=self._preview_min_zoom)
         self.preview_info.configure(text="No preview available yet.")
         self._preview_user_zoom_override = False
         if self._pending_auto_fit_job is not None:
@@ -1368,37 +1378,97 @@ class BackgroundRemoverApp(tb.Window):
             self._pending_auto_fit_job = None
         self._update_preview_controls()
 
-    def _render_preview_image(self) -> None:
-        """Render the in-memory preview image respecting the zoom slider."""
+    def _render_preview_image(
+        self,
+        *,
+        focus_canvas_pos: tuple[int, int] | None = None,
+        previous_scale: float | None = None,
+    ) -> None:
+        """Render the in-memory preview image respecting the current zoom level."""
 
         if not self._preview_image:
             self.preview_canvas.delete("all")
             self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
+            self._preview_last_scale = 1.0
             return
 
-        zoom_value = max(25.0, min(400.0, float(self.preview_zoom_var.get())))
+        zoom_value = max(
+            self._preview_min_zoom,
+            min(self._preview_max_zoom, float(self.preview_zoom_var.get())),
+        )
         self.preview_zoom_var.set(zoom_value)
         scale = zoom_value / 100.0
         source_image = self._preview_display_override or self._preview_image
         width = max(1, int(source_image.width * scale))
         height = max(1, int(source_image.height * scale))
+
+        previous_coords: tuple[float, float] | None = None
+        if self._preview_canvas_image is not None:
+            coords = self.preview_canvas.coords(self._preview_canvas_image)
+            if coords:
+                previous_coords = (float(coords[0]), float(coords[1]))
+
+        old_scale = previous_scale or self._preview_last_scale or 1.0
+        old_width = max(1, int(source_image.width * old_scale))
+        old_height = max(1, int(source_image.height * old_scale))
+        relative_x = 0.5
+        relative_y = 0.5
+        if focus_canvas_pos and previous_coords is not None:
+            focus_x, focus_y = focus_canvas_pos
+            old_left, old_top = previous_coords
+            image_x = focus_x - old_left
+            image_y = focus_y - old_top
+            if old_width > 0 and old_height > 0:
+                relative_x = min(max(image_x / old_width, 0.0), 1.0)
+                relative_y = min(max(image_y / old_height, 0.0), 1.0)
+
         resized = source_image.resize((width, height), Image.LANCZOS)
         self._preview_photo = ImageTk.PhotoImage(resized)
         self.preview_canvas.delete("all")
         canvas_width = max(1, self.preview_canvas.winfo_width())
         canvas_height = max(1, self.preview_canvas.winfo_height())
-        offset_x = max((canvas_width - width) // 2, 0)
-        offset_y = max((canvas_height - height) // 2, 0)
+
+        if focus_canvas_pos and previous_coords is not None:
+            desired_left = focus_canvas_pos[0] - (relative_x * width)
+            desired_top = focus_canvas_pos[1] - (relative_y * height)
+        else:
+            desired_left = (canvas_width - width) / 2
+            desired_top = (canvas_height - height) / 2
+
+        if width <= canvas_width:
+            min_left = 0
+            max_left = canvas_width - width
+            offset_x = min(max(desired_left, min_left), max_left)
+        else:
+            max_left = 0
+            min_left = canvas_width - width
+            offset_x = min(max(desired_left, min_left), max_left)
+
+        if height <= canvas_height:
+            min_top = 0
+            max_top = canvas_height - height
+            offset_y = min(max(desired_top, min_top), max_top)
+        else:
+            max_top = 0
+            min_top = canvas_height - height
+            offset_y = min(max(desired_top, min_top), max_top)
+
+        offset_x = int(round(offset_x))
+        offset_y = int(round(offset_y))
+
         self._preview_canvas_image = self.preview_canvas.create_image(
             offset_x,
             offset_y,
             anchor="nw",
             image=self._preview_photo,
         )
-        scroll_width = max(width, canvas_width)
-        scroll_height = max(height, canvas_height)
-        self.preview_canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
+        min_x = min(offset_x, 0)
+        min_y = min(offset_y, 0)
+        max_x = max(offset_x + width, canvas_width)
+        max_y = max(offset_y + height, canvas_height)
+        self.preview_canvas.configure(scrollregion=(min_x, min_y, max_x, max_y))
         self.preview_zoom_value.configure(text=f"{int(zoom_value)}%")
+        self._preview_last_scale = scale
 
     def _on_preview_zoom(self) -> None:
         """Handle zoom slider changes by re-rendering the preview image."""
@@ -1416,9 +1486,61 @@ class BackgroundRemoverApp(tb.Window):
             self._pending_auto_fit_job = None
         current_min = float(self.preview_zoom_slider.cget("from"))
         current_zoom = float(self.preview_zoom_var.get())
-        if current_min != 25.0 and current_zoom >= 25.0:
-            self.preview_zoom_slider.configure(from_=25)
+        if current_min != self._preview_min_zoom and current_zoom >= self._preview_min_zoom:
+            self.preview_zoom_slider.configure(from_=self._preview_min_zoom)
         self._render_preview_image()
+
+    def _on_preview_canvas_enter(self, _event: Any) -> None:
+        """Give the preview canvas focus so it can receive wheel events."""
+
+        self.preview_canvas.focus_set()
+
+    def _on_preview_canvas_leave(self, _event: Any) -> None:
+        """Restore focus to the main window when the cursor exits the preview."""
+
+        self.focus_set()
+
+    def _on_preview_mousewheel(self, event: Any) -> str:
+        """Handle mouse wheel scroll events to apply zooming."""
+
+        if not self._preview_image:
+            return "break"
+        if getattr(event, "num", None) == 4:
+            zoom_in = True
+        elif getattr(event, "num", None) == 5:
+            zoom_in = False
+        else:
+            delta = getattr(event, "delta", 0)
+            if delta == 0:
+                return "break"
+            zoom_in = delta > 0
+        self._apply_wheel_zoom(zoom_in, (event.x, event.y))
+        return "break"
+
+    def _apply_wheel_zoom(self, zoom_in: bool, focus_point: tuple[int, int]) -> None:
+        """Apply a single wheel zoom step anchored at ``focus_point``."""
+
+        if not self._preview_image:
+            return
+        current_zoom = float(self.preview_zoom_var.get())
+        factor = self._preview_zoom_step if zoom_in else 1 / self._preview_zoom_step
+        new_zoom = current_zoom * factor
+        new_zoom = max(self._preview_min_zoom, min(self._preview_max_zoom, new_zoom))
+        if abs(new_zoom - current_zoom) < 0.01:
+            return
+        old_scale = current_zoom / 100.0
+        self._preview_user_zoom_override = True
+        if self._pending_auto_fit_job is not None:
+            self.after_cancel(self._pending_auto_fit_job)
+            self._pending_auto_fit_job = None
+        self._suppress_zoom_callback = True
+        self.preview_zoom_var.set(new_zoom)
+        self.preview_zoom_value.configure(text=f"{int(new_zoom)}%")
+        self._suppress_zoom_callback = False
+        self._render_preview_image(
+            focus_canvas_pos=focus_point,
+            previous_scale=old_scale,
+        )
 
     def _on_preview_canvas_resize(self, _event: Any) -> None:
         """Update the canvas scroll region after a resize event."""
@@ -1458,11 +1580,17 @@ class BackgroundRemoverApp(tb.Window):
         width_ratio = canvas_width / source_image.width
         height_ratio = canvas_height / source_image.height
         scale = min(width_ratio, height_ratio, 1.0)
-        zoom_percent = max(25.0, min(400.0, scale * 100.0))
-        if zoom_percent < float(self.preview_zoom_slider.cget("from")):
-            self.preview_zoom_slider.configure(from_=max(1.0, zoom_percent))
-        elif float(self.preview_zoom_slider.cget("from")) != 25.0:
-            self.preview_zoom_slider.configure(from_=25)
+        zoom_percent = max(
+            self._preview_min_zoom,
+            min(self._preview_max_zoom, scale * 100.0),
+        )
+        current_min = float(self.preview_zoom_slider.cget("from"))
+        if zoom_percent < current_min:
+            self.preview_zoom_slider.configure(
+                from_=max(self._preview_min_zoom, zoom_percent)
+            )
+        elif current_min != self._preview_min_zoom:
+            self.preview_zoom_slider.configure(from_=self._preview_min_zoom)
         self._suppress_zoom_callback = True
         self.preview_zoom_var.set(zoom_percent)
         self.preview_zoom_value.configure(text=f"{int(zoom_percent)}%")

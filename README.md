@@ -30,7 +30,7 @@ The `bgremover_core` package exposes the shared pipeline (`processing.pipeline.r
 
 * Python 3.12+
 * `pip install -r requirements.txt`
-* Optional GPU acceleration requires `onnxruntime-gpu` and NVIDIA drivers.
+* Optional GPU acceleration requires `pip install onnxruntime-gpu` and NVIDIA drivers.
 
 ### CLI
 
@@ -130,7 +130,7 @@ Weights download automatically on first use. Hugging Face downloads honour `HUGG
 
 * Old modules such as `bg_removal.py`, `main.py`, and `app.py` have been replaced by the `bgremover_core` package and the runtime-specific entry points under `runtimes/`.
 * CLI invocation is now `python -m runtimes.cli.bgr_cli remove ...`.
-* Flask app factory lives at `runtimes.flask_app.app:create_app`.
+* Flask app factory lives at `python -m runtimes.flask_app.app`.
 * GUI entry point is `python -m runtimes.gui.bg_remover_gui`.
 
 ## Testing
@@ -138,7 +138,7 @@ Weights download automatically on first use. Hugging Face downloads honour `HUGG
 Run the consolidated test suite with:
 
 ```
-pytest -q
+python -m pytest -q
 ```
 
 The new tests cover provider detection, session creation, pipeline happy/error paths, CLI exit codes, Flask routes, and GUI helper logic.

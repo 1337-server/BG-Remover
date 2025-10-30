@@ -23,17 +23,31 @@ from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
 from bgremover_core.utils.gpu_memory import GpuMemorySnapshot
 
 
-def test_detect_providers_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``detect_providers`` should prefer CUDA providers when available."""
+def test_detect_providers_prefers_cuda_without_hints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``detect_providers`` should prefer CUDA when available and hints are absent."""
 
     monkeypatch.setattr(
         loader.ort,
         "get_available_providers",
         lambda: ["CPUExecutionProvider", "CUDAExecutionProvider"],
     )
-    providers = detect_providers(["cpu"])
+    providers = detect_providers()
     assert providers[0] == "CUDAExecutionProvider"
     assert "CPUExecutionProvider" in providers
+
+
+def test_detect_providers_respects_cpu_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit CPU hints should result in CPU-only provider lists."""
+
+    monkeypatch.setattr(
+        loader.ort,
+        "get_available_providers",
+        lambda: ["CPUExecutionProvider", "CUDAExecutionProvider"],
+    )
+    providers = detect_providers(["CPUExecutionProvider"])
+    assert providers == ["CPUExecutionProvider"]
 
 
 class DummySession:

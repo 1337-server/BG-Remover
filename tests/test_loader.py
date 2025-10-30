@@ -11,7 +11,6 @@ import pytest
 
 from bgremover_core.models import loader
 from bgremover_core.models.loader import (
-    _DEFAULT_CUDA_LIMIT_MIB,
     DOWNLOAD_AVAILABLE,
     DOWNLOAD_PENDING,
     BackgroundRemovalSession,
@@ -21,6 +20,7 @@ from bgremover_core.models.loader import (
     get_session,
 )
 from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
+from bgremover_core.utils.gpu_memory import GpuMemorySnapshot
 
 
 def test_detect_providers_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,14 +37,17 @@ def test_detect_providers_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class DummySession:
-    def __init__(self) -> None:
+    """Minimal stub emulating an ONNX Runtime session."""
+
+    def __init__(self, providers: list[str] | None = None) -> None:
         self.inputs = [SimpleNamespace(name="input")]
+        self._providers = list(providers or ["CPUExecutionProvider"])
 
     def get_inputs(self):  # pragma: no cover - called by loader
         return self.inputs
 
     def get_providers(self):  # pragma: no cover - called by loader
-        return ["CPUExecutionProvider"]
+        return list(self._providers)
 
     def run(self, *_args, **_kwargs):  # pragma: no cover - defensive
         return [np.ones((1, 1, 1), dtype=np.float32)]
@@ -64,7 +67,9 @@ def test_get_session_uses_custom_model_dir(monkeypatch: pytest.MonkeyPatch, tmp_
 
     monkeypatch.setattr(loader, "_download_model", fake_download)
     monkeypatch.setattr(loader.ort, "SessionOptions", lambda: SimpleNamespace())
-    monkeypatch.setattr(loader.ort, "InferenceSession", lambda *args, **kwargs: DummySession())
+    monkeypatch.setattr(
+        loader.ort, "InferenceSession", lambda *args, **kwargs: DummySession()
+    )
 
     session = get_session(spec.key, model_dir=model_path.parent)
     assert isinstance(session, BackgroundRemovalSession)
@@ -72,63 +77,22 @@ def test_get_session_uses_custom_model_dir(monkeypatch: pytest.MonkeyPatch, tmp_
     assert session.inner.get_providers() == ["CPUExecutionProvider"]
 
 
-def test_cuda_provider_uses_configured_memory_limit(
+def test_cuda_provider_uses_dynamic_memory_limit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """CUDA providers should be configured with a conservative memory limit."""
+    """CUDA providers should size the memory pool based on available VRAM."""
 
     spec = next(iter(MODEL_SPECS.values()))
     model_path = tmp_path / f"{spec.key}.onnx"
     model_path.write_bytes(b"dummy")
 
-    monkeypatch.setenv("BGR_CUDA_MEM_LIMIT_MB", "512")
     monkeypatch.setattr(loader, "_SESSION_CACHE", {})
-
-    def fake_download(model_spec, model_dir):
-        assert model_dir == tmp_path
-        return model_path
-
-    captured: dict[str, object] = {}
-
-    def fake_inference_session(path, sess_options, providers):  # pragma: no cover - stub
-        del path, sess_options
-        captured["providers"] = providers
-        return DummySession()
-
-    monkeypatch.setattr(loader, "_download_model", fake_download)
-    monkeypatch.setattr(loader.ort, "SessionOptions", lambda: SimpleNamespace())
-    monkeypatch.setattr(loader.ort, "InferenceSession", fake_inference_session)
-
-    session = get_session(
-        spec.key,
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-        model_dir=tmp_path,
+    monkeypatch.setattr(
+        loader,
+        "query_gpu_memory",
+        lambda: GpuMemorySnapshot(total=8 * 1024**3, free=6 * 1024**3),
     )
 
-    assert isinstance(session, BackgroundRemovalSession)
-    assert "providers" in captured
-    provider_entries = captured["providers"]
-    assert isinstance(provider_entries, list)
-    assert provider_entries[0][0] == "CUDAExecutionProvider"
-    options = provider_entries[0][1]
-    assert options["gpu_mem_limit"] == str(512 * 1024 * 1024)
-    assert options["arena_extend_strategy"] == "kSameAsRequested"
-    assert provider_entries[1] == "CPUExecutionProvider"
-
-
-def test_cuda_provider_uses_default_memory_limit(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """CUDA providers should adopt the built-in default memory ceiling."""
-
-    spec = next(iter(MODEL_SPECS.values()))
-    model_path = tmp_path / f"{spec.key}.onnx"
-    model_path.write_bytes(b"dummy")
-
-    monkeypatch.delenv("BGR_CUDA_MEM_LIMIT_MB", raising=False)
-    monkeypatch.setattr(loader, "_SESSION_CACHE", {})
-    monkeypatch.setattr(loader, "_CUDA_LIMIT_LOGGED", False)
-
     def fake_download(model_spec, model_dir):
         assert model_dir == tmp_path
         return model_path
@@ -138,7 +102,7 @@ def test_cuda_provider_uses_default_memory_limit(
     def fake_inference_session(path, sess_options, providers):  # pragma: no cover - stub
         del path, sess_options
         captured["providers"] = providers
-        return DummySession()
+        return DummySession([_provider_entry_name(entry) for entry in providers])
 
     monkeypatch.setattr(loader, "_download_model", fake_download)
     monkeypatch.setattr(loader.ort, "SessionOptions", lambda: SimpleNamespace())
@@ -155,9 +119,108 @@ def test_cuda_provider_uses_default_memory_limit(
     assert isinstance(provider_entries, list)
     assert provider_entries[0][0] == "CUDAExecutionProvider"
     options = provider_entries[0][1]
-    assert options["gpu_mem_limit"] == str(_DEFAULT_CUDA_LIMIT_MIB * 1024 * 1024)
     assert options["arena_extend_strategy"] == "kSameAsRequested"
+    assert options["cudnn_conv_use_max_workspace"] == "1"
+    assert options["do_copy_in_default_stream"] == "1"
+    assert options["gpu_mem_limit"] == str(int(6 * 1024**3 * 0.8))
     assert provider_entries[1] == "CPUExecutionProvider"
+
+
+def test_cuda_provider_without_memory_info(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """CUDA providers should still include safe defaults when NVML is unavailable."""
+
+    spec = next(iter(MODEL_SPECS.values()))
+    model_path = tmp_path / f"{spec.key}.onnx"
+    model_path.write_bytes(b"dummy")
+
+    monkeypatch.setattr(loader, "_SESSION_CACHE", {})
+    monkeypatch.setattr(loader, "query_gpu_memory", lambda: None)
+
+    def fake_download(model_spec, model_dir):
+        assert model_dir == tmp_path
+        return model_path
+
+    captured: dict[str, object] = {}
+
+    def fake_inference_session(path, sess_options, providers):  # pragma: no cover - stub
+        del path, sess_options
+        captured["providers"] = providers
+        return DummySession([_provider_entry_name(entry) for entry in providers])
+
+    monkeypatch.setattr(loader, "_download_model", fake_download)
+    monkeypatch.setattr(loader.ort, "SessionOptions", lambda: SimpleNamespace())
+    monkeypatch.setattr(loader.ort, "InferenceSession", fake_inference_session)
+
+    session = get_session(
+        spec.key,
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        model_dir=tmp_path,
+    )
+
+    assert isinstance(session, BackgroundRemovalSession)
+    provider_entries = captured["providers"]
+    assert isinstance(provider_entries, list)
+    assert provider_entries[0][0] == "CUDAExecutionProvider"
+    options = provider_entries[0][1]
+    assert options["arena_extend_strategy"] == "kSameAsRequested"
+    assert options["cudnn_conv_use_max_workspace"] == "1"
+    assert options["do_copy_in_default_stream"] == "1"
+    assert "gpu_mem_limit" not in options
+    assert provider_entries[1] == "CPUExecutionProvider"
+
+
+def _provider_entry_name(entry):
+    """Return the provider name extracted from a loader provider entry."""
+
+    if isinstance(entry, tuple):
+        return entry[0]
+    return entry
+
+
+def test_cuda_initialisation_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """CUDA initialisation failures should trigger CPU fallbacks."""
+
+    spec = next(iter(MODEL_SPECS.values()))
+    model_path = tmp_path / f"{spec.key}.onnx"
+    model_path.write_bytes(b"dummy")
+
+    monkeypatch.setattr(loader, "_SESSION_CACHE", {})
+    monkeypatch.setattr(
+        loader,
+        "query_gpu_memory",
+        lambda: GpuMemorySnapshot(total=8 * 1024**3, free=4 * 1024**3),
+    )
+
+    def fake_download(model_spec, model_dir):
+        assert model_dir == tmp_path
+        return model_path
+
+    calls: list[list[str]] = []
+
+    def fake_inference_session(path, sess_options, providers):  # pragma: no cover - stub
+        del path, sess_options
+        names = [_provider_entry_name(entry) for entry in providers]
+        calls.append(names)
+        if "CUDAExecutionProvider" in names:
+            raise RuntimeError("CUDA failure")
+        return DummySession(names)
+
+    monkeypatch.setattr(loader, "_download_model", fake_download)
+    monkeypatch.setattr(loader.ort, "SessionOptions", lambda: SimpleNamespace())
+    monkeypatch.setattr(loader.ort, "InferenceSession", fake_inference_session)
+
+    session = get_session(
+        spec.key,
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        model_dir=tmp_path,
+    )
+
+    assert isinstance(session, BackgroundRemovalSession)
+    assert calls[0][0] == "CUDAExecutionProvider"
+    assert calls[-1] == ["CPUExecutionProvider"]
+    assert session.primary_provider == "CPUExecutionProvider"
 
 
 def test_download_with_nested_local_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

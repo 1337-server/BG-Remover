@@ -4,6 +4,7 @@ numpy==1.26.4
 opencv-python-headless==4.9.0.80
 onnxruntime==1.20.1
 #onnxruntime-gpu==1.20.1
+pynvml==11.5.0
 ttkbootstrap==1.10.1
 pytest==8.3.4
 ruff==0.7.4

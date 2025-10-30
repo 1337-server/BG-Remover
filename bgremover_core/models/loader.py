@@ -30,18 +30,13 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for restricted enviro
     )
 
 from ..paths import MODELS_DIR
+from ..utils.gpu_memory import query_gpu_memory
 from .specs import MODEL_SPECS, ModelSpec
 
 LOGGER = logging.getLogger(__name__)
 
 
 ProviderEntry = str | tuple[str, Mapping[str, Any]]
-
-
-_CUDA_LIMIT_LOGGED = False
-# Default CUDA memory pool size (MiB) selected to avoid exhausting high-end GPUs
-# while still providing ample working space for batch inference.
-_DEFAULT_CUDA_LIMIT_MIB = 6144
 
 
 class ModelUnavailableError(RuntimeError):
@@ -84,32 +79,39 @@ _DOWNLOAD_STATUS_LOCK = threading.Lock()
 _DOWNLOAD_STATUSES: dict[tuple[Path, str], DownloadStatus] = {}
 
 
-def _resolve_cuda_mem_limit_bytes() -> tuple[int, str]:
-    """Return the GPU memory pool limit in bytes and the source used."""
+def _normalise_cuda_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return CUDA provider options augmented with safe defaults."""
 
-    env_value = os.getenv("BGR_CUDA_MEM_LIMIT_MB")
-    if env_value:
-        try:
-            parsed = int(env_value)
-        except ValueError:
-            LOGGER.warning(
-                "Invalid BGR_CUDA_MEM_LIMIT_MB=%s; falling back to default %s MiB",
-                env_value,
-                _DEFAULT_CUDA_LIMIT_MIB,
+    merged: dict[str, Any] = {}
+    if options:
+        merged.update({str(key): value for key, value in options.items()})
+
+    merged.setdefault("arena_extend_strategy", "kSameAsRequested")
+    merged.setdefault("cudnn_conv_use_max_workspace", "1")
+    merged.setdefault("do_copy_in_default_stream", "1")
+
+    snapshot = query_gpu_memory()
+    if snapshot is not None and snapshot.free > 0:
+        limit_bytes = int(snapshot.free * 0.8)
+        if limit_bytes > 0:
+            merged["gpu_mem_limit"] = str(limit_bytes)
+            LOGGER.info(
+                "Configuring CUDAExecutionProvider gpu_mem_limit to %s MiB based on NVML free memory.",
+                limit_bytes // (1024 * 1024),
             )
-        else:
-            if parsed > 0:
-                return parsed * 1024 * 1024, "env"
-            LOGGER.warning(
-                "Ignoring non-positive BGR_CUDA_MEM_LIMIT_MB=%s; using default %s MiB",
-                env_value,
-                _DEFAULT_CUDA_LIMIT_MIB,
-            )
-    return _DEFAULT_CUDA_LIMIT_MIB * 1024 * 1024, "default"
+    elif "gpu_mem_limit" in merged:
+        merged["gpu_mem_limit"] = str(merged["gpu_mem_limit"])
+    else:
+        LOGGER.info(
+            "CUDAExecutionProvider memory limit could not be determined from NVML; "
+            "proceeding without an explicit limit.",
+        )
+
+    return merged
 
 
 def _apply_cuda_provider_defaults(entry: ProviderEntry) -> ProviderEntry:
-    """Return ``entry`` with conservative CUDA provider defaults applied."""
+    """Return ``entry`` with adaptive CUDA provider defaults applied."""
 
     if isinstance(entry, tuple):
         name, options = entry
@@ -118,29 +120,11 @@ def _apply_cuda_provider_defaults(entry: ProviderEntry) -> ProviderEntry:
     if name != "CUDAExecutionProvider":
         return entry
 
-    merged: dict[str, Any]
     if isinstance(options, Mapping):
-        merged = {str(key): value for key, value in options.items()}
+        raw_options: Mapping[str, Any] = options
     else:  # pragma: no cover - defensive fallback for unexpected sequences
-        merged = dict(options)  # type: ignore[arg-type]
-
-    if "arena_extend_strategy" not in merged:
-        merged["arena_extend_strategy"] = "kSameAsRequested"
-
-    if "gpu_mem_limit" not in merged and "force_2gb_memory_pool" not in merged:
-        limit_bytes, source = _resolve_cuda_mem_limit_bytes()
-        merged["gpu_mem_limit"] = str(limit_bytes)
-        global _CUDA_LIMIT_LOGGED
-        if not _CUDA_LIMIT_LOGGED:
-            limit_mib = limit_bytes // (1024 * 1024)
-            LOGGER.info(
-                "Limiting CUDAExecutionProvider memory pool to %s MiB (source=%s)",
-                limit_mib,
-                source,
-            )
-            _CUDA_LIMIT_LOGGED = True
-
-    return (name, merged)
+        raw_options = dict(options)  # type: ignore[arg-type]
+    return (name, _normalise_cuda_options(raw_options))
 
 
 def _normalise_providers(providers: Sequence[ProviderEntry]) -> list[ProviderEntry]:
@@ -157,6 +141,14 @@ def _normalise_providers(providers: Sequence[ProviderEntry]) -> list[ProviderEnt
         else:
             normalised.append(entry)
     return normalised
+
+
+def _provider_name(entry: ProviderEntry) -> str:
+    """Return the provider name extracted from ``entry``."""
+
+    if isinstance(entry, tuple):
+        return entry[0]
+    return entry
 
 
 def detect_providers(provider_hints: Iterable[str] | None = None) -> list[str]:
@@ -462,6 +454,7 @@ class BackgroundRemovalSession:
         providers: Sequence[str],
     ) -> None:
         self.spec = spec
+        self.model_path = Path(model_path)
         session_options = ort.SessionOptions()
         threads = os.getenv("OMP_NUM_THREADS")
         if threads:
@@ -472,15 +465,38 @@ class BackgroundRemovalSession:
             else:
                 session_options.inter_op_num_threads = value
                 session_options.intra_op_num_threads = value
+        provider_entries = _normalise_providers(list(providers) or ["CPUExecutionProvider"])
         try:
             self.inner = ort.InferenceSession(
-                str(model_path),
+                str(self.model_path),
                 sess_options=session_options,
-                providers=list(providers) or ["CPUExecutionProvider"],
+                providers=provider_entries,
             )
         except Exception as error:  # pragma: no cover - depends on onnxruntime
-            message = f"Failed to load ONNX model {spec.key} from {model_path}: {error}"
-            raise ModelUnavailableError(message) from error
+            if any(_provider_name(entry) == "CUDAExecutionProvider" for entry in provider_entries):
+                LOGGER.warning(
+                    "CUDAExecutionProvider initialisation failed: %s. Falling back to CPUExecutionProvider.",
+                    error,
+                )
+                cpu_only = [
+                    entry
+                    for entry in provider_entries
+                    if _provider_name(entry) == "CPUExecutionProvider"
+                ] or ["CPUExecutionProvider"]
+                try:
+                    self.inner = ort.InferenceSession(
+                        str(self.model_path),
+                        sess_options=session_options,
+                        providers=cpu_only,
+                    )
+                except Exception as cpu_error:  # pragma: no cover - depends on onnxruntime
+                    message = (
+                        f"Failed to load ONNX model {spec.key} from {self.model_path}: {cpu_error}"
+                    )
+                    raise ModelUnavailableError(message) from cpu_error
+            else:
+                message = f"Failed to load ONNX model {spec.key} from {self.model_path}: {error}"
+                raise ModelUnavailableError(message) from error
         self.input_name = self.inner.get_inputs()[0].name
         providers_available = self.inner.get_providers()
         self.providers_available = tuple(providers_available)

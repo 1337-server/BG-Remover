@@ -143,6 +143,8 @@ window.bgrApp = function bgrApp(rawConfig) {
     batchMode: 'zip',
     batchFolderFiles: [],
     batchFolderLabel: '',
+    batchServerFolderPath: '',
+    batchServerFolderLabel: '',
     batchImageCount: 0,
     batchRecursive: false,
     batchJobId: '',
@@ -169,6 +171,56 @@ window.bgrApp = function bgrApp(rawConfig) {
         if (value) {
           this.settings.removal_model = value;
           this.persistSettings();
+        }
+      });
+      this.$watch('batchMode', (mode) => {
+        switch (mode) {
+          case 'zip':
+            this.batchFolderFiles = [];
+            this.batchFolderLabel = '';
+            this.batchServerFolderPath = '';
+            this.batchServerFolderLabel = '';
+            this.batchImageCount = 0;
+            {
+              const folderInput = document.getElementById('batch-folder-input');
+              if (folderInput) {
+                folderInput.value = '';
+              }
+            }
+            break;
+          case 'folder':
+            this.batchFile = null;
+            this.batchFileName = '';
+            this.batchServerFolderPath = '';
+            this.batchServerFolderLabel = '';
+            {
+              const zipInput = document.getElementById('batch-input');
+              if (zipInput) {
+                zipInput.value = '';
+              }
+            }
+            break;
+          case 'server':
+            this.batchFile = null;
+            this.batchFileName = '';
+            this.batchFolderFiles = [];
+            this.batchFolderLabel = '';
+            this.batchImageCount = 0;
+            {
+              const folderInput = document.getElementById('batch-folder-input');
+              if (folderInput) {
+                folderInput.value = '';
+              }
+            }
+            {
+              const zipInput = document.getElementById('batch-input');
+              if (zipInput) {
+                zipInput.value = '';
+              }
+            }
+            break;
+          default:
+            break;
         }
       });
       console.log('✅ Alpine initialized successfully with config:', this.initialConfig);
@@ -367,6 +419,8 @@ window.bgrApp = function bgrApp(rawConfig) {
       if (file) {
         this.batchFolderFiles = [];
         this.batchFolderLabel = '';
+        this.batchServerFolderPath = '';
+        this.batchServerFolderLabel = '';
         this.batchImageCount = 0;
       }
     },
@@ -377,6 +431,8 @@ window.bgrApp = function bgrApp(rawConfig) {
       this.batchFolderFiles = files;
       this.batchFile = null;
       this.batchFileName = '';
+      this.batchServerFolderPath = '';
+      this.batchServerFolderLabel = '';
       this.batchSummary = createEmptyBatchSummary();
       this.batchOutputFiles = [];
       this.batchShowFiles = false;
@@ -396,12 +452,32 @@ window.bgrApp = function bgrApp(rawConfig) {
       }
     },
 
+    updateServerFolderPath(value) {
+      const trimmed = (value || '').trim();
+      this.batchServerFolderPath = trimmed;
+      this.batchSummary = createEmptyBatchSummary();
+      this.batchOutputFiles = [];
+      this.batchShowFiles = false;
+      this.batchFolderFiles = [];
+      this.batchFolderLabel = '';
+      this.batchImageCount = 0;
+      if (!trimmed) {
+        this.batchServerFolderLabel = '';
+        return;
+      }
+      const segments = trimmed.replace(/\\/g, '/').split('/').filter(Boolean);
+      this.batchServerFolderLabel = segments.length ? segments[segments.length - 1] : trimmed;
+      this.addBatchLog('info', `Server folder selected: ${trimmed}`);
+    },
+
     resetBatch() {
       this.closeBatchStream();
       this.batchFile = null;
       this.batchFileName = '';
       this.batchFolderFiles = [];
       this.batchFolderLabel = '';
+      this.batchServerFolderPath = '';
+      this.batchServerFolderLabel = '';
       this.batchImageCount = 0;
       this.batchRecursive = false;
       this.batchJobId = '';
@@ -416,6 +492,10 @@ window.bgrApp = function bgrApp(rawConfig) {
       const folderInput = document.getElementById('batch-folder-input');
       if (folderInput) {
         folderInput.value = '';
+      }
+      const serverInput = document.getElementById('batch-server-input');
+      if (serverInput) {
+        serverInput.value = '';
       }
     },
 
@@ -473,18 +553,23 @@ window.bgrApp = function bgrApp(rawConfig) {
     },
 
     async processBatch() {
-      const usingFolder = this.batchMode === 'folder';
-      if (usingFolder && !this.batchFolderFiles.length) {
+      const usingFolderUpload = this.batchMode === 'folder';
+      const usingServerFolder = this.batchMode === 'server';
+      if (usingFolderUpload && !this.batchFolderFiles.length) {
         this.showToast('error', 'Select a folder containing images to process.');
         return;
       }
-      if (!usingFolder && !this.batchFile) {
+      if (usingServerFolder && !this.batchServerFolderPath) {
+        this.showToast('error', 'Enter a valid server folder path to process.');
+        return;
+      }
+      if (!usingFolderUpload && !usingServerFolder && !this.batchFile) {
         this.showToast('error', 'Select a ZIP archive to process.');
         return;
       }
 
       const form = new FormData();
-      if (usingFolder) {
+      if (usingFolderUpload) {
         this.batchFolderFiles.forEach((file) => {
           const relativePath = file.webkitRelativePath || file.name;
           form.append('folder_files', file, relativePath);
@@ -492,6 +577,8 @@ window.bgrApp = function bgrApp(rawConfig) {
         if (this.batchFolderLabel) {
           form.append('folder_path', this.batchFolderLabel);
         }
+      } else if (usingServerFolder) {
+        form.append('folder_path', this.batchServerFolderPath);
       } else if (this.batchFile) {
         form.append('zip_file', this.batchFile, this.batchFile.name);
       }
@@ -510,8 +597,10 @@ window.bgrApp = function bgrApp(rawConfig) {
       this.batchOutputFiles = [];
       this.batchShowFiles = false;
       this.batchSummary = createEmptyBatchSummary();
-      const descriptor = usingFolder
+      const descriptor = usingFolderUpload
         ? this.batchFolderLabel || 'selected folder'
+        : usingServerFolder
+        ? this.batchServerFolderLabel || this.batchServerFolderPath || 'server folder'
         : this.batchFileName || 'selected archive';
       this.setStatus('Processing…', 'processing');
       this.addActivity('info', `Batch processing started for ${descriptor}…`);
@@ -527,7 +616,7 @@ window.bgrApp = function bgrApp(rawConfig) {
         this.batchSummary.message = 'Processing images…';
         if (typeof payload.total === 'number') {
           this.batchSummary.total = payload.total;
-        } else if (usingFolder) {
+        } else if (usingFolderUpload) {
           this.batchSummary.total = this.batchImageCount;
         }
         this.listenToBatchJob(this.batchJobId);
@@ -675,6 +764,12 @@ window.bgrApp = function bgrApp(rawConfig) {
         }
         const label = this.batchFolderLabel || 'selected folder';
         return `${this.batchImageCount} supported image(s) in ${label}.`;
+      }
+      if (this.batchMode === 'server') {
+        if (!this.batchServerFolderPath) {
+          return 'No server folder specified yet.';
+        }
+        return `Server folder: ${this.batchServerFolderPath}`;
       }
       return this.batchFileName || 'No archive selected yet.';
     },

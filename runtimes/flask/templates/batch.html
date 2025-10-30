@@ -21,6 +21,10 @@
             <input type="radio" name="batch-mode" value="folder" x-model="batchMode" class="form-radio" />
             <span>Folder upload</span>
           </label>
+          <label class="inline-flex items-center gap-2">
+            <input type="radio" name="batch-mode" value="server" x-model="batchMode" class="form-radio" />
+            <span>Server folder</span>
+          </label>
         </div>
         <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-slate-800/40 p-5 text-center" x-show="batchMode === 'zip'">
           <p class="font-medium">Upload a ZIP archive</p>
@@ -42,9 +46,24 @@
           <input id="batch-folder-input" type="file" class="hidden" webkitdirectory directory multiple @change="updateBatchFolderSelection($event)" />
           <p class="mt-2 text-sm" x-text="batchSelectionSummary()"></p>
         </div>
+        <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-slate-800/40 p-5" x-show="batchMode === 'server'">
+          <p class="font-medium">Process an existing server folder</p>
+          <p class="text-sm text-slate-500 dark:text-slate-400">Specify an absolute path on the server that already contains your images.</p>
+          <label class="mt-4 block text-left text-sm font-medium text-slate-600 dark:text-slate-300" for="batch-server-input">Server folder path</label>
+          <input
+            id="batch-server-input"
+            type="text"
+            class="mt-2 w-full rounded-md border border-slate-300 bg-white/80 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-900/70 dark:text-slate-100"
+            placeholder="/path/to/images"
+            x-model="batchServerFolderPath"
+            @change="updateServerFolderPath($event.target.value)"
+          />
+          <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Ensure the application user has read access to this directory.</p>
+          <p class="mt-2 text-sm" x-text="batchSelectionSummary()"></p>
+        </div>
         <div class="flex items-center justify-between text-sm text-slate-500 dark:text-slate-400">
           <label class="inline-flex items-center gap-2">
-            <input type="checkbox" class="form-checkbox" x-model="batchRecursive" :disabled="batchMode !== 'folder'" />
+            <input type="checkbox" class="form-checkbox" x-model="batchRecursive" :disabled="batchMode === 'zip'" />
             <span>Include subfolders</span>
           </label>
           <span class="text-right">Current selection: <span x-text="batchSelectionSummary()"></span></span>

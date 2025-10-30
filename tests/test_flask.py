@@ -17,6 +17,73 @@ from runtimes.flask import routes
 from runtimes.flask.app import create_app
 
 
+def _mock_successful_batch_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch the batch executor to synchronously generate placeholder outputs."""
+
+    def fake_execute_batch_job(app, job, *, batch_source, output_dir, options, config, recursive, remember_preferences):
+        with app.app_context():
+            store = routes._get_store()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            job.emit('started', {"total": job.total_items, "label": batch_source.label, "recursive": recursive})
+            generated: list[Path] = []
+            for candidate in batch_source.candidates:
+                dest_parent = (
+                    output_dir / candidate.relative_path.parent
+                    if recursive and len(candidate.relative_path.parts) > 1
+                    else output_dir
+                )
+                dest_parent.mkdir(parents=True, exist_ok=True)
+                destination = dest_parent / f"{candidate.relative_path.stem}.png"
+                Image.new("RGBA", (2, 2), color=(255, 255, 255, 255)).save(destination)
+                generated.append(destination)
+                job.success_count += 1
+                job.size_bytes += destination.stat().st_size
+                job.emit(
+                    'item_success',
+                    {
+                        'input': str(candidate.relative_path),
+                        'output': str(destination.relative_to(output_dir)),
+                    },
+                )
+            record_options = routes._serialise_options({"batch": True, **options})
+            record_options["output_directory"] = str(output_dir)
+            zip_path = output_dir / f"batch_{job.identifier}.zip"
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for file_path in generated:
+                    archive.write(file_path, arcname=str(file_path.relative_to(output_dir)))
+            job.zip_path = zip_path
+            store.add_record(
+                routes.ResultRecord(
+                    identifier=job.identifier,
+                    original_name=batch_source.label,
+                    result_name=zip_path.name,
+                    path=zip_path,
+                    mime_type="application/zip",
+                    created_at=datetime.now(UTC),
+                    options=record_options,
+                    size_bytes=zip_path.stat().st_size,
+                )
+            )
+            summary = {
+                "total": job.total_items,
+                "success": job.success_count,
+                "failed": job.total_items - job.success_count,
+                "size_bytes": job.size_bytes,
+            }
+            job.emit(
+                'finished',
+                {
+                    'status': 'finished',
+                    'summary': summary,
+                    'download_url': f"/download/{job.identifier}",
+                    'output_dir': str(output_dir),
+                },
+            )
+            job.mark_finished()
+
+    monkeypatch.setattr(routes, "_execute_batch_job", fake_execute_batch_job)
+
+
 @pytest.fixture()
 def flask_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Return a configured Flask app with mocked dependencies."""
@@ -124,68 +191,7 @@ def test_process_images_failure(monkeypatch: pytest.MonkeyPatch, client) -> None
 
 
 def test_batch_processing_success(monkeypatch: pytest.MonkeyPatch, client, flask_app) -> None:
-    def fake_execute_batch_job(app, job, *, batch_source, output_dir, options, config, recursive, remember_preferences):
-        with app.app_context():
-            store = routes._get_store()
-            output_dir.mkdir(parents=True, exist_ok=True)
-            job.emit('started', {"total": job.total_items, "label": batch_source.label, "recursive": recursive})
-            generated: list[Path] = []
-            for candidate in batch_source.candidates:
-                dest_parent = (
-                    output_dir / candidate.relative_path.parent
-                    if recursive and len(candidate.relative_path.parts) > 1
-                    else output_dir
-                )
-                dest_parent.mkdir(parents=True, exist_ok=True)
-                destination = dest_parent / f"{candidate.relative_path.stem}.png"
-                Image.new("RGBA", (2, 2), color=(255, 255, 255, 255)).save(destination)
-                generated.append(destination)
-                job.success_count += 1
-                job.size_bytes += destination.stat().st_size
-                job.emit(
-                    'item_success',
-                    {
-                        'input': str(candidate.relative_path),
-                        'output': str(destination.relative_to(output_dir)),
-                    },
-                )
-            record_options = routes._serialise_options({"batch": True, **options})
-            record_options["output_directory"] = str(output_dir)
-            zip_path = output_dir / f"batch_{job.identifier}.zip"
-            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                for file_path in generated:
-                    archive.write(file_path, arcname=str(file_path.relative_to(output_dir)))
-            job.zip_path = zip_path
-            store.add_record(
-                routes.ResultRecord(
-                    identifier=job.identifier,
-                    original_name=batch_source.label,
-                    result_name=zip_path.name,
-                    path=zip_path,
-                    mime_type="application/zip",
-                    created_at=datetime.now(UTC),
-                    options=record_options,
-                    size_bytes=zip_path.stat().st_size,
-                )
-            )
-            summary = {
-                "total": job.total_items,
-                "success": job.success_count,
-                "failed": job.total_items - job.success_count,
-                "size_bytes": job.size_bytes,
-            }
-            job.emit(
-                'finished',
-                {
-                    'status': 'finished',
-                    'summary': summary,
-                    'download_url': f"/download/{job.identifier}",
-                    'output_dir': str(output_dir),
-                },
-            )
-            job.mark_finished()
-
-    monkeypatch.setattr(routes, "_execute_batch_job", fake_execute_batch_job)
+    _mock_successful_batch_executor(monkeypatch)
 
     folder_files = [
         (io.BytesIO(_image_bytes()), "animals/cat.png"),
@@ -228,6 +234,44 @@ def test_batch_processing_success(monkeypatch: pytest.MonkeyPatch, client, flask
     assert download_response.status_code == 200
     assert download_response.headers["Content-Type"] == "application/zip"
 
+
+def test_batch_processing_server_folder(monkeypatch: pytest.MonkeyPatch, client, flask_app, tmp_path: Path) -> None:
+    _mock_successful_batch_executor(monkeypatch)
+
+    server_folder = tmp_path / "server-input"
+    (server_folder / "cats").mkdir(parents=True, exist_ok=True)
+    (server_folder / "dogs" / "working").mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (2, 2), color=(255, 255, 255, 255)).save(server_folder / "cats" / "cat.png")
+    Image.new("RGBA", (2, 2), color=(0, 0, 255, 255)).save(server_folder / "dogs" / "working" / "dog.png")
+
+    data = {
+        "folder_path": str(server_folder),
+        "model_key": "isnet-general-use",
+        "recursive": "true",
+    }
+
+    response = client.post(
+        "/api/process/batch",
+        data=data,
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "accepted"
+    job_id = payload["job_id"]
+
+    manager = flask_app.extensions["batch_manager"]
+    job = manager.get(job_id)
+    assert job is not None
+    assert job._future is not None
+    job._future.result(timeout=2)
+
+    files_response = client.get(f"/api/process/batch/{job_id}/files")
+    assert files_response.status_code == 200
+    files_payload = files_response.get_json()
+    files_list = set(files_payload["files"])
+    assert "cats/cat.png" in files_list
+    assert "dogs/working/dog.png" in files_list
 
 def test_history_endpoint_updates_after_processing(client) -> None:
     image_buffer = io.BytesIO(_image_bytes())

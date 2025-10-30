@@ -80,6 +80,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "parallel_threads": 4,
     "model_dir": str(MODELS_DIR),
     "theme": "flatly",
+    "debug_logging": False,
 }
 
 
@@ -303,8 +304,11 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
 
     app.config = load_config()
     init_logging(app.config.log_level)
+    app._default_log_level = app.config.log_level
+    app._debug_logging_enabled = False
     app.settings = app._load_settings(app.config)
     app.settings.setdefault("theme", app.themename)
+    app._apply_logging_preferences(initial=True)
     app._tooltips: dict[object, ToolTip] = {}
 
     icon_path = Path(os.path.dirname(__file__)) / "bg_icon.ico"
@@ -784,11 +788,20 @@ class BackgroundRemoverApp(_TkRoot):
     def _process_next_dropped_file(self) -> None:
         """Start processing the next queued file when the UI is idle."""
 
+        LOGGER.debug(
+            "Checking drop queue — active=%s pending=%s",
+            self._drop_active,
+            len(self._drop_queue),
+        )
         if self._drop_active or not self._drop_queue:
             return
         if self._processing_context is not None:
             # Re-check shortly once the current task finishes.
             self.after(300, self._process_next_dropped_file)
+            LOGGER.debug(
+                "Processing busy with %s — rescheduling drop queue check",
+                self._processing_context,
+            )
             return
 
         next_path = self._drop_queue.pop(0)
@@ -796,6 +809,7 @@ class BackgroundRemoverApp(_TkRoot):
         self._current_drop_path = next_path
         self.single_input_var.set(str(next_path))
         self._update_drop_zone_badge()
+        LOGGER.debug("Dequeued %s for drag-and-drop processing", next_path)
         try:
             self._process_single()
         except Exception as error:  # pragma: no cover - defensive
@@ -805,6 +819,7 @@ class BackgroundRemoverApp(_TkRoot):
             self._current_drop_path = None
             self._update_drop_zone_badge()
             self.after(300, self._process_next_dropped_file)
+            LOGGER.debug("Rescheduled drop queue after failure for %s", next_path)
 
     def _parse_dropped_files(self, data: str) -> list[Path]:
         """Return file system paths parsed from a TkinterDnD payload."""
@@ -906,6 +921,7 @@ class BackgroundRemoverApp(_TkRoot):
         settings.setdefault("model_dir", str(base_config.model_dir))
         settings["input_resize"] = _resolve_resize_mode(settings.get("input_resize"))
         settings["smoothing"] = _coerce_smoothing(settings.get("smoothing", 0.0))
+        settings["debug_logging"] = bool(settings.get("debug_logging", False))
         return settings
 
     def _save_settings(self) -> None:
@@ -930,6 +946,49 @@ class BackgroundRemoverApp(_TkRoot):
         self.settings[key] = value
         if persist:
             self._save_settings()
+
+    def _apply_logging_preferences(self, *, initial: bool = False) -> None:
+        """Synchronise logging verbosity with the debug toggle state."""
+
+        debug_enabled = bool(self.settings.get("debug_logging", False))
+        target_level_name = "DEBUG" if debug_enabled else getattr(self, "_default_log_level", "INFO")
+        numeric_level = getattr(logging, target_level_name.upper(), logging.INFO)
+        root_logger = logging.getLogger()
+        root_logger.setLevel(numeric_level)
+        for handler in root_logger.handlers:
+            try:
+                handler.setLevel(numeric_level)
+            except Exception:  # pragma: no cover - defensive handler support
+                LOGGER.debug("Unable to update handler level for %s", handler, exc_info=True)
+        LOGGER.setLevel(numeric_level)
+        self._debug_logging_enabled = debug_enabled
+        LOGGER.debug(
+            "Logging preferences applied (initial=%s) — level=%s, debug_enabled=%s",
+            initial,
+            target_level_name,
+            debug_enabled,
+        )
+        if debug_enabled and hasattr(self, "after"):
+            self.after(0, lambda: LOGGER.debug("Debug logging heartbeat — mainloop responsive."))
+        self._log_thread_snapshot("logging-preferences")
+
+    def _log_thread_snapshot(self, reason: str) -> None:
+        """Log active thread information when debug logging is enabled."""
+
+        if not getattr(self, "_debug_logging_enabled", False):
+            return
+        threads = threading.enumerate()
+        details = [
+            f"{thread.name} (daemon={thread.daemon}, alive={thread.is_alive()})"
+            for thread in threads
+        ]
+        LOGGER.debug("Thread snapshot [%s]: %s", reason, details)
+        main_thread = threading.main_thread()
+        LOGGER.debug(
+            "Mainloop status — main thread alive=%s, widget exists=%s",
+            main_thread.is_alive(),
+            bool(self.winfo_exists()),
+        )
 
     def _provider_hints(self) -> tuple[str, ...]:
         """Return provider hints derived from current settings."""
@@ -1490,6 +1549,19 @@ class BackgroundRemoverApp(_TkRoot):
             "Choose where models are downloaded or loaded from.",
         )
 
+        self.debug_logging_var = tb.BooleanVar(value=bool(self.settings.get("debug_logging", False)))
+        debug_check = tb.Checkbutton(
+            general,
+            text="Enable debug logging",
+            variable=self.debug_logging_var,
+            command=self._on_debug_logging_toggle,
+        )
+        debug_check.grid(row=4, column=0, columnspan=2, sticky=W, pady=(8, 0))
+        self._add_tooltip(
+            debug_check,
+            "Toggle verbose console logging for troubleshooting performance issues.",
+        )
+
     def _build_alpha_section(self, parent: tb.Frame) -> None:
         """Create the alpha matting refinement group."""
 
@@ -1855,6 +1927,23 @@ class BackgroundRemoverApp(_TkRoot):
 
         self._update_setting("model_dir", self.model_dir_var.get())
 
+    def _on_debug_logging_toggle(self) -> None:
+        """Handle debug logging toggle interactions from the GUI."""
+
+        enabled = bool(self.debug_logging_var.get())
+        LOGGER.debug("Debug logging toggle changed: %s", enabled)
+        self._update_setting("debug_logging", enabled)
+        self._apply_logging_preferences()
+        target_level = getattr(self, "_default_log_level", "INFO")
+        if self.config.log_level != target_level:
+            try:
+                updated = self.config.with_updates(log_level=target_level)
+                persist_config(updated)
+                self.config = updated
+            except Exception:  # pragma: no cover - best effort persistence
+                LOGGER.debug("Failed to persist logging preference", exc_info=True)
+        self._log_thread_snapshot("debug-toggle")
+
     def _persist_model_dir(self) -> None:
         """Persist the active configuration including the model directory."""
 
@@ -2010,17 +2099,34 @@ class BackgroundRemoverApp(_TkRoot):
         """Validate inputs and start single image processing."""
 
         path = Path(self.single_input_var.get())
+        LOGGER.debug("UI requested single image processing for %s", path)
         if not path.exists():
             messagebox.showerror("Error", "Please choose a valid input image.")
             return
         output_path = self._determine_single_output(path)
         self._log(f"Starting processing for {path.name}…")
         self._set_processing_state(True, "single")
-        threading.Thread(target=self._run_single, args=(path, output_path), daemon=True).start()
+        worker = threading.Thread(
+            target=self._run_single,
+            args=(path, output_path),
+            daemon=True,
+            name=f"SingleProcessor-{path.stem}",
+        )
+        LOGGER.debug("Created worker thread %s (daemon=%s) for %s", worker.name, worker.daemon, path)
+        worker.start()
+        LOGGER.debug("Started worker thread %s (alive=%s)", worker.name, worker.is_alive())
+        self._log_thread_snapshot("single-start")
 
     def _run_single(self, input_path: Path, output_path: Path) -> None:
         """Worker that performs single image processing."""
 
+        thread_name = threading.current_thread().name
+        LOGGER.debug(
+            "Worker %s beginning single image processing: %s → %s",
+            thread_name,
+            input_path,
+            output_path,
+        )
         try:
             source_image = self._load_source_image(input_path)
             array = image_to_numpy(source_image)
@@ -2035,6 +2141,11 @@ class BackgroundRemoverApp(_TkRoot):
             )
             result_image = result.image
             format_hint, _ = _format_meta(self.settings.get("output_format", "PNG"))
+            LOGGER.debug(
+                "Worker %s completed model inference for %s; scheduling UI updates.",
+                thread_name,
+                input_path,
+            )
             self.after(
                 0,
                 lambda: self._show_preview(
@@ -2046,8 +2157,15 @@ class BackgroundRemoverApp(_TkRoot):
             )
             self.after(0, lambda: self._set_processing_state(False, "single"))
             self.after(0, lambda: self._on_single_run_complete(input_path))
+            LOGGER.debug("Worker %s finished single image processing for %s", thread_name, input_path)
         except Exception as error:
             LOGGER.exception("Single image processing failed")
+            LOGGER.debug(
+                "Worker %s encountered an exception while processing %s",
+                thread_name,
+                input_path,
+                exc_info=True,
+            )
             message = str(error)
             self.after(0, lambda: self._log(f"{input_path.name} failed ✗ — Reason: {message}", error=True))
             self.after(0, lambda: messagebox.showerror("Processing failed", message))
@@ -2056,6 +2174,7 @@ class BackgroundRemoverApp(_TkRoot):
         finally:
             # Ensure Python memory is reclaimed after each single-image run.
             gc.collect()
+            LOGGER.debug("Worker %s reclaimed resources after processing %s", thread_name, input_path)
 
     def _load_source_image(self, path: Path) -> Image.Image:
         """Return a freshly loaded RGBA image from ``path``."""
@@ -2454,6 +2573,7 @@ class BackgroundRemoverApp(_TkRoot):
         """Validate inputs and start batch processing."""
 
         path = Path(self.batch_input_var.get())
+        LOGGER.debug("UI requested batch processing for %s", path)
         if not path.exists() or not path.is_dir():
             messagebox.showerror("Error", "Please choose a valid input folder.")
             return
@@ -2466,7 +2586,16 @@ class BackgroundRemoverApp(_TkRoot):
         self._reset_batch_progress()
         self._log(f"Starting processing for {path.name}…")
         self._set_processing_state(True, "batch")
-        threading.Thread(target=self._run_batch, args=(path, output_dir), daemon=True).start()
+        worker = threading.Thread(
+            target=self._run_batch,
+            args=(path, output_dir),
+            daemon=True,
+            name=f"BatchProcessor-{path.name}",
+        )
+        LOGGER.debug("Created worker thread %s (daemon=%s) for batch %s", worker.name, worker.daemon, path)
+        worker.start()
+        LOGGER.debug("Started worker thread %s (alive=%s)", worker.name, worker.is_alive())
+        self._log_thread_snapshot("batch-start")
 
     def _reset_batch_progress(self) -> None:
         """Clear progress indicators for a new batch run."""
@@ -2481,6 +2610,7 @@ class BackgroundRemoverApp(_TkRoot):
     def _show_batch_progress(self, total: int) -> None:
         """Display the batch progress bar configured for ``total`` entries."""
 
+        LOGGER.debug("Showing batch progress for %s items", total)
         widgets = getattr(self, "_batch_progress_widgets", [])
         if not widgets:
             return
@@ -2498,6 +2628,7 @@ class BackgroundRemoverApp(_TkRoot):
 
         total = max(0, int(self._batch_total_count))
         processed = max(0, min(int(self._batch_processed_count), total))
+        LOGGER.debug("Updating batch progress label: %s/%s", processed, total)
         widgets = getattr(self, "_batch_progress_widgets", [])
         maximum = total if total else 1
         for widget in widgets:
@@ -2509,10 +2640,12 @@ class BackgroundRemoverApp(_TkRoot):
         self.batch_progress_text.set(
             f"{percentage}% — {processed} / {total} processed"
         )
+        self._log_thread_snapshot("batch-progress-label")
 
     def _hide_batch_progress(self) -> None:
         """Conceal the batch progress bar and reset its presentation."""
 
+        LOGGER.debug("Hiding batch progress widgets")
         widgets = getattr(self, "_batch_progress_widgets", [])
         for widget in widgets:
             if widget.container.winfo_manager():
@@ -2523,6 +2656,13 @@ class BackgroundRemoverApp(_TkRoot):
     def _run_batch(self, input_dir: Path, output_dir: Path | None) -> None:
         """Worker that performs batch processing."""
 
+        thread_name = threading.current_thread().name
+        LOGGER.debug(
+            "Worker %s beginning batch processing for %s (output=%s)",
+            thread_name,
+            input_dir,
+            output_dir,
+        )
         try:
             config = self._active_config()
             kwargs = self._processing_kwargs()
@@ -2539,6 +2679,12 @@ class BackgroundRemoverApp(_TkRoot):
             self._batch_total_count = total_items
             self._batch_processed_count = 0
             self.after(0, lambda: self._show_batch_progress(total_items))
+            LOGGER.debug(
+                "Worker %s discovered %s items to process in %s",
+                thread_name,
+                total_items,
+                input_dir,
+            )
             batch_output_dir = output_dir or OUTPUT_DIR
             batch_output_dir.mkdir(parents=True, exist_ok=True)
             report = process_folder(
@@ -2550,26 +2696,49 @@ class BackgroundRemoverApp(_TkRoot):
                 progress_callback=self._on_batch_entry,
                 **kwargs,
             )
+            LOGGER.debug(
+                "Worker %s finished batch processing for %s — successes=%s failures=%s",
+                thread_name,
+                input_dir,
+                report.successes,
+                report.failures,
+            )
             summary = f"Batch complete: {report.successes}/{report.total} succeeded"
             self.after(0, lambda: self._log(summary))
             if report.failures:
                 self.after(0, lambda: messagebox.showerror("Batch finished with errors", summary))
             self.after(0, lambda: self._set_processing_state(False, "batch"))
+            LOGGER.debug("Worker %s scheduled completion updates for %s", thread_name, input_dir)
         except Exception as error:
             LOGGER.exception("Batch processing failed")
+            LOGGER.debug(
+                "Worker %s encountered an exception during batch processing of %s",
+                thread_name,
+                input_dir,
+                exc_info=True,
+            )
             message = str(error)
             self.after(0, lambda: self._log(f"Batch failed ✗ — Reason: {message}", error=True))
             self.after(0, lambda: messagebox.showerror("Processing failed", message))
             self.after(0, lambda: self._set_processing_state(False, "batch"))
+        finally:
+            LOGGER.debug("Worker %s completed batch thread cleanup for %s", thread_name, input_dir)
 
     def _on_batch_entry(self, entry: ReportEntry) -> None:
         """Schedule UI updates for batch progress entries."""
 
+        LOGGER.debug(
+            "Worker %s reporting progress for %s (success=%s)",
+            threading.current_thread().name,
+            entry.path_in,
+            entry.success,
+        )
         self.after(0, lambda: self._record_batch_entry(entry))
 
     def _record_batch_entry(self, entry: ReportEntry) -> None:
         """Display a :class:`ReportEntry` inside the progress table."""
 
+        LOGGER.debug("Recording batch progress for %s", entry.path_in)
         status = "✓" if entry.success else "✗"
         details = entry.error or "Completed"
         item_id = self.batch_tree.insert("", END, values=(entry.path_in.name, status, details))
@@ -2582,6 +2751,7 @@ class BackgroundRemoverApp(_TkRoot):
         else:
             log_message = f"{entry.path_in.name} failed ✗ — Reason: {details}"
         self._log(log_message, error=not entry.success)
+        self._log_thread_snapshot("batch-progress-update")
 
     def _on_batch_item_double_click(self, event: Any) -> None:
         """Load and display the selected batch file in the preview window."""
@@ -2631,6 +2801,8 @@ class BackgroundRemoverApp(_TkRoot):
     def _set_processing_state(self, active: bool, context: str) -> None:
         """Toggle interactive widgets and visual indicators for processing state."""
 
+        LOGGER.debug("Updating processing state: active=%s context=%s", active, context)
+        self._log_thread_snapshot(f"state-{context}-{'active' if active else 'idle'}")
         spinners = {
             "single": getattr(self, "single_spinner", None),
             "batch": getattr(self, "batch_spinner", None),

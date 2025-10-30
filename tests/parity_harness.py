@@ -8,8 +8,9 @@ import numpy as np
 from PIL import Image
 
 from bgremover_core import Config, load_config
+from bgremover_core.background_remover import process_image
 from bgremover_core.io.image_io import image_to_numpy
-from bgremover_core.processing.pipeline import ProcessingResult, process_image
+from bgremover_core.processing.pipeline import ProcessingResult
 from runtimes.gui.bg_remover_gui import run_gui_pipeline_for_parity
 
 

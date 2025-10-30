@@ -17,10 +17,11 @@ from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.tooltip import ToolTip
 
 from bgremover_core import Config, init_logging, load_config, persist_config, process_folder
+from bgremover_core.background_remover import process_image
 from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
 from bgremover_core.models.loader import detect_providers
 from bgremover_core.models.specs import MODEL_SPECS
-from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry, process_image
+from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry
 
 LOGGER = logging.getLogger(__name__)
 

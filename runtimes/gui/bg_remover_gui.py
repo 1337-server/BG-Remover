@@ -10,7 +10,6 @@ import threading
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from tkinter import Canvas, filedialog, messagebox
 from typing import Any
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
@@ -22,13 +21,18 @@ from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.tooltip import ToolTip
 
 try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
+    import tkinter as tk  # noqa: I001
+    from tkinterdnd2 import DND_FILES, TkinterDnD  # noqa: I001
 
     _DND_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover - optional dependency
+    import tkinter as tk
+
     _DND_AVAILABLE = False
     DND_FILES = None
     TkinterDnD = None
+
+from tkinter import Canvas, filedialog, messagebox
 
 try:
     from bgremover_core import Config, init_logging, load_config, persist_config, process_folder
@@ -86,27 +90,6 @@ SUPPORTED_IMAGE_SUFFIXES: tuple[str, ...] = (
     ".tif",
     ".tiff",
 )
-
-
-if _DND_AVAILABLE:
-
-    class _BaseWindow(TkinterDnD.Tk, tb.Window):
-        """Window base class with drag-and-drop support via TkinterDnD2."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            TkinterDnD.Tk.__init__(self)
-            tb.Window.__init__(self, *args, **kwargs)
-
-
-else:
-
-    class _BaseWindow(tb.Window):
-        """Fallback window base class when TkinterDnD2 is unavailable."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(*args, **kwargs)
-
-
 def _format_meta(format_name: str) -> tuple[str, str]:
     """Return the Pillow format hint and file suffix for ``format_name``."""
 
@@ -219,87 +202,106 @@ class CollapsibleSection(tb.Frame):
         self.content_visible = not self.content_visible
 
 
-class BackgroundRemoverApp(_BaseWindow):
+if _DND_AVAILABLE:
+
+    class _TkRoot(TkinterDnD.Tk):
+        """Tk root window with TkinterDnD2 drag-and-drop support."""
+
+
+else:
+
+    class _TkRoot(tk.Tk):
+        """Standard Tk root window when TkinterDnD2 is unavailable."""
+
+
+def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
+    """Configure the background remover GUI on an initialised Tk root."""
+
+    theme = DEFAULT_SETTINGS.get("theme", "flatly")
+    try:
+        if GUI_SETTINGS_FILE.exists():
+            user_settings = json.loads(GUI_SETTINGS_FILE.read_text(encoding="utf-8"))
+            theme = user_settings.get("theme", theme)
+    except Exception:  # pragma: no cover - defensive fallback
+        pass
+
+    app.style = tb.Style(theme=theme)
+    app.themename = theme
+    app.title("Background Remover - PRO")
+    app.geometry("1920x1080")
+    app.resizable(True, True)
+
+    app.drop_zone_message_var = tb.StringVar()
+    app.batch_drop_message_var = tb.StringVar()
+    app._drop_queue: list[Path] = []
+    app._drop_seen: set[Path] = set()
+    app._drop_active = False
+    app._current_drop_path: Path | None = None
+    app._drop_highlight_depth = 0
+    app._batch_drop_highlight_depth = 0
+    app._processing_context: str | None = None
+    app.drop_zone_frame: tb.Frame | None = None
+    app.drop_zone_label: tb.Label | None = None
+    app.batch_drop_frame: tb.Frame | None = None
+    app.batch_drop_label: tb.Label | None = None
+    app._batch_staged_dir: Path | None = None
+    app._batch_staged_count = 0
+
+    app._init_styles()
+
+    app.config = load_config()
+    init_logging(app.config.log_level)
+    app.settings = app._load_settings(app.config)
+    app.settings.setdefault("theme", app.themename)
+    app._tooltips: dict[object, ToolTip] = {}
+
+    icon_path = Path(os.path.dirname(__file__)) / "bg_icon.ico"
+    logging.info("Attempting to load window icon from: %s", icon_path)
+
+    try:
+        if icon_path.exists():
+            app.iconbitmap(icon_path)
+            logging.info("Successfully applied .ico icon to GUI window.")
+        else:
+            logging.warning("Icon file not found: %s", icon_path)
+    except Exception as error:  # pragma: no cover - icon best-effort
+        logging.exception("Failed to set .ico icon: %s", error)
+        try:
+            from tkinter import PhotoImage
+
+            png_icon = icon_path.with_suffix(".png")
+            if png_icon.exists():
+                app.iconphoto(False, PhotoImage(file=str(png_icon)))
+                logging.info("Fallback: applied .png icon successfully.")
+            else:
+                logging.warning("No fallback PNG found at %s", png_icon)
+        except Exception as png_error:  # pragma: no cover - optional path
+            logging.exception("Failed to set .png fallback icon: %s", png_error)
+
+    app.providers = detect_providers(app._provider_hints())
+    app._preview_image: Image.Image | None = None
+    app._preview_photo: ImageTk.PhotoImage | None = None
+    app._preview_output_path: Path | None = None
+    app._preview_format_hint: str | None = None
+    app._preview_original_name: str | None = None
+    app._preview_saved_path: Path | None = None
+    app._preview_canvas_image: int | None = None
+    app._preview_display_override: Image.Image | None = None
+    app._preview_last_fill_color: tuple[int, int, int] | None = None
+    app.preview_zoom_var = tb.DoubleVar(value=100.0)
+
+    app._build_ui()
+    app._register_root_drop_target()
+    app._clear_preview_state()
+    app._refresh_badge()
+
+
+class BackgroundRemoverApp(_TkRoot):
     """Main application window for background removal."""
 
     def __init__(self) -> None:
-        theme = DEFAULT_SETTINGS.get("theme", "flatly")
-        try:
-            if GUI_SETTINGS_FILE.exists():
-                user_settings = json.loads(GUI_SETTINGS_FILE.read_text(encoding="utf-8"))
-                theme = user_settings.get("theme", theme)
-        except Exception:
-            pass
-
-        super().__init__(themename=theme)
-        self.themename = theme
-        self.title("Background Remover - PRO")
-        self.geometry("1920x1080")
-        self.resizable(True, True)
-
-        self.drop_zone_message_var = tb.StringVar()
-        self.batch_drop_message_var = tb.StringVar()
-        self._drop_queue: list[Path] = []
-        self._drop_seen: set[Path] = set()
-        self._drop_active = False
-        self._current_drop_path: Path | None = None
-        self._drop_highlight_depth = 0
-        self._batch_drop_highlight_depth = 0
-        self._processing_context: str | None = None
-        self.drop_zone_frame: tb.Frame | None = None
-        self.drop_zone_label: tb.Label | None = None
-        self.batch_drop_frame: tb.Frame | None = None
-        self.batch_drop_label: tb.Label | None = None
-        self._batch_staged_dir: Path | None = None
-        self._batch_staged_count: int = 0
-
-        self._init_styles()
-
-        self.config = load_config()
-        init_logging(self.config.log_level)
-        self.settings = self._load_settings(self.config)
-        self.settings.setdefault("theme", self.themename)
-        self._tooltips: dict[object, ToolTip] = {}
-        # --- Add this block here ---
-
-        icon_path = Path(os.path.dirname(__file__)) / "bg_icon.ico"
-        logging.info(f"Attempting to load window icon from: {icon_path}")
-
-        try:
-            if icon_path.exists():
-                self.iconbitmap(icon_path)
-                logging.info("Successfully applied .ico icon to GUI window.")
-            else:
-                logging.warning(f"Icon file not found: {icon_path}")
-        except Exception as e:
-            logging.exception(f"Failed to set .ico icon: {e}")
-            try:
-                from tkinter import PhotoImage
-                png_icon = icon_path.with_suffix(".png")
-                if png_icon.exists():
-                    self.iconphoto(False, PhotoImage(file=str(png_icon)))
-                    logging.info("Fallback: applied .png icon successfully.")
-                else:
-                    logging.warning(f"No fallback PNG found at {png_icon}")
-            except Exception as e2:
-                logging.exception(f"Failed to set .png fallback icon: {e2}")
-        # --- End block ---
-        self.providers = detect_providers(self._provider_hints())
-        self._preview_image: Image.Image | None = None
-        self._preview_photo: ImageTk.PhotoImage | None = None
-        self._preview_output_path: Path | None = None
-        self._preview_format_hint: str | None = None
-        self._preview_original_name: str | None = None
-        self._preview_saved_path: Path | None = None
-        self._preview_canvas_image: int | None = None
-        self._preview_display_override: Image.Image | None = None
-        self._preview_last_fill_color: tuple[int, int, int] | None = None
-        self.preview_zoom_var = tb.DoubleVar(value=100.0)
-
-        self._build_ui()
-        self._register_root_drop_target()
-        self._clear_preview_state()
-        self._refresh_badge()
+        super().__init__()
+        _initialize_background_remover_app(self)
 
     # ------------------------------------------------------------------
     # Drag-and-drop helpers
@@ -342,20 +344,7 @@ class BackgroundRemoverApp(_BaseWindow):
         )
 
     def _register_root_drop_target(self) -> None:
-        """Register the main window as a drop target when supported."""
-
-        if not _DND_AVAILABLE:
-            self._update_drop_zone_badge()
-            return
-
-        try:
-            if hasattr(self, "drop_target_register") and DND_FILES is not None:
-                self.drop_target_register(DND_FILES)
-                self.dnd_bind("<<Drop>>", self._on_drop_files)
-                self.dnd_bind("<<DragEnter>>", self._on_drop_enter)
-                self.dnd_bind("<<DragLeave>>", self._on_drop_leave)
-        except Exception as error:  # pragma: no cover - optional path
-            LOGGER.warning("Unable to register root window for drag-and-drop: %s", error)
+        """Initialise drop zone messaging for the active root window."""
 
         self._update_drop_zone_badge()
 

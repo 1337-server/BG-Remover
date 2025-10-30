@@ -18,15 +18,7 @@
     <link rel="stylesheet" href="{{ url_for('webui.static', filename='css/app.css') }}"/>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
 
-    <script>
-        const storedTheme = localStorage.getItem('bgr-theme');
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        if (storedTheme === 'dark' || (!storedTheme && prefersDark)) {
-            document.documentElement.classList.add('dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-        }
-    </script>
+    <script src="{{ url_for('webui.static', filename='js/theme.js') }}"></script>
     <script src="{{ url_for('webui.static', filename='js/app.js') }}" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.4/dist/cdn.min.js" defer></script>
     <script>
@@ -38,10 +30,10 @@
         });
     </script>
 </head>
-<body class="bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100 min-h-full">
+<body class="app-body">
 <div
         id="app-root"
-        class="min-h-screen flex flex-col"
+        class="app-shell"
         data-config='{
         "badge_label": {{ badge_label|tojson }},
         "providers": {{ providers|tojson }},
@@ -54,27 +46,24 @@
         x-init="init()"
 >
     {% set current_page = active_page|default('single') %}
-    <header class="border-b border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-900/60 backdrop-blur">
+    <header class="app-navbar backdrop-blur">
         <div class="max-w-7xl mx-auto px-6 py-4 space-y-4">
             <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div class="flex items-center gap-3">
-                    <div class="h-10 w-10 rounded-full bg-indigo-500 text-white flex items-center justify-center font-semibold">
-                        BGR
-                    </div>
+                    <div class="app-logo" aria-hidden="true">BGR</div>
                     <div>
                         <h1 class="text-lg font-semibold">Background Remover</h1>
-                        <p class="text-sm text-slate-500 dark:text-slate-400">Smart background removal for images and
-                            folders</p>
+                        <p class="text-sm app-text-muted">Smart background removal for images and folders</p>
                     </div>
                 </div>
                 <div class="flex items-center gap-4">
                     <div class="flex items-center gap-2">
-                        <span class="text-sm text-slate-500 dark:text-slate-400">Runtime</span>
+                        <span class="text-sm app-text-muted">Runtime</span>
                         <span :class="providerPillClass" x-text="providerPill"></span>
                     </div>
                     <button
                             type="button"
-                            class="inline-flex items-center gap-2 rounded-full border border-slate-300/70 dark:border-slate-700 px-3 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-800"
+                            class="theme-toggle"
                             @click="toggleTheme()"
                     >
                         <span class="material-symbols-rounded text-base" aria-hidden="true">contrast</span>
@@ -82,7 +71,7 @@
                     </button>
                 </div>
             </div>
-            <nav class="flex flex-wrap gap-3 text-sm font-medium text-slate-600 dark:text-slate-300">
+            <nav class="app-nav">
                 <a
                         href="{{ url_for('webui.single') }}"
                         class="nav-link {{ 'nav-link--active' if current_page == 'single' else '' }}"
@@ -101,13 +90,13 @@
             {% block content %}{% endblock %}
         </div>
     </main>
-    <footer class="border-t border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60">
-        <div class="max-w-7xl mx-auto px-6 py-4 text-sm text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-between gap-2">
+    <footer class="app-footer">
+        <div class="max-w-7xl mx-auto px-6 py-4 text-sm app-text-muted flex flex-wrap items-center justify-between gap-2">
             <span>&copy; {{ current_year }} Background Remover</span>
             <div class="flex gap-4">
-                <a href="https://github.com/" target="_blank" rel="noopener" class="hover:text-indigo-500">Project
+                <a href="https://github.com/" target="_blank" rel="noopener" class="app-link">Project
                     Wiki</a>
-                <a href="{{ url_for('webui.history') }}" class="hover:text-indigo-500">API History</a>
+                <a href="{{ url_for('webui.history') }}" class="app-link">API History</a>
             </div>
         </div>
     </footer>

@@ -5,6 +5,19 @@
  */
 const SETTINGS_STORAGE_KEY = 'bgr-flask-settings';
 
+/**
+ * Resolve the current theme label with graceful fallback when the theme helper
+ * script is unavailable.
+ *
+ * @returns {string} Human readable theme label.
+ */
+function resolveThemeLabel() {
+  if (typeof window !== 'undefined' && typeof window.currentTheme === 'function') {
+    return window.currentTheme() === 'dark' ? 'Dark' : 'Light';
+  }
+  return document.documentElement.classList.contains('dark') ? 'Dark' : 'Light';
+}
+
 function readStoredSettings() {
   try {
     const rawValue = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -124,7 +137,7 @@ window.bgrApp = function bgrApp(rawConfig) {
     modelDir: normalizedModelDir,
     providerPill: normalizedBadgeLabel,
     providerPillClass: '',
-    themeLabel: document.documentElement.classList.contains('dark') ? 'Dark' : 'Light',
+    themeLabel: resolveThemeLabel(),
     selectedFiles: [],
     previewItems: [],
     history: [],
@@ -238,23 +251,30 @@ window.bgrApp = function bgrApp(rawConfig) {
     },
 
     computeProviderClass(label) {
-      const base = 'px-3 py-1 rounded-full text-xs font-semibold';
+      const base = 'provider-pill';
       if (label === 'GPU') {
-        return `${base} bg-emerald-200/70 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200`;
+        return `${base} provider-pill--gpu`;
       }
-      return `${base} bg-slate-200/70 text-slate-600 dark:bg-slate-700/40 dark:text-slate-200`;
+      return `${base} provider-pill--default`;
     },
 
     applyTheme() {
-      const isDark = document.documentElement.classList.contains('dark');
-      this.themeLabel = isDark ? 'Dark' : 'Light';
+      this.themeLabel = resolveThemeLabel();
     },
 
     toggleTheme() {
-      const element = document.documentElement;
-      const isDark = element.classList.toggle('dark');
-      localStorage.setItem('bgr-theme', isDark ? 'dark' : 'light');
-      this.themeLabel = isDark ? 'Dark' : 'Light';
+      let theme = 'light';
+      if (typeof window !== 'undefined' && typeof window.toggleTheme === 'function') {
+        theme = window.toggleTheme();
+      } else {
+        const element = document.documentElement;
+        const isDark = element.classList.toggle('dark');
+        theme = isDark ? 'dark' : 'light';
+        localStorage.setItem('bgr-theme', theme);
+        element.dataset.theme = theme;
+        element.style.colorScheme = theme;
+      }
+      this.themeLabel = theme === 'dark' ? 'Dark' : 'Light';
     },
 
     setStatus(message, tone = 'ready') {
@@ -297,9 +317,9 @@ window.bgrApp = function bgrApp(rawConfig) {
     createLogEntry(level, message) {
       const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const iconMap = {
-        success: { icon: 'task_alt', iconClass: 'text-emerald-500' },
-        error: { icon: 'error', iconClass: 'text-rose-500' },
-        info: { icon: 'info', iconClass: 'text-slate-400' },
+        success: { icon: 'task_alt', iconClass: 'log-icon--success' },
+        error: { icon: 'error', iconClass: 'log-icon--error' },
+        info: { icon: 'info', iconClass: 'log-icon--info' },
       };
       const meta = iconMap[level] || iconMap.info;
       return { id, message, icon: meta.icon, iconClass: meta.iconClass, class: level };

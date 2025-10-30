@@ -39,6 +39,9 @@ ProviderEntry = str | tuple[str, Mapping[str, Any]]
 
 
 _CUDA_LIMIT_LOGGED = False
+# Default CUDA memory pool size (MiB) selected to avoid exhausting high-end GPUs
+# while still providing ample working space for batch inference.
+_DEFAULT_CUDA_LIMIT_MIB = 6144
 
 
 class ModelUnavailableError(RuntimeError):
@@ -90,15 +93,19 @@ def _resolve_cuda_mem_limit_bytes() -> tuple[int, str]:
             parsed = int(env_value)
         except ValueError:
             LOGGER.warning(
-                "Invalid BGR_CUDA_MEM_LIMIT_MB=%s; falling back to default 2048 MiB", env_value
+                "Invalid BGR_CUDA_MEM_LIMIT_MB=%s; falling back to default %s MiB",
+                env_value,
+                _DEFAULT_CUDA_LIMIT_MIB,
             )
         else:
             if parsed > 0:
                 return parsed * 1024 * 1024, "env"
             LOGGER.warning(
-                "Ignoring non-positive BGR_CUDA_MEM_LIMIT_MB=%s; using default 2048 MiB", env_value
+                "Ignoring non-positive BGR_CUDA_MEM_LIMIT_MB=%s; using default %s MiB",
+                env_value,
+                _DEFAULT_CUDA_LIMIT_MIB,
             )
-    return 2048 * 1024 * 1024, "default"
+    return _DEFAULT_CUDA_LIMIT_MIB * 1024 * 1024, "default"
 
 
 def _apply_cuda_provider_defaults(entry: ProviderEntry) -> ProviderEntry:

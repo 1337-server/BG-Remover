@@ -7,9 +7,9 @@
       <header class="flex items-center justify-between">
         <div>
           <h2 class="text-lg font-semibold">Batch &amp; folder processing</h2>
-          <p class="text-sm text-slate-500 dark:text-slate-400">Upload a ZIP archive or select a folder to process multiple images with the same settings.</p>
+          <p class="text-sm app-text-muted">Upload a ZIP archive to process every image inside.</p>
         </div>
-        <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="resetBatch()">Reset</button>
+        <button type="button" class="text-sm app-link" @click="resetBatch()">Reset</button>
       </header>
       <form id="batch-form" class="mt-4 space-y-5" @submit.prevent="processBatch()">
         <div class="flex flex-wrap items-center gap-4 text-sm font-medium text-slate-600 dark:text-slate-300">
@@ -80,10 +80,10 @@
           <h3 class="text-sm font-medium text-slate-500 dark:text-slate-300">Last batch summary</h3>
           <p class="mt-2 text-sm" :class="batchSummary.status === 'error' ? 'text-rose-500' : 'text-slate-500 dark:text-slate-400'" x-show="batchSummary.message" x-text="batchSummary.message"></p>
           <dl class="mt-2 grid grid-cols-2 gap-2 text-sm">
-            <div><dt class="text-slate-500 dark:text-slate-400">Total</dt><dd x-text="batchSummary.total"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Success</dt><dd class="text-emerald-500" x-text="batchSummary.success"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Failed</dt><dd class="text-rose-500" x-text="batchSummary.failed"></dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Size</dt><dd x-text="formatBytes(batchSummary.size_bytes)"></dd></div>
+            <div><dt class="app-text-muted">Total</dt><dd x-text="batchSummary.total"></dd></div>
+            <div><dt class="app-text-muted">Success</dt><dd class="app-text-success" x-text="batchSummary.success"></dd></div>
+            <div><dt class="app-text-muted">Failed</dt><dd class="app-text-error" x-text="batchSummary.failed"></dd></div>
+            <div><dt class="app-text-muted">Size</dt><dd x-text="formatBytes(batchSummary.size_bytes)"></dd></div>
           </dl>
           <div class="mt-3 flex flex-wrap gap-3">
             <a :href="batchSummary.download_url" class="btn-link inline-flex items-center gap-2" x-show="batchSummary.download_url">
@@ -118,7 +118,7 @@
         <h2 class="text-lg font-semibold">Batch job log</h2>
         <p class="text-sm text-slate-500 dark:text-slate-400">Detailed progress for the most recent batch.</p>
       </div>
-      <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="batchLog = []">Clear log</button>
+      <button type="button" class="text-sm app-link" @click="batchLog = []">Clear log</button>
     </header>
     <ul class="mt-4 space-y-2 max-h-48 overflow-y-auto log-list">
       <template x-for="entry in batchLog" :key="entry.id">
@@ -127,7 +127,7 @@
           <span x-text="entry.message"></span>
         </li>
       </template>
-      <li class="text-sm text-slate-500 dark:text-slate-400" x-show="!batchLog.length">Run a batch to see progress details.</li>
+      <li class="text-sm app-text-muted" x-show="!batchLog.length">Run a batch to see progress details.</li>
     </ul>
   </section>
 </div>

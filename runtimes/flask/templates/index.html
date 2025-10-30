@@ -7,13 +7,9 @@
       <header class="flex items-center justify-between">
         <div>
           <h2 class="text-lg font-semibold">Upload images</h2>
-          <p class="text-sm text-slate-500 dark:text-slate-400">Drag and drop multiple images or browse from disk.</p>
+          <p class="text-sm app-text-muted">Drag and drop multiple images or browse from disk.</p>
         </div>
-        <button
-          type="button"
-          class="text-sm text-indigo-500 hover:text-indigo-400"
-          @click="resetSelections()"
-        >Reset</button>
+        <button type="button" class="text-sm app-link" @click="resetSelections()">Reset</button>
       </header>
       <form id="process-form" class="mt-4 space-y-5" @submit.prevent="processImages()">
         <div
@@ -22,15 +18,15 @@
           @dragover.prevent="isDragging = true"
           @dragleave.prevent="isDragging = false"
           @drop.prevent="handleDrop($event)"
-          :class="{ 'ring-2 ring-indigo-400 ring-offset-2': isDragging }"
+          :class="{ 'drop-zone--dragging': isDragging }"
         >
           <div class="flex flex-col items-center justify-center text-center">
-            <span class="material-symbols-rounded text-4xl text-indigo-500">cloud_upload</span>
+            <span class="material-symbols-rounded text-4xl accent-icon">cloud_upload</span>
             <p class="font-medium mt-2">Drop images here</p>
-            <p class="text-sm text-slate-500 dark:text-slate-400">PNG, JPEG, WebP up to 64 MB total</p>
+            <p class="text-sm app-text-muted">PNG, JPEG, WebP up to 64 MB total</p>
             <label
               for="image-input"
-              class="mt-4 inline-flex items-center gap-2 rounded-full bg-indigo-500 px-4 py-2 text-white shadow hover:bg-indigo-400"
+              class="mt-4 btn-primary"
             >
               <span class="material-symbols-rounded text-base">folder_open</span>
               <span>Browse</span>
@@ -39,12 +35,12 @@
           </div>
         </div>
         <div class="selected-files" x-show="selectedFiles.length">
-          <h3 class="text-sm font-medium text-slate-500 dark:text-slate-300">Selected images</h3>
+          <h3 class="text-sm font-medium app-text-muted">Selected images</h3>
           <ul class="mt-2 space-y-1 text-sm">
             <template x-for="file in selectedFiles" :key="file.name">
-              <li class="flex items-center justify-between rounded border border-slate-200 dark:border-slate-700 px-3 py-2">
+              <li class="flex items-center justify-between">
                 <span x-text="file.name"></span>
-                <span class="text-xs text-slate-500 dark:text-slate-400" x-text="formatBytes(file.size)"></span>
+                <span class="text-xs app-text-muted" x-text="formatBytes(file.size)"></span>
               </li>
             </template>
           </ul>
@@ -67,7 +63,7 @@
               Fill colour
               <span class="info-icon" :title="getOptionHelp('background_color')">i</span>
             </span>
-            <input type="color" name="background_color" class="h-10 w-16 rounded border border-slate-300 dark:border-slate-700" x-model="settings.background_color" @input="persistSettings()" />
+            <input type="color" name="background_color" class="input h-10 w-16" x-model="settings.background_color" @input="persistSettings()" />
             <p class="field-help">Applies when background mode is set to Fill.</p>
           </label>
           <label class="field">
@@ -92,7 +88,7 @@
           </label>
         </div>
         <div class="flex flex-wrap items-center justify-between gap-4 pt-2">
-          <div class="text-sm text-slate-500 dark:text-slate-400">Settings persist automatically in this browser.</div>
+          <div class="text-sm app-text-muted">Settings persist automatically in this browser.</div>
           <button type="submit" class="btn-primary" :disabled="isProcessing">
             <span class="material-symbols-rounded text-base" aria-hidden="true">auto_fix</span>
             <span x-show="!isProcessing">Process images</span>
@@ -113,14 +109,14 @@
   <header class="flex items-center justify-between">
     <div>
       <h2 class="text-lg font-semibold">Processing history</h2>
-      <p class="text-sm text-slate-500 dark:text-slate-400">Recent results are stored locally on this machine.</p>
+      <p class="text-sm app-text-muted">Recent results are stored locally on this machine.</p>
     </div>
-    <button type="button" class="text-sm text-indigo-500 hover:text-indigo-400" @click="loadHistory()">Refresh</button>
+    <button type="button" class="text-sm app-link" @click="loadHistory()">Refresh</button>
   </header>
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-left text-sm">
       <thead>
-        <tr class="text-slate-500 dark:text-slate-400">
+        <tr class="app-text-muted">
           <th class="py-2 pr-4 font-medium">Result</th>
           <th class="py-2 pr-4 font-medium">Original</th>
           <th class="py-2 pr-4 font-medium">Created</th>
@@ -128,21 +124,21 @@
           <th class="py-2 font-medium text-right">Actions</th>
         </tr>
       </thead>
-      <tbody id="history-body" class="divide-y divide-slate-200 dark:divide-slate-700">
+      <tbody id="history-body">
         <tr x-show="!history.length">
-          <td colspan="5" class="py-6 text-center text-slate-500 dark:text-slate-400">Process an image to populate history.</td>
+          <td colspan="5" class="py-6 text-center app-text-muted">Process an image to populate history.</td>
         </tr>
         <template x-for="item in history" :key="item.id">
           <tr>
             <td class="py-3 pr-4">
               <div class="flex items-center gap-3">
-                <div class="h-12 w-12 flex-none overflow-hidden rounded border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800">
+                <div class="history-thumb">
                   <img :src="`/result/${item.id}`" alt="Preview" class="h-full w-full object-cover" x-show="item.mime_type.startsWith('image/')" />
-                  <span class="material-symbols-rounded text-2xl text-slate-400 flex h-full w-full items-center justify-center" x-show="!item.mime_type.startsWith('image/')">folder_zip</span>
+                  <span class="material-symbols-rounded text-2xl icon-muted flex h-full w-full items-center justify-center" x-show="!item.mime_type.startsWith('image/')">folder_zip</span>
                 </div>
                 <div>
                   <p class="font-medium" x-text="item.result_name"></p>
-                  <p class="text-xs text-slate-500 dark:text-slate-400" x-text="item.options.model_key"></p>
+                  <p class="text-xs app-text-muted" x-text="item.options.model_key"></p>
                 </div>
               </div>
             </td>

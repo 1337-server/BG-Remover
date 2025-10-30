@@ -45,6 +45,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "recursive": False,
     "parallel_threads": 4,
     "model_dir": "",
+    "theme": "flatly",
 }
 
 
@@ -167,7 +168,16 @@ class BackgroundRemoverApp(tb.Window):
     """Main application window for background removal."""
 
     def __init__(self) -> None:
-        super().__init__(themename="flatly")
+        theme = DEFAULT_SETTINGS.get("theme", "flatly")
+        try:
+            if GUI_SETTINGS_FILE.exists():
+                user_settings = json.loads(GUI_SETTINGS_FILE.read_text(encoding="utf-8"))
+                theme = user_settings.get("theme", theme)
+        except Exception:
+            pass
+
+        super().__init__(themename=theme)
+        self.themename = theme
         self.title("Background Remover - PRO")
         self.geometry("1920x1080")
         self.resizable(True, True)
@@ -175,6 +185,7 @@ class BackgroundRemoverApp(tb.Window):
         self.config = load_config()
         init_logging(self.config.log_level)
         self.settings = self._load_settings(self.config)
+        self.settings.setdefault("theme", self.themename)
         self._tooltips: dict[object, ToolTip] = {}
         # --- Add this block here ---
 
@@ -327,6 +338,14 @@ class BackgroundRemoverApp(tb.Window):
 
         self.badge = tb.Label(header, padding=(10, 4))
         self.badge.pack(side=RIGHT)
+        self.theme_toggle_btn = tb.Button(
+            header,
+            text="🌙" if self.themename == "flatly" else "☀️",
+            command=self._toggle_theme,
+            width=3,
+        )
+        self.theme_toggle_btn.pack(side=RIGHT, padx=(0, 10))
+        self._add_tooltip(self.theme_toggle_btn, "Toggle dark/light mode")
         self._add_tooltip(self.badge, "Providers: detecting…")
 
         notebook = tb.Notebook(control_frame, bootstyle="tabs")
@@ -545,6 +564,15 @@ class BackgroundRemoverApp(tb.Window):
         header = tb.Frame(parent)
         header.pack(fill=BOTH, expand=False)
         tb.Label(header, text="Advanced Settings", font=("Helvetica", 16, "bold")).pack(side=LEFT)
+        toggle_all = tb.Button(
+            header,
+            text="Expand All",
+            command=self._toggle_all_sections,
+        )
+        toggle_all.pack(side=RIGHT, padx=(0, 8))
+        self.toggle_all_button = toggle_all
+        self._sections_expanded = False
+
         self.advanced_visible = tb.BooleanVar(value=True)
         self.toggle_button = tb.Button(header, text="Hide", command=self._toggle_advanced)
         self.toggle_button.pack(side=RIGHT)
@@ -554,22 +582,54 @@ class BackgroundRemoverApp(tb.Window):
 
         self._build_general_section(self.advanced_body)
 
-        alpha_section = CollapsibleSection(self.advanced_body, title="Alpha Matting Refinement")
+        alpha_section = CollapsibleSection(
+            self.advanced_body,
+            title="Alpha Matting Refinement",
+            start_open=False,
+        )
         alpha_section.pack(fill="x", pady=(0, 8))
         self._build_alpha_section(alpha_section.content)
 
-        mask_section = CollapsibleSection(self.advanced_body, title="Mask Refinement")
+        mask_section = CollapsibleSection(
+            self.advanced_body,
+            title="Mask Refinement",
+            start_open=False,
+        )
         mask_section.pack(fill="x", pady=(0, 8))
         self._build_mask_section(mask_section.content)
 
-        output_section = CollapsibleSection(self.advanced_body, title="Output")
+        output_section = CollapsibleSection(
+            self.advanced_body,
+            title="Output",
+            start_open=False,
+        )
         output_section.pack(fill="x", pady=(0, 8))
         self._build_output_section(output_section.content)
 
-        batch_section = CollapsibleSection(self.advanced_body, title="Batch Processing")
+        batch_section = CollapsibleSection(
+            self.advanced_body,
+            title="Batch Processing",
+            start_open=False,
+        )
         batch_section.pack(fill="x")
         self._build_batch_section(batch_section.content)
         self._toggle_alpha_controls()
+
+    def _toggle_all_sections(self) -> None:
+        """Expand or collapse every collapsible advanced settings section."""
+
+        expand = not getattr(self, "_sections_expanded", False)
+        for child in self.advanced_body.winfo_children():
+            if isinstance(child, CollapsibleSection):
+                if expand and not child.content_visible:
+                    child.toggle()
+                elif not expand and child.content_visible:
+                    child.toggle()
+        self._sections_expanded = expand
+        if self.toggle_all_button:
+            self.toggle_all_button.configure(
+                text="Collapse All" if self._sections_expanded else "Expand All"
+            )
 
     def _build_general_section(self, parent: tb.Frame) -> None:
         """Create general processing preference controls."""
@@ -880,6 +940,16 @@ class BackgroundRemoverApp(tb.Window):
             tooltip.configure(text=text)
         except AttributeError:  # pragma: no cover - fallback
             tooltip.text = text
+
+    def _toggle_theme(self) -> None:
+        """Toggle between light and dark themes and persist selection."""
+
+        new_theme = "darkly" if self.themename == "flatly" else "flatly"
+        self.style.theme_use(new_theme)
+        self.themename = new_theme
+        self._update_setting("theme", new_theme)
+        icon = "☀️" if new_theme == "darkly" else "🌙"
+        self.theme_toggle_btn.configure(text=icon)
 
     def _toggle_advanced(self) -> None:
         """Toggle visibility of the advanced settings frame."""

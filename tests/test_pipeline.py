@@ -21,6 +21,7 @@ class StubSession:
         self.input_name = "input"
         self.providers_available = ("CPUExecutionProvider",)
         self.primary_provider = self.providers_available[0]
+        self.model_path = Path("/tmp/model.onnx")
 
     def run(self, _tensor):  # pragma: no cover - simple stub
         width, height = self.spec.input_size
@@ -237,3 +238,62 @@ def test_process_folder_releases_sessions_between_images(
     assert report.total == 2
     assert len(release_calls) == 2
     assert release_calls[0] is not release_calls[1]
+
+
+def test_gpu_memory_error_retries_on_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GPU memory errors should trigger automatic CPU inference retries."""
+
+    spec = ModelSpec(
+        key="test-model",
+        input_size=(16, 16),
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+    )
+
+    class ErroringSession(StubSession):
+        def __init__(self, model_spec: ModelSpec) -> None:
+            super().__init__(model_spec)
+            self.providers_available = ("CUDAExecutionProvider",)
+            self.primary_provider = "CUDAExecutionProvider"
+            self.model_path = Path("/tmp/model.onnx")
+            self.inner = SimpleNamespace(run=self._run)
+
+        def _run(self, *_args, **_kwargs):  # pragma: no cover - deterministic failure
+            raise RuntimeError("BFCArena Out of memory")
+
+    gpu_session = ErroringSession(spec)
+    tensor = np.ones((1, 3, 16, 16), dtype=np.float32)
+
+    created_cpu_sessions: list[object] = []
+
+    class CpuFallbackSession:
+        def __init__(self, session_spec: ModelSpec, model_path: Path, providers: list[str]):
+            assert providers == ["CPUExecutionProvider"]
+            assert session_spec is spec
+            assert model_path == gpu_session.model_path
+            self.spec = session_spec
+            self.model_path = model_path
+            self.providers_available = ("CPUExecutionProvider",)
+            self.primary_provider = "CPUExecutionProvider"
+            self.input_name = "input"
+
+        def run(self, _: np.ndarray) -> np.ndarray:  # pragma: no cover - deterministic output
+            width, height = self.spec.input_size
+            return np.full((1, height, width), 2.0, dtype=np.float32)
+
+    def fake_background_session(session_spec, model_path, providers):
+        session = CpuFallbackSession(session_spec, model_path, providers)
+        created_cpu_sessions.append(session)
+        return session
+
+    release_calls: list[object] = []
+
+    monkeypatch.setattr(pipeline, "BackgroundRemovalSession", fake_background_session)
+    monkeypatch.setattr(pipeline, "release_session", lambda session: release_calls.append(session))
+
+    result = pipeline._run_session_with_cpu_fallback(gpu_session, tensor)
+
+    assert created_cpu_sessions, "CPU fallback session should be instantiated"
+    assert release_calls and release_calls[0] is created_cpu_sessions[0]
+    assert result.shape == (1, 16, 16)
+    assert np.all(result == 2.0)

@@ -359,6 +359,9 @@ def _prepare_session(
     return get_session(model_key, providers=providers, model_dir=config.resolved_model_dir())
 
 
+_GPU_MEMORY_ERROR_TOKENS = ("bfcarena", "available memory")
+
+
 def preprocess(img_rgb: np.ndarray, spec: Any) -> np.ndarray:
     """Return a contiguous CHW float32 tensor according to ``spec``."""
 
@@ -407,6 +410,58 @@ def _run_session(session: BackgroundRemovalSession, tensor: np.ndarray) -> np.nd
     prediction = np.asarray(outputs[0], dtype=np.float32)
     LOGGER.info("RUN output_shape=%s", prediction.shape)
     return prediction
+
+
+def _should_retry_on_cpu(error: Exception, session: BackgroundRemovalSession) -> bool:
+    """Return ``True`` when ``error`` indicates GPU memory pressure."""
+
+    message = str(error).lower()
+    if not any(token in message for token in _GPU_MEMORY_ERROR_TOKENS):
+        return False
+    providers = tuple(getattr(session, "providers_available", ()))
+    return any(provider == "CUDAExecutionProvider" for provider in providers)
+
+
+def _retry_inference_on_cpu(
+    session: BackgroundRemovalSession,
+    tensor: np.ndarray,
+    error: Exception,
+) -> np.ndarray:
+    """Retry inference on CPU after GPU memory exhaustion."""
+
+    LOGGER.warning(
+        "GPU inference failed due to memory constraints (%s); retrying on CPUExecutionProvider.",
+        error,
+    )
+    cpu_session: BackgroundRemovalSession | None = None
+    try:
+        model_path = getattr(session, "model_path", None)
+        if model_path is None:
+            raise RuntimeError("BackgroundRemovalSession is missing model_path for CPU fallback") from error
+        cpu_session = BackgroundRemovalSession(
+            session.spec,
+            model_path,
+            providers=["CPUExecutionProvider"],
+        )
+        outputs = cpu_session.run(tensor)
+        return np.asarray(outputs, dtype=np.float32)
+    finally:
+        release_session(cpu_session)
+        del cpu_session
+        gc.collect()
+
+
+def _run_session_with_cpu_fallback(
+    session: BackgroundRemovalSession, tensor: np.ndarray
+) -> np.ndarray:
+    """Execute ``session`` and retry on CPU when GPU memory errors occur."""
+
+    try:
+        return _run_session(session, tensor)
+    except Exception as error:
+        if not _should_retry_on_cpu(error, session):
+            raise
+        return _retry_inference_on_cpu(session, tensor, error)
 
 
 def _format_unique_values(alpha: np.ndarray) -> str:
@@ -460,7 +515,7 @@ def _process_loaded_image(
         float(tensor.min()),
         float(tensor.max()),
     )
-    raw_logits = _run_session(session, tensor)
+    raw_logits = _run_session_with_cpu_fallback(session, tensor)
     logits = np.asarray(raw_logits, dtype=np.float32)
     mask_raw = np.squeeze(logits).astype(np.float32)
     mask_min, mask_max = float(mask_raw.min()), float(mask_raw.max())

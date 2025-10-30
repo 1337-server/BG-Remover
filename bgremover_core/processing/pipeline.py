@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import gc
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -12,6 +13,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import torch
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from bgremover_core.config import Config, load_config
@@ -598,6 +600,9 @@ def _process_single_path(
             result_to_save = result_image
         save_image_to_path(result_to_save, destination, format_hint=pillow_format)
         elapsed_ms = (time.perf_counter() - start) * 1000
+        # Release GPU memory between images to avoid accumulating allocations.
+        gc.collect()
+        torch.cuda.empty_cache()
         LOGGER.info("%s processed successfully ✓", path.name)
         entry = ReportEntry(path_in=path, path_out=destination, success=True, elapsed_ms=elapsed_ms)
         if progress_callback:

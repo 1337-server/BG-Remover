@@ -1,6 +1,7 @@
 """HTTP routes backing the interactive Flask UI."""
 from __future__ import annotations
 
+import gc
 import io
 import json
 import logging
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import torch
 from PIL import Image, UnidentifiedImageError
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
@@ -542,6 +544,9 @@ def _execute_batch_job(
                 if destination.exists():
                     job.size_bytes += destination.stat().st_size
                 elapsed_ms = (time.perf_counter() - start) * 1000.0
+                # Explicitly release caches after persisting each batch result.
+                gc.collect()
+                torch.cuda.empty_cache()
                 job.emit(
                     "item_success",
                     {
@@ -795,6 +800,9 @@ def _process_image(upload, *, config: Config, store: ResultStore, options: dict[
     buffer.seek(0)
     output_path.write_bytes(buffer.getvalue())
     size_bytes = output_path.stat().st_size
+    # Clear caches to keep VRAM usage bounded for single-image requests.
+    gc.collect()
+    torch.cuda.empty_cache()
 
     record = ResultRecord(
         identifier=identifier,

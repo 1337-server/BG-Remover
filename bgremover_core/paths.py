@@ -1,26 +1,33 @@
-"""Shared filesystem paths used across every runtime variant."""
+"""Backwards-compatible exports for runtime filesystem paths."""
 from __future__ import annotations
 
-from pathlib import Path
+from .utils.paths import (
+    BASE_DIR,
+    CONFIG_DIR,
+    CONFIG_FILE,
+    INPUT_DIR,
+    MODELS_DIR,
+    OUTPUT_DIR,
+    RUNTIME_DIRECTORIES,
+    ensure_runtime_directories,
+)
 
+# Retain the old name for compatibility with existing imports throughout the
+# project. ``BASE_DIR`` reflects the canonical runtime directory location.
+PROJECT_ROOT = BASE_DIR
 
-def _discover_project_root() -> Path:
-    """Return the repository root inferred from the current file location."""
+# Ensure directories exist when importing this module directly. The helper call
+# is idempotent, so repeated imports are safe.
+ensure_runtime_directories(RUNTIME_DIRECTORIES)
 
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        if (parent / "pyproject.toml").exists():
-            return parent
-    # Fallback to the package directory when a marker is not found.
-    return current.parents[1]
-
-
-PROJECT_ROOT = _discover_project_root()
-
-INPUT_DIR = PROJECT_ROOT / "input"
-OUTPUT_DIR = PROJECT_ROOT / "output"
-CONFIG_DIR = PROJECT_ROOT / "config"
-CONFIG_FILE = CONFIG_DIR / "config.json"
-
-for directory in (INPUT_DIR, OUTPUT_DIR, CONFIG_DIR):
-    directory.mkdir(parents=True, exist_ok=True)
+__all__ = [
+    "BASE_DIR",
+    "CONFIG_DIR",
+    "CONFIG_FILE",
+    "INPUT_DIR",
+    "MODELS_DIR",
+    "OUTPUT_DIR",
+    "PROJECT_ROOT",
+    "RUNTIME_DIRECTORIES",
+    "ensure_runtime_directories",
+]

@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .paths import CONFIG_FILE
+from .paths import CONFIG_FILE, MODELS_DIR
 
 DEFAULT_MODEL_KEY = "isnet-general-use"
 CONFIG_FILENAME = CONFIG_FILE.name
@@ -113,7 +113,7 @@ def _default_model_dir() -> Path:
     env_dir = os.getenv("MODEL_DIR")
     if env_dir:
         return Path(env_dir).expanduser()
-    return Path.home() / ".cache" / "bg-remover" / "models"
+    return MODELS_DIR
 
 
 def persist_config(config: Config, *, path: Path | None = None) -> Path:

@@ -21,7 +21,7 @@ from bgremover_core.background_remover import process_image
 from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
 from bgremover_core.models.loader import detect_providers
 from bgremover_core.models.specs import MODEL_SPECS
-from bgremover_core.paths import CONFIG_FILE, INPUT_DIR, OUTPUT_DIR
+from bgremover_core.paths import CONFIG_FILE, INPUT_DIR, MODELS_DIR, OUTPUT_DIR
 from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry
 
 LOGGER = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "device": "Auto",
     "recursive": False,
     "parallel_threads": 4,
-    "model_dir": "",
+    "model_dir": str(MODELS_DIR),
     "theme": "flatly",
 }
 
@@ -1197,7 +1197,7 @@ class BackgroundRemoverApp(tb.Window):
     def _choose_model_dir(self) -> None:
         """Display a directory chooser for the model directory."""
 
-        directory = filedialog.askdirectory()
+        directory = filedialog.askdirectory(initialdir=str(MODELS_DIR))
         if directory:
             self.model_dir_var.set(directory)
             self._on_model_dir_change()
@@ -1205,7 +1205,7 @@ class BackgroundRemoverApp(tb.Window):
     def _choose_output_dir(self) -> None:
         """Display a directory chooser for the output directory."""
 
-        directory = filedialog.askdirectory()
+        directory = filedialog.askdirectory(initialdir=str(OUTPUT_DIR))
         if directory:
             self.output_dir_var.set(directory)
             self._update_setting("output_directory", directory)

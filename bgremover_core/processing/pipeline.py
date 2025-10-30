@@ -6,7 +6,7 @@ import gc
 import logging
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,11 @@ from bgremover_core.models.loader import (
     release_session,
 )
 from bgremover_core.processing.utils import apply_mask_to_image, iter_image_files, refine_mask
+from bgremover_core.utils.gpu_memory import (
+    GPU_MEMORY_PER_IMAGE_BYTES,
+    query_gpu_memory,
+    recommend_worker_count,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -643,6 +648,7 @@ def _process_single_path(
         return entry
     finally:
         release_session(session)
+        gc.collect()
         del session
         gc.collect()
 
@@ -672,16 +678,22 @@ def process_folder(
     options = ProcessingOptions.from_kwargs(feather_radius=feather_radius, **advanced_options)
 
     primary_provider = getattr(session, "primary_provider", "")
-    # Guard against excessive GPU memory pressure by avoiding concurrent inference when
-    # the session is backed by a GPU execution provider.
     gpu_keywords = ("CUDA", "GPU", "DML", "ROCM")
     is_gpu_provider = any(keyword in primary_provider.upper() for keyword in gpu_keywords)
     if options.max_workers > 1 and is_gpu_provider:
-        LOGGER.info(
-            "Parallel processing downgraded to a single worker for GPU provider %s.",
-            primary_provider or "unknown",
+        snapshot = query_gpu_memory()
+        recommended = recommend_worker_count(
+            options.max_workers,
+            snapshot=snapshot,
         )
-        options.max_workers = 1
+        if recommended != options.max_workers:
+            LOGGER.info(
+                "Parallel worker count adjusted from %s to %s based on GPU memory for provider %s.",
+                options.max_workers,
+                recommended,
+                primary_provider or "unknown",
+            )
+        options.max_workers = recommended
     def session_factory() -> BackgroundRemovalSession:
         """Return a fresh session for batch processing."""
 
@@ -694,6 +706,7 @@ def process_folder(
     ]
     if not candidates:
         release_session(session)
+        gc.collect()
         del session
         gc.collect()
         return Report(entries)
@@ -714,23 +727,64 @@ def process_folder(
                 session = None
     else:
         release_session(session)
+        gc.collect()
         del session
         gc.collect()
+        active_futures: dict[Future, Path] = {}
+        pending = iter(candidates)
+        exhausted = False
+        waiting_for_memory = False
         with ThreadPoolExecutor(max_workers=options.max_workers) as executor:
-            future_map = {
-                executor.submit(
-                    _process_single_path,
-                    path,
-                    destination_dir=output_root,
-                    options=options,
-                    progress_callback=progress_callback,
-                    session_factory=session_factory,
-                ): path
-                for path in candidates
-            }
-            for future in as_completed(future_map):
-                entry = future.result()
-                entries.append(entry)
+            while active_futures or not exhausted:
+                while not exhausted and len(active_futures) < options.max_workers:
+                    if is_gpu_provider:
+                        snapshot = query_gpu_memory()
+                        if snapshot is not None and snapshot.free < GPU_MEMORY_PER_IMAGE_BYTES:
+                            if active_futures:
+                                if not waiting_for_memory:
+                                    LOGGER.debug(
+                                        "Delaying new submissions until %.2f GiB VRAM frees up.",
+                                        snapshot.free / (1024 ** 3),
+                                    )
+                                    waiting_for_memory = True
+                                break
+                            LOGGER.debug(
+                                "Proceeding with reduced free VRAM: %.2f GiB remaining.",
+                                snapshot.free / (1024 ** 3),
+                            )
+                    try:
+                        path = next(pending)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    future = executor.submit(
+                        _process_single_path,
+                        path,
+                        destination_dir=output_root,
+                        options=options,
+                        progress_callback=progress_callback,
+                        session_factory=session_factory,
+                    )
+                    active_futures[future] = path
+                    waiting_for_memory = False
+
+                if not active_futures:
+                    if exhausted:
+                        break
+                    time.sleep(0.1)
+                    continue
+
+                done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
+                for future in done:
+                    entry = future.result()
+                    entries.append(entry)
+                    active_futures.pop(future, None)
+                waiting_for_memory = False
+
+            if active_futures:
+                done, _ = wait(active_futures.keys())
+                for future in done:
+                    entries.append(future.result())
     return Report(entries)
 
 

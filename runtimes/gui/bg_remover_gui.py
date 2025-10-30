@@ -564,6 +564,15 @@ class BackgroundRemoverApp(tb.Window):
         header = tb.Frame(parent)
         header.pack(fill=BOTH, expand=False)
         tb.Label(header, text="Advanced Settings", font=("Helvetica", 16, "bold")).pack(side=LEFT)
+        toggle_all = tb.Button(
+            header,
+            text="Expand All",
+            command=self._toggle_all_sections,
+        )
+        toggle_all.pack(side=RIGHT, padx=(0, 8))
+        self.toggle_all_button = toggle_all
+        self._sections_expanded = False
+
         self.advanced_visible = tb.BooleanVar(value=True)
         self.toggle_button = tb.Button(header, text="Hide", command=self._toggle_advanced)
         self.toggle_button.pack(side=RIGHT)
@@ -573,22 +582,54 @@ class BackgroundRemoverApp(tb.Window):
 
         self._build_general_section(self.advanced_body)
 
-        alpha_section = CollapsibleSection(self.advanced_body, title="Alpha Matting Refinement")
+        alpha_section = CollapsibleSection(
+            self.advanced_body,
+            title="Alpha Matting Refinement",
+            start_open=False,
+        )
         alpha_section.pack(fill="x", pady=(0, 8))
         self._build_alpha_section(alpha_section.content)
 
-        mask_section = CollapsibleSection(self.advanced_body, title="Mask Refinement")
+        mask_section = CollapsibleSection(
+            self.advanced_body,
+            title="Mask Refinement",
+            start_open=False,
+        )
         mask_section.pack(fill="x", pady=(0, 8))
         self._build_mask_section(mask_section.content)
 
-        output_section = CollapsibleSection(self.advanced_body, title="Output")
+        output_section = CollapsibleSection(
+            self.advanced_body,
+            title="Output",
+            start_open=False,
+        )
         output_section.pack(fill="x", pady=(0, 8))
         self._build_output_section(output_section.content)
 
-        batch_section = CollapsibleSection(self.advanced_body, title="Batch Processing")
+        batch_section = CollapsibleSection(
+            self.advanced_body,
+            title="Batch Processing",
+            start_open=False,
+        )
         batch_section.pack(fill="x")
         self._build_batch_section(batch_section.content)
         self._toggle_alpha_controls()
+
+    def _toggle_all_sections(self) -> None:
+        """Expand or collapse every collapsible advanced settings section."""
+
+        expand = not getattr(self, "_sections_expanded", False)
+        for child in self.advanced_body.winfo_children():
+            if isinstance(child, CollapsibleSection):
+                if expand and not child.content_visible:
+                    child.toggle()
+                elif not expand and child.content_visible:
+                    child.toggle()
+        self._sections_expanded = expand
+        if self.toggle_all_button:
+            self.toggle_all_button.configure(
+                text="Collapse All" if self._sections_expanded else "Expand All"
+            )
 
     def _build_general_section(self, parent: tb.Frame) -> None:
         """Create general processing preference controls."""

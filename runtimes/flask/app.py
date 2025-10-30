@@ -5,9 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from flask import Flask
-
 from bgremover_core import init_logging, load_config
+from bgremover_core.paths import CONFIG_FILE, INPUT_DIR, OUTPUT_DIR
+from flask import Flask
 
 from .routes import webui
 from .services import ResultStore
@@ -15,13 +15,17 @@ from .services import ResultStore
 _DEFAULT_SECRET = "bgremover-secret"
 
 
+def _configure_uploads(app: Flask) -> None:
+    """Ensure the Flask app writes uploads to the shared input directory."""
+
+    INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    app.config.setdefault("UPLOAD_FOLDER", str(INPUT_DIR))
+
+
 def _create_result_store(app: Flask) -> ResultStore:
     """Return a :class:`ResultStore` initialised for ``app``."""
 
-    instance_dir = Path(app.instance_path)
-    instance_dir.mkdir(parents=True, exist_ok=True)
-    default_output = instance_dir / "results"
-    configured = Path(app.config.setdefault("OUTPUT_DIR", default_output))
+    configured = Path(app.config.setdefault("OUTPUT_DIR", OUTPUT_DIR))
     output_dir = configured
     output_dir.mkdir(parents=True, exist_ok=True)
     history_limit = int(app.config.get("HISTORY_LIMIT", 50))
@@ -31,9 +35,10 @@ def _create_result_store(app: Flask) -> ResultStore:
 def create_app(config_overrides: dict[str, object] | None = None) -> Flask:
     """Return a configured Flask application ready for registration or running."""
 
-    config = load_config()
+    config = load_config(config_path=CONFIG_FILE)
     init_logging(config.log_level)
     app = Flask(__name__, template_folder="templates", static_folder="static")
+    _configure_uploads(app)
     secret_value = (
         config_overrides.get("SECRET_KEY", _DEFAULT_SECRET)
         if config_overrides

@@ -7,7 +7,7 @@ import os
 import threading
 import webbrowser
 from pathlib import Path
-from tkinter import Canvas, colorchooser, filedialog, messagebox
+from tkinter import Canvas, filedialog, messagebox
 from typing import Any
 
 import ttkbootstrap as tb
@@ -21,11 +21,12 @@ from bgremover_core.background_remover import process_image
 from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
 from bgremover_core.models.loader import detect_providers
 from bgremover_core.models.specs import MODEL_SPECS
+from bgremover_core.paths import CONFIG_FILE, INPUT_DIR, OUTPUT_DIR
 from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry
 
 LOGGER = logging.getLogger(__name__)
 
-GUI_SETTINGS_FILE = Path.home() / ".bgremover_gui.json"
+GUI_SETTINGS_FILE = CONFIG_FILE
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "model_key": "isnet-general-use",
@@ -239,7 +240,13 @@ class BackgroundRemoverApp(tb.Window):
 
         try:
             GUI_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            payload = self.settings.copy()
+            payload: dict[str, Any] = {}
+            if GUI_SETTINGS_FILE.exists():
+                try:
+                    payload = json.loads(GUI_SETTINGS_FILE.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    payload = {}
+            payload.update(self.settings)
             GUI_SETTINGS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except Exception as error:  # pragma: no cover - defensive
             LOGGER.warning("Failed to persist GUI settings: %s", error)
@@ -919,7 +926,7 @@ class BackgroundRemoverApp(tb.Window):
         tooltip_text = "Providers: " + ", ".join(self.providers or ["CPUExecutionProvider"])
         self._add_tooltip(self.badge, tooltip_text)
 
-    from PIL import Image, ImageTk
+    from PIL import Image
 
     def _preview_fill_bg(self):
         """Always ask user to choose a background colour, remember it, and apply it."""
@@ -932,7 +939,7 @@ class BackgroundRemoverApp(tb.Window):
                 self._log(f"Background colour set to {self.bg_fill_color}.")
             return
 
-        from PIL import Image, ImageTk
+        from PIL import Image
 
         # Always ask user for colour each time button is clicked
         chosen = colorchooser.askcolor(title="Select background colour")
@@ -965,7 +972,7 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_last_fill_color = None
 
         # Build checkerboard pattern for transparency visualization
-        from PIL import ImageDraw, ImageTk, Image
+        from PIL import Image, ImageDraw
         rgba = self._preview_image.convert("RGBA")
         w, h = rgba.size
         checker_size = 16
@@ -998,7 +1005,7 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_last_fill_color = None
 
         # Build checkerboard pattern for transparency visualization
-        from PIL import ImageDraw, ImageTk, Image
+        from PIL import Image, ImageDraw
         rgba = self._preview_image.convert("RGBA")
         w, h = rgba.size
         checker_size = 16
@@ -1031,7 +1038,7 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_last_fill_color = None
 
         # Build checkerboard pattern for transparency visualization
-        from PIL import ImageDraw, ImageTk, Image
+        from PIL import Image, ImageDraw
         rgba = self._preview_image.convert("RGBA")
         w, h = rgba.size
         checker_size = 16
@@ -1064,7 +1071,7 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_last_fill_color = None
 
         # Build checkerboard pattern for transparency visualization
-        from PIL import ImageDraw, ImageTk, Image
+        from PIL import Image, ImageDraw
         rgba = self._preview_image.convert("RGBA")
         w, h = rgba.size
         checker_size = 16
@@ -1194,6 +1201,7 @@ class BackgroundRemoverApp(tb.Window):
         """Prompt the user for a single image file."""
 
         filename = filedialog.askopenfilename(
+            initialdir=str(INPUT_DIR),
             filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.tiff")]
         )
         if filename:
@@ -1203,6 +1211,7 @@ class BackgroundRemoverApp(tb.Window):
         """Prompt the user for an optional single-image output path."""
 
         filename = filedialog.asksaveasfilename(
+            initialdir=str(OUTPUT_DIR),
             defaultextension=".png",
             filetypes=[("Images", "*.png *.jpg *.jpeg *.webp")],
         )
@@ -1212,14 +1221,14 @@ class BackgroundRemoverApp(tb.Window):
     def _choose_batch_folder(self) -> None:
         """Prompt the user for a batch input directory."""
 
-        directory = filedialog.askdirectory()
+        directory = filedialog.askdirectory(initialdir=str(INPUT_DIR))
         if directory:
             self.batch_input_var.set(directory)
 
     def _choose_batch_output(self) -> None:
         """Prompt the user for an optional batch output directory."""
 
-        directory = filedialog.askdirectory()
+        directory = filedialog.askdirectory(initialdir=str(OUTPUT_DIR))
         if directory:
             self.batch_output_var.set(directory)
 
@@ -1243,7 +1252,7 @@ class BackgroundRemoverApp(tb.Window):
         if output_dir:
             base_dir = Path(output_dir)
         else:
-            base_dir = input_path.parent / "output"
+            base_dir = OUTPUT_DIR
         base_dir.mkdir(parents=True, exist_ok=True)
         format_hint, suffix = _format_meta(self.settings.get("output_format", "PNG"))
         if self.settings.get("preserve_names"):
@@ -1487,9 +1496,11 @@ class BackgroundRemoverApp(tb.Window):
                     "preserve_names": bool(self.settings.get("preserve_names", False)),
                 }
             )
+            batch_output_dir = output_dir or OUTPUT_DIR
+            batch_output_dir.mkdir(parents=True, exist_ok=True)
             report = process_folder(
                 input_dir,
-                output_dir,
+                batch_output_dir,
                 "*",
                 model_key=self.model_var.get(),
                 config=config,

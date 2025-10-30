@@ -4,9 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from flask import Request
-
 from bgremover_core import Config
+from flask import Request
 
 
 @dataclass(slots=True)

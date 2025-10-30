@@ -12,6 +12,15 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from PIL import Image, UnidentifiedImageError
+
+from bgremover_core import Config, load_config, remove_background
+from bgremover_core.config import persist_config
+from bgremover_core.io.image_io import image_to_numpy
+from bgremover_core.models.loader import detect_providers
+from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
+from bgremover_core.paths import CONFIG_FILE
+from bgremover_core.processing.pipeline import PipelineError, process_folder
 from flask import (
     Blueprint,
     Flask,
@@ -24,14 +33,6 @@ from flask import (
     send_file,
     url_for,
 )
-from PIL import Image, UnidentifiedImageError
-
-from bgremover_core import Config, load_config, remove_background
-from bgremover_core.config import persist_config
-from bgremover_core.io.image_io import image_to_numpy
-from bgremover_core.models.loader import detect_providers
-from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
-from bgremover_core.processing.pipeline import PipelineError, process_folder
 
 from .services import ResultRecord, ResultStore, ensure_filename, total_size
 
@@ -54,15 +55,25 @@ OPTION_HELP: dict[str, str] = {
     "model_dir": "Directory on the server where downloaded model weights are stored.",
     "feather_radius": "Feather the mask edges for smoother blending. Range: 0–50.",
     "alpha_matting": "Enable refined matting for detailed edges such as hair or fur.",
-    "alpha_matting_foreground_threshold": "Minimum intensity considered foreground. Range: 0–255. Default: 240.",
-    "alpha_matting_background_threshold": "Maximum intensity considered background. Range: 0–255. Default: 10.",
+    "alpha_matting_foreground_threshold": (
+        "Minimum intensity considered foreground. Range: 0–255. Default: 240."
+    ),
+    "alpha_matting_background_threshold": (
+        "Maximum intensity considered background. Range: 0–255. Default: 10."
+    ),
     "alpha_matting_erode_size": "Number of pixels to erode the mask. Range: 0–30. Default: 10.",
     "post_process_mask": "Apply smoothing and refinement heuristics to the raw alpha mask.",
     "mask_blur": "Gaussian blur radius (in pixels) applied to the mask. Set to 0 to disable.",
     "mask_threshold": "Clamp mask values below this ratio to zero. Range: 0.0–1.0.",
     "only_mask": "Export only the alpha mask instead of a composited image.",
-    "cut_out_mode": "Control the final crop: keep the full object, output the mask, or crop to the bounding box.",
-    "background_mode": "Choose how the background is composed: keep the original, clear it, or fill with a colour.",
+    "cut_out_mode": (
+        "Control the final crop: keep the full object, output the mask, or crop to the "
+        "bounding box."
+    ),
+    "background_mode": (
+        "Choose how the background is composed: keep the original, clear it, or fill "
+        "with a colour."
+    ),
     "background_color": "Colour used when filling the background. Applies when background mode is Fill.",
     "output_format": "Select the file format for exported results.",
     "output_dir": "Optional subdirectory under the cache where processed files are written.",
@@ -77,7 +88,7 @@ OPTION_HELP: dict[str, str] = {
 def _get_config() -> Config:
     config = current_app.config.get("BGR_CONFIG")
     if config is None:
-        config = load_config()
+        config = load_config(config_path=CONFIG_FILE)
         current_app.config["BGR_CONFIG"] = config
     return config
 

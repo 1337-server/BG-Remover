@@ -9,9 +9,10 @@ import queue
 import shutil
 import sys
 import threading
+import time
 import webbrowser
-from collections.abc import Callable
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -117,6 +118,16 @@ class BatchProgressWidget:
     bar: tb.Progressbar
     label: tb.Label
     pack_kwargs: dict[str, Any]
+
+
+@dataclass(slots=True)
+class UIMessage:
+    """Representation of a worker-to-UI communication payload."""
+
+    kind: str
+    payload: dict[str, Any]
+    description: str | None = None
+    enqueued_at: float = field(default_factory=time.monotonic)
 
 
 def _resolve_style_color(colors: Any, key: str, default: str) -> str:
@@ -287,8 +298,18 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
     app._current_drop_path: Path | None = None
     app._drop_highlight_depth = 0
     app._batch_drop_highlight_depth = 0
-    app._ui_queue: queue.Queue[Callable[[], None]] = queue.Queue()
-    app._queue_poll_interval_ms = 100
+    app._ui_queue: queue.Queue[UIMessage] = queue.Queue()
+    app._queue_poll_interval_ms = 125
+    app._ui_tick_max_messages = 50
+    app._pending_logs: list[tuple[str, bool]] = []
+    app._pending_batch_entries: list[ReportEntry] = []
+    app._pending_preview_messages: list[UIMessage] = []
+    app._log_throttle_interval = 0.1
+    app._progress_throttle_interval = 0.1
+    app._preview_throttle_interval = 0.1
+    app._last_log_flush = 0.0
+    app._last_progress_flush = 0.0
+    app._last_preview_flush = 0.0
     app._processing_context: str | None = None
     app.drop_zone_frame: tb.Frame | None = None
     app.drop_zone_label: tb.Label | None = None
@@ -355,6 +376,8 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
     app._preview_render_size: tuple[int, int] = (0, 0)
     app._preview_canvas_size: tuple[int, int] = (0, 0)
     app._preview_canvas_hover = False
+    app._preview_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="PreviewRenderer")
+    app._active_preview_job: float | None = None
 
     app._build_ui()
     app._register_root_drop_target()
@@ -369,6 +392,17 @@ class BackgroundRemoverApp(_TkRoot):
     def __init__(self) -> None:
         super().__init__()
         _initialize_background_remover_app(self)
+
+    def destroy(self) -> None:  # type: ignore[override]
+        """Tear down background resources before destroying the window."""
+
+        executor = getattr(self, "_preview_executor", None)
+        if executor is not None:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:  # pragma: no cover - shutdown best effort
+                LOGGER.debug("Failed to shut down preview executor", exc_info=True)
+        super().destroy()
 
     # ------------------------------------------------------------------
     # Drag-and-drop helpers
@@ -2098,32 +2132,199 @@ class BackgroundRemoverApp(_TkRoot):
     # ------------------------------------------------------------------
     # Processing helpers
     # ------------------------------------------------------------------
-    def _queue_ui(self, callback: Callable[[], None], *, description: str | None = None) -> None:
-        """Queue ``callback`` for execution on the Tkinter main thread."""
+    def _post_message(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        description: str | None = None,
+    ) -> None:
+        """Enqueue a UI message for throttled handling on the main thread."""
 
         if description:
-            LOGGER.debug("Queueing UI task: %s", description)
-        self._ui_queue.put(callback)
+            LOGGER.debug("Queueing UI message [%s]: %s", kind, description)
+        self._ui_queue.put(UIMessage(kind=kind, payload=payload, description=description))
 
     def _poll_ui_queue(self) -> None:
-        """Flush queued UI callbacks from worker threads."""
+        """Flush queued UI messages from worker threads in controlled batches."""
 
+        queue_size = self._ui_queue.qsize()
+        LOGGER.debug("UI tick at %s | Queue size: %s", time.time(), queue_size)
         processed = 0
-        try:
-            while True:
-                callback = self._ui_queue.get_nowait()
-                try:
-                    callback()
-                except Exception:  # pragma: no cover - UI best effort
-                    LOGGER.exception("Queued UI callback failed")
-                finally:
-                    self._ui_queue.task_done()
-                processed += 1
-        except queue.Empty:
-            if processed:
-                LOGGER.debug("Processed %s queued UI task(s)", processed)
-        finally:
-            self.after(self._queue_poll_interval_ms, self._poll_ui_queue)
+        max_messages = getattr(self, "_ui_tick_max_messages", 50)
+        while processed < max_messages:
+            try:
+                message = self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._handle_ui_message(message)
+            except Exception:  # pragma: no cover - UI best effort
+                LOGGER.exception(
+                    "Queued UI message failed (%s)",
+                    message.description or message.kind,
+                )
+            finally:
+                self._ui_queue.task_done()
+            processed += 1
+        if processed:
+            LOGGER.debug("Processed %s UI message(s) this tick", processed)
+        self._flush_throttled_messages()
+        self.after(self._queue_poll_interval_ms, self._poll_ui_queue)
+
+    def _handle_ui_message(self, message: UIMessage) -> None:
+        """Route a :class:`UIMessage` to the appropriate UI handler."""
+
+        kind = message.kind
+        payload = message.payload
+        if kind == "log":
+            text = str(payload.get("message", ""))
+            error = bool(payload.get("error", False))
+            self._pending_logs.append((text, error))
+        elif kind in {"preview", "preview-render"}:
+            self._pending_preview_messages.append(message)
+        elif kind == "batch-entry":
+            entry = payload.get("entry")
+            if isinstance(entry, ReportEntry):
+                self._pending_batch_entries.append(entry)
+        elif kind == "state":
+            self._set_processing_state(
+                bool(payload.get("active", False)),
+                str(payload.get("context", "")),
+            )
+        elif kind == "single-complete":
+            input_path = payload.get("input_path")
+            if input_path is not None:
+                self._on_single_run_complete(input_path)
+        elif kind == "dialog":
+            level = payload.get("level", "info")
+            title = payload.get("title", "")
+            message_text = payload.get("message", "")
+            if level == "error":
+                messagebox.showerror(title or "Error", message_text)
+            else:
+                messagebox.showinfo(title or "Info", message_text)
+        elif kind == "batch-progress-start":
+            total = int(payload.get("total", 0))
+            self._show_batch_progress(total)
+        elif kind == "batch-progress-hide":
+            self._hide_batch_progress()
+        elif kind == "callback":
+            callback = payload.get("callback")
+            if callable(callback):
+                callback()
+        else:
+            LOGGER.debug("Unhandled UI message kind: %s", kind)
+
+    def _flush_throttled_messages(self) -> None:
+        """Flush pending UI work respecting throttling intervals."""
+
+        now = time.monotonic()
+        if self._pending_logs and now - self._last_log_flush >= self._log_throttle_interval:
+            pending_logs = list(self._pending_logs)
+            self._pending_logs.clear()
+            for text, error in pending_logs:
+                self._log(text, error=error)
+            self._last_log_flush = now
+        if (
+            self._pending_batch_entries
+            and now - self._last_progress_flush >= self._progress_throttle_interval
+        ):
+            entries = list(self._pending_batch_entries)
+            self._pending_batch_entries.clear()
+            for entry in entries:
+                self._record_batch_entry(entry)
+            if entries:
+                self._update_batch_progress_label()
+            self._last_progress_flush = now
+        if (
+            self._pending_preview_messages
+            and now - self._last_preview_flush >= self._preview_throttle_interval
+        ):
+            messages = list(self._pending_preview_messages)
+            self._pending_preview_messages.clear()
+            for preview_message in messages:
+                self._apply_preview_message(preview_message)
+            self._last_preview_flush = now
+
+    def _apply_preview_message(self, message: UIMessage) -> None:
+        """Apply a preview payload generated by a worker thread."""
+
+        payload = message.payload
+        job_id = payload.get("job_id")
+        if job_id is not None and self._active_preview_job is not None:
+            if job_id != self._active_preview_job:
+                LOGGER.debug(
+                    "Discarding stale preview job %s (expected %s)",
+                    job_id,
+                    self._active_preview_job,
+                )
+                return
+        if message.kind == "preview":
+            pil_image = payload.get("image")
+            if not isinstance(pil_image, Image.Image):
+                LOGGER.debug("Preview payload missing image instance; skipping update.")
+                return
+            output_path = payload.get("output_path")
+            format_hint = payload.get("format_hint", "PNG")
+            original_name = str(payload.get("original_name", ""))
+            self._preview_image = pil_image
+            self._preview_output_path = output_path
+            self._preview_format_hint = format_hint
+            self._preview_original_name = original_name
+            self._preview_saved_path = None
+            self._preview_display_override = None
+            self._preview_last_fill_color = None
+            self._preview_zoom_manual_override = False
+            self._preview_zoom_updating = True
+            try:
+                self.preview_zoom_var.set(PREVIEW_ZOOM_DEFAULT)
+            finally:
+                self._preview_zoom_updating = False
+            self._preview_canvas_size = (
+                max(1, self.preview_canvas.winfo_width()),
+                max(1, self.preview_canvas.winfo_height()),
+            )
+            self.preview_info.configure(text=f"Preview ready: {original_name}")
+            applied_fill = self._apply_background_fill()
+            self._render_preview_image()
+            self._auto_fit_preview()
+            if applied_fill and self._preview_fill_color is not None:
+                self._log(
+                    "Preview generated successfully ✔ — "
+                    f"background colour {self._preview_fill_color} applied.",
+                )
+            else:
+                self._log("Preview generated successfully ✔")
+            self._update_preview_controls()
+        elif message.kind == "preview-render":
+            resized = payload.get("image")
+            if not isinstance(resized, Image.Image):
+                LOGGER.debug("Preview render payload missing image instance; skipping update.")
+                return
+            anchor = payload.get("anchor")
+            previous_size = payload.get("previous_size", (0, 0))
+            zoom_value = payload.get("zoom_value")
+            try:
+                self._preview_photo = ImageTk.PhotoImage(resized)
+            except Exception:  # pragma: no cover - Tk rendering best effort
+                LOGGER.exception("Failed to create PhotoImage for preview rendering")
+                return
+            width, height = resized.size
+            self.preview_canvas.delete("all")
+            self._preview_canvas_image = self.preview_canvas.create_image(
+                0,
+                0,
+                anchor="nw",
+                image=self._preview_photo,
+            )
+            self.preview_canvas.configure(scrollregion=(0, 0, width, height))
+            display_zoom = zoom_value if zoom_value is not None else float(self.preview_zoom_var.get())
+            self.preview_zoom_value.configure(text=f"{int(round(display_zoom))}%")
+            self._update_preview_view(anchor, tuple(previous_size))
+            self._active_preview_job = None
+        else:
+            LOGGER.debug("Unsupported preview message type: %s", message.kind)
 
     def _log(self, message: str, *, error: bool = False) -> None:
         """Append ``message`` to the activity log."""
@@ -2201,21 +2402,24 @@ class BackgroundRemoverApp(_TkRoot):
                 thread_name,
                 input_path,
             )
-            self._queue_ui(
-                lambda: self._show_preview(
-                    result_image,
-                    output_path,
-                    format_hint,
-                    input_path.name,
-                ),
+            self._post_message(
+                "preview",
+                {
+                    "image": result_image,
+                    "output_path": output_path,
+                    "format_hint": format_hint,
+                    "original_name": input_path.name,
+                },
                 description=f"show-preview-{input_path.name}",
             )
-            self._queue_ui(
-                lambda: self._set_processing_state(False, "single"),
+            self._post_message(
+                "state",
+                {"active": False, "context": "single"},
                 description="single-processing-state-complete",
             )
-            self._queue_ui(
-                lambda: self._on_single_run_complete(input_path),
+            self._post_message(
+                "single-complete",
+                {"input_path": input_path},
                 description=f"single-complete-{input_path.name}",
             )
             LOGGER.debug(
@@ -2232,20 +2436,31 @@ class BackgroundRemoverApp(_TkRoot):
                 exc_info=True,
             )
             message = str(error)
-            self._queue_ui(
-                lambda: self._log(f"{input_path.name} failed ✗ — Reason: {message}", error=True),
+            self._post_message(
+                "log",
+                {
+                    "message": f"{input_path.name} failed ✗ — Reason: {message}",
+                    "error": True,
+                },
                 description=f"single-error-log-{input_path.name}",
             )
-            self._queue_ui(
-                lambda: messagebox.showerror("Processing failed", message),
+            self._post_message(
+                "dialog",
+                {
+                    "level": "error",
+                    "title": "Processing failed",
+                    "message": message,
+                },
                 description=f"single-error-dialog-{input_path.name}",
             )
-            self._queue_ui(
-                lambda: self._set_processing_state(False, "single"),
+            self._post_message(
+                "state",
+                {"active": False, "context": "single"},
                 description="single-processing-state-error",
             )
-            self._queue_ui(
-                lambda: self._on_single_run_complete(input_path),
+            self._post_message(
+                "single-complete",
+                {"input_path": input_path},
                 description=f"single-error-complete-{input_path.name}",
             )
         finally:
@@ -2339,18 +2554,96 @@ class BackgroundRemoverApp(_TkRoot):
         height = max(1, int(round(source_image.height * scale)))
         previous_size = self._preview_render_size
         self._preview_render_size = (width, height)
-        resized = source_image.resize((width, height), Image.LANCZOS)
-        self._preview_photo = ImageTk.PhotoImage(resized)
-        self.preview_canvas.delete("all")
-        self._preview_canvas_image = self.preview_canvas.create_image(
-            0,
-            0,
-            anchor="nw",
-            image=self._preview_photo,
+        executor = getattr(self, "_preview_executor", None)
+        job_id = time.monotonic()
+        self._active_preview_job = job_id
+        LOGGER.debug(
+            "Scheduling preview render job %s for size %sx%s (anchor=%s)",
+            job_id,
+            width,
+            height,
+            anchor,
         )
-        self.preview_canvas.configure(scrollregion=(0, 0, width, height))
-        self.preview_zoom_value.configure(text=f"{int(round(zoom_value))}%")
-        self._update_preview_view(anchor, previous_size)
+        if executor is None:
+            LOGGER.debug("Preview executor unavailable; rendering synchronously")
+            try:
+                resized = source_image.resize((width, height), Image.LANCZOS)
+            except Exception:  # pragma: no cover - defensive path
+                LOGGER.exception("Synchronous preview render failed")
+                return
+            self._apply_preview_message(
+                UIMessage(
+                    kind="preview-render",
+                    payload={
+                        "image": resized,
+                        "anchor": anchor,
+                        "previous_size": previous_size,
+                        "zoom_value": zoom_value,
+                        "job_id": job_id,
+                    },
+                )
+            )
+            return
+        try:
+            source_copy = source_image.copy()
+        except Exception:
+            LOGGER.debug("Falling back to original image reference for preview render")
+            source_copy = source_image
+        executor.submit(
+            self._prepare_preview_render,
+            source_copy,
+            (width, height),
+            anchor,
+            previous_size,
+            zoom_value,
+            job_id,
+        )
+
+    def _prepare_preview_render(
+        self,
+        source_image: Image.Image,
+        target_size: tuple[int, int],
+        anchor: PreviewAnchor | None,
+        previous_size: tuple[int, int],
+        zoom_value: float,
+        job_id: float,
+    ) -> None:
+        """Resize the preview image off the main thread before UI dispatch."""
+
+        thread_name = threading.current_thread().name
+        LOGGER.debug(
+            "Preview worker %s rendering %sx%s (job=%s)",
+            thread_name,
+            target_size[0],
+            target_size[1],
+            job_id,
+        )
+        try:
+            resized = source_image.resize(target_size, Image.LANCZOS)
+        except Exception as error:  # pragma: no cover - defensive logging
+            LOGGER.exception("Preview rendering failed on worker thread", exc_info=error)
+            self._post_message(
+                "log",
+                {
+                    "message": (
+                        f"Preview rendering failed ✗ — size {target_size[0]}x{target_size[1]}"
+                    ),
+                    "error": True,
+                },
+                description="preview-render-error",
+            )
+            return
+        self._post_message(
+            "preview-render",
+            {
+                "image": resized,
+                "anchor": anchor,
+                "previous_size": previous_size,
+                "zoom_value": zoom_value,
+                "job_id": job_id,
+            },
+            description=f"preview-render-{target_size[0]}x{target_size[1]}",
+        )
 
     def _update_preview_view(
         self,
@@ -2616,35 +2909,16 @@ class BackgroundRemoverApp(_TkRoot):
     ) -> None:
         """Render ``pil_image`` inside the inline preview panel."""
 
-        self._preview_image = pil_image
-        self._preview_output_path = output_path
-        self._preview_format_hint = format_hint
-        self._preview_original_name = original_name
-        self._preview_saved_path = None
-        self._preview_display_override = None
-        self._preview_last_fill_color = None
-        self._preview_zoom_manual_override = False
-        self._preview_zoom_updating = True
-        try:
-            self.preview_zoom_var.set(PREVIEW_ZOOM_DEFAULT)
-        finally:
-            self._preview_zoom_updating = False
-        self._preview_canvas_size = (
-            max(1, self.preview_canvas.winfo_width()),
-            max(1, self.preview_canvas.winfo_height()),
+        message = UIMessage(
+            kind="preview",
+            payload={
+                "image": pil_image,
+                "output_path": output_path,
+                "format_hint": format_hint,
+                "original_name": original_name,
+            },
         )
-        self.preview_info.configure(text=f"Preview ready: {original_name}")
-        applied_fill = self._apply_background_fill()
-        self._render_preview_image()
-        self._auto_fit_preview()
-        if applied_fill and self._preview_fill_color is not None:
-            self._log(
-                "Preview generated successfully ✔ — "
-                f"background colour {self._preview_fill_color} applied."
-            )
-        else:
-            self._log("Preview generated successfully ✔")
-        self._update_preview_controls()
+        self._apply_preview_message(message)
 
     def _process_batch(self) -> None:
         """Validate inputs and start batch processing."""
@@ -2756,8 +3030,9 @@ class BackgroundRemoverApp(_TkRoot):
             total_items = sum(1 for _ in iter_image_files(input_dir, recursive=recursive))
             self._batch_total_count = total_items
             self._batch_processed_count = 0
-            self._queue_ui(
-                lambda: self._show_batch_progress(total_items),
+            self._post_message(
+                "batch-progress-start",
+                {"total": total_items},
                 description=f"batch-progress-start-{input_dir.name}",
             )
             LOGGER.debug(
@@ -2785,17 +3060,24 @@ class BackgroundRemoverApp(_TkRoot):
                 report.failures,
             )
             summary = f"Batch complete: {report.successes}/{report.total} succeeded"
-            self._queue_ui(
-                lambda: self._log(summary),
+            self._post_message(
+                "log",
+                {"message": summary},
                 description=f"batch-summary-{input_dir.name}",
             )
             if report.failures:
-                self._queue_ui(
-                    lambda: messagebox.showerror("Batch finished with errors", summary),
+                self._post_message(
+                    "dialog",
+                    {
+                        "level": "error",
+                        "title": "Batch finished with errors",
+                        "message": summary,
+                    },
                     description=f"batch-error-dialog-{input_dir.name}",
                 )
-            self._queue_ui(
-                lambda: self._set_processing_state(False, "batch"),
+            self._post_message(
+                "state",
+                {"active": False, "context": "batch"},
                 description="batch-processing-state-complete",
             )
             LOGGER.debug("Worker %s scheduled completion updates for %s", thread_name, input_dir)
@@ -2813,16 +3095,26 @@ class BackgroundRemoverApp(_TkRoot):
                 exc_info=True,
             )
             message = str(error)
-            self._queue_ui(
-                lambda: self._log(f"Batch failed ✗ — Reason: {message}", error=True),
+            self._post_message(
+                "log",
+                {
+                    "message": f"Batch failed ✗ — Reason: {message}",
+                    "error": True,
+                },
                 description=f"batch-error-log-{input_dir.name}",
             )
-            self._queue_ui(
-                lambda: messagebox.showerror("Processing failed", message),
+            self._post_message(
+                "dialog",
+                {
+                    "level": "error",
+                    "title": "Processing failed",
+                    "message": message,
+                },
                 description=f"batch-error-dialog-{input_dir.name}",
             )
-            self._queue_ui(
-                lambda: self._set_processing_state(False, "batch"),
+            self._post_message(
+                "state",
+                {"active": False, "context": "batch"},
                 description="batch-processing-state-error",
             )
         finally:
@@ -2837,8 +3129,9 @@ class BackgroundRemoverApp(_TkRoot):
             entry.path_in,
             entry.success,
         )
-        self._queue_ui(
-            lambda: self._record_batch_entry(entry),
+        self._post_message(
+            "batch-entry",
+            {"entry": entry},
             description=f"batch-entry-{entry.path_in.name}",
         )
 
@@ -2852,12 +3145,17 @@ class BackgroundRemoverApp(_TkRoot):
         if entry.path_out is not None:
             self._batch_tree_output_paths[item_id] = entry.path_out
         self._batch_processed_count += 1
-        self._update_batch_progress_label()
         if entry.success:
             log_message = f"{entry.path_in.name} processed successfully ✓"
+            log_error = False
         else:
             log_message = f"{entry.path_in.name} failed ✗ — Reason: {details}"
-        self._log(log_message, error=not entry.success)
+            log_error = True
+        log_buffer = getattr(self, "_pending_logs", None)
+        if isinstance(log_buffer, list):
+            log_buffer.append((log_message, log_error))
+        else:  # pragma: no cover - fallback for partially initialised objects
+            self._log(log_message, error=log_error)
         self._log_thread_snapshot("batch-progress-update")
 
     def _on_batch_item_double_click(self, event: Any) -> None:

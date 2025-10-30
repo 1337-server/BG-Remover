@@ -1,6 +1,7 @@
 """HTTP routes backing the interactive Flask UI."""
 from __future__ import annotations
 
+import gc
 import io
 import json
 import logging
@@ -506,89 +507,98 @@ def _execute_batch_job(
             job.mark_finished()
             return
 
-        for candidate in batch_source.candidates:
-            if job.cancelled():
-                status = "cancelled"
-                message = "Batch cancelled by client"
-                break
-            start = time.perf_counter()
-            relative_text = str(candidate.relative_path)
-            try:
-                with Image.open(candidate.source) as source:
-                    pil_image = source.convert("RGBA")
-                result = pipeline_module._process_loaded_image(
-                    pil_image, session=session, options=options_obj
-                )
-                pillow_format, suffix = pipeline_module._infer_output_suffix(
-                    options_obj.output_format
-                )
-                if recursive and len(candidate.relative_path.parts) > 1:
-                    destination_parent = output_dir / candidate.relative_path.parent
-                else:
-                    destination_parent = output_dir
-                destination_parent.mkdir(parents=True, exist_ok=True)
-                if options_obj.preserve_names:
-                    destination_name = f"{candidate.relative_path.stem}.{suffix}"
-                else:
-                    destination_name = f"{candidate.relative_path.stem}_no_bg.{suffix}"
-                destination = destination_parent / destination_name
-                destination = _ensure_unique_path(destination)
-                result_image = result.image
-                if pillow_format != "PNG" and result_image.mode != "RGB":
-                    result_image = result_image.convert("RGB")
-                save_image_to_path(result_image, destination, format_hint=pillow_format)
-                generated_paths.append(destination)
-                job.success_count += 1
-                if destination.exists():
-                    job.size_bytes += destination.stat().st_size
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-                job.emit(
-                    "item_success",
-                    {
-                        "input": relative_text,
-                        "output": str(destination.relative_to(output_dir)),
-                        "elapsed_ms": round(elapsed_ms, 2),
-                    },
-                )
-            except UnidentifiedImageError as error:
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-                job.failure_count += 1
-                error_message = f"Unsupported image format: {error}"
-                app_logger.warning("%s", error_message)
-                job.emit(
-                    "item_error",
-                    {
-                        "input": relative_text,
-                        "elapsed_ms": round(elapsed_ms, 2),
-                        "error": error_message,
-                    },
-                )
-            except PermissionError as error:
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-                job.failure_count += 1
-                error_message = f"Permission error: {error}"
-                app_logger.warning("%s", error_message)
-                job.emit(
-                    "item_error",
-                    {
-                        "input": relative_text,
-                        "elapsed_ms": round(elapsed_ms, 2),
-                        "error": error_message,
-                    },
-                )
-            except Exception as error:  # pragma: no cover - defensive
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-                job.failure_count += 1
-                error_message = str(error)
-                app_logger.exception("Processing failed for %s", candidate.source)
-                job.emit(
-                    "item_error",
-                    {
-                        "input": relative_text,
-                        "elapsed_ms": round(elapsed_ms, 2),
-                        "error": error_message,
-                    },
-                )
+        try:
+            for candidate in batch_source.candidates:
+                if job.cancelled():
+                    status = "cancelled"
+                    message = "Batch cancelled by client"
+                    break
+                start = time.perf_counter()
+                relative_text = str(candidate.relative_path)
+                try:
+                    with Image.open(candidate.source) as source:
+                        pil_image = source.convert("RGBA")
+                    result = pipeline_module._process_loaded_image(
+                        pil_image, session=session, options=options_obj
+                    )
+                    pillow_format, suffix = pipeline_module._infer_output_suffix(
+                        options_obj.output_format
+                    )
+                    if recursive and len(candidate.relative_path.parts) > 1:
+                        destination_parent = output_dir / candidate.relative_path.parent
+                    else:
+                        destination_parent = output_dir
+                    destination_parent.mkdir(parents=True, exist_ok=True)
+                    if options_obj.preserve_names:
+                        destination_name = f"{candidate.relative_path.stem}.{suffix}"
+                    else:
+                        destination_name = f"{candidate.relative_path.stem}_no_bg.{suffix}"
+                    destination = destination_parent / destination_name
+                    destination = _ensure_unique_path(destination)
+                    result_image = result.image
+                    if pillow_format != "PNG" and result_image.mode != "RGB":
+                        result_image = result_image.convert("RGB")
+                    save_image_to_path(result_image, destination, format_hint=pillow_format)
+                    del result_image
+                    del result
+                    del pil_image
+                    generated_paths.append(destination)
+                    job.success_count += 1
+                    if destination.exists():
+                        job.size_bytes += destination.stat().st_size
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    job.emit(
+                        "item_success",
+                        {
+                            "input": relative_text,
+                            "output": str(destination.relative_to(output_dir)),
+                            "elapsed_ms": round(elapsed_ms, 2),
+                        },
+                    )
+                except UnidentifiedImageError as error:
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    job.failure_count += 1
+                    error_message = f"Unsupported image format: {error}"
+                    app_logger.warning("%s", error_message)
+                    job.emit(
+                        "item_error",
+                        {
+                            "input": relative_text,
+                            "elapsed_ms": round(elapsed_ms, 2),
+                            "error": error_message,
+                        },
+                    )
+                except PermissionError as error:
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    job.failure_count += 1
+                    error_message = f"Permission error: {error}"
+                    app_logger.warning("%s", error_message)
+                    job.emit(
+                        "item_error",
+                        {
+                            "input": relative_text,
+                            "elapsed_ms": round(elapsed_ms, 2),
+                            "error": error_message,
+                        },
+                    )
+                except Exception as error:  # pragma: no cover - defensive
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    job.failure_count += 1
+                    error_message = str(error)
+                    app_logger.exception("Processing failed for %s", candidate.source)
+                    job.emit(
+                        "item_error",
+                        {
+                            "input": relative_text,
+                            "elapsed_ms": round(elapsed_ms, 2),
+                            "error": error_message,
+                        },
+                    )
+                finally:
+                    gc.collect()
+        finally:
+            del session
+            gc.collect()
 
         download_url: str | None = None
         try:
@@ -775,6 +785,9 @@ def _process_image(upload, *, config: Config, store: ResultStore, options: dict[
         **processing_kwargs,
     )
     result_image = Image.fromarray(result_array)
+    image.close()
+    del result_array
+    del array
 
     mime_type, suffix = _determine_output_meta(options["output_format"])
     if mime_type != "image/png":
@@ -794,6 +807,9 @@ def _process_image(upload, *, config: Config, store: ResultStore, options: dict[
     result_image.save(buffer, format=options["output_format"].upper())
     buffer.seek(0)
     output_path.write_bytes(buffer.getvalue())
+    buffer.close()
+    del buffer
+    del result_image
     size_bytes = output_path.stat().st_size
 
     record = ResultRecord(
@@ -806,7 +822,9 @@ def _process_image(upload, *, config: Config, store: ResultStore, options: dict[
         options=_serialise_options(options),
         size_bytes=size_bytes,
     )
-    return store.add_record(record)
+    stored = store.add_record(record)
+    gc.collect()
+    return stored
 
 
 def _process_single_request(
@@ -824,6 +842,7 @@ def _process_single_request(
         for upload in files:
             record = _process_image(upload, config=config, store=store, options=options)
             results.append(record.as_dict(include_preview=True))
+            gc.collect()
         return results
 
 

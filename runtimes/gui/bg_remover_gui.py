@@ -1,6 +1,7 @@
 """Tkinter GUI for the background remover runtimes."""
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import os
@@ -1971,11 +1972,13 @@ class BackgroundRemoverApp(_TkRoot):
                 **kwargs,
             )
             result_image = result.image
+            del result
+            del array
             format_hint, _ = _format_meta(self.settings.get("output_format", "PNG"))
             self.after(
                 0,
-                lambda: self._show_preview(
-                    result_image,
+                lambda image=result_image: self._show_preview(
+                    image,
                     output_path,
                     format_hint,
                     input_path.name,
@@ -1990,6 +1993,8 @@ class BackgroundRemoverApp(_TkRoot):
             self.after(0, lambda: messagebox.showerror("Processing failed", message))
             self.after(0, lambda: self._set_processing_state(False, "single"))
             self.after(0, lambda: self._on_single_run_complete(input_path))
+        finally:
+            gc.collect()
 
     def _load_source_image(self, path: Path) -> Image.Image:
         """Return a freshly loaded RGBA image from ``path``."""
@@ -2009,6 +2014,8 @@ class BackgroundRemoverApp(_TkRoot):
         if format_hint != "PNG" and pil_image.mode != "RGB":
             image_to_save = pil_image.convert("RGB")
         save_image_to_path(image_to_save, output_path, format_hint=format_hint)
+        del image_to_save
+        gc.collect()
 
     def _clear_preview_state(self) -> None:
         """Reset preview data structures and disable preview controls."""

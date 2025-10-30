@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+import gc
 import numpy as np
 from PIL import Image
 
@@ -161,6 +162,10 @@ def _handle_single(args: argparse.Namespace, config: Config) -> int:
         )
         result_image = Image.fromarray(result_array)
         save_image_to_path(result_image, output_path)
+        del result_image
+        del result_array
+        del image_array
+        gc.collect()
         print(f"{STATUS_SUCCESS} {input_path} → {output_path}")
         return 0
     except Exception as error:  # pragma: no cover - defensive logging

@@ -151,6 +151,36 @@ def _provider_name(entry: ProviderEntry) -> str:
     return entry
 
 
+def _match_provider_hint(hint: str, available: Sequence[str]) -> str | None:
+    """Return an available provider matching ``hint`` or ``None`` when missing."""
+
+    candidate = hint.strip()
+    if not candidate:
+        return None
+
+    canonical = candidate.lower()
+    alias_map = {
+        "cpu": "CPUExecutionProvider",
+        "cpuexecutionprovider": "CPUExecutionProvider",
+        "cuda": "CUDAExecutionProvider",
+        "cudaexecutionprovider": "CUDAExecutionProvider",
+        "gpu": "CUDAExecutionProvider",
+        "dml": "DmlExecutionProvider",
+        "dmlexecutionprovider": "DmlExecutionProvider",
+        "directml": "DmlExecutionProvider",
+    }
+
+    mapped = alias_map.get(canonical)
+    if mapped and mapped in available:
+        return mapped
+
+    for provider in available:
+        if provider.lower() == canonical:
+            return provider
+
+    return None
+
+
 def detect_providers(provider_hints: Iterable[str] | None = None) -> list[str]:
     """Return the preferred execution providers available for inference."""
 
@@ -159,22 +189,31 @@ def detect_providers(provider_hints: Iterable[str] | None = None) -> list[str]:
         available = ["CPUExecutionProvider"]
 
     normalised: list[str] = []
-    hints = [hint.strip().lower() for hint in provider_hints or () if hint.strip()]
-    for hint in hints:
-        if hint.startswith("cuda") and "CUDAExecutionProvider" in available:
-            normalised.append("CUDAExecutionProvider")
-        if hint.startswith("cpu") and "CPUExecutionProvider" in available:
-            normalised.append("CPUExecutionProvider")
-        if hint.startswith("directml") and "DmlExecutionProvider" in available:
-            normalised.append("DmlExecutionProvider")
+    hints = [hint for hint in provider_hints or () if str(hint).strip()]
+
+    if hints:
+        for hint in hints:
+            provider = _match_provider_hint(str(hint), available)
+            if provider and provider not in normalised:
+                normalised.append(provider)
+        if normalised:
+            return normalised
+        LOGGER.warning(
+            "Provider hints %s could not be satisfied; defaulting to CPUExecutionProvider.",
+            hints,
+        )
+        if "CPUExecutionProvider" in available:
+            return ["CPUExecutionProvider"]
+        return [available[0]]
+
     if "CUDAExecutionProvider" in available and "CUDAExecutionProvider" not in normalised:
-        normalised.insert(0, "CUDAExecutionProvider")
+        normalised.append("CUDAExecutionProvider")
     for provider in available:
         if provider not in normalised:
             normalised.append(provider)
-    if "CPUExecutionProvider" not in normalised:
+    if "CPUExecutionProvider" not in normalised and "CPUExecutionProvider" in available:
         normalised.append("CPUExecutionProvider")
-    return normalised
+    return normalised or ["CPUExecutionProvider"]
 
 
 def _build_model_filename(spec: ModelSpec) -> str:
@@ -466,6 +505,8 @@ class BackgroundRemovalSession:
                 session_options.inter_op_num_threads = value
                 session_options.intra_op_num_threads = value
         provider_entries = _normalise_providers(list(providers) or ["CPUExecutionProvider"])
+        provider_names = [_provider_name(entry) for entry in provider_entries]
+        LOGGER.info("Using providers: %s", provider_names)
         try:
             self.inner = ort.InferenceSession(
                 str(self.model_path),

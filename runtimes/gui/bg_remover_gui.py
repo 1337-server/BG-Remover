@@ -81,6 +81,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 VALID_RESIZE_MODES: tuple[str, ...] = ("auto", "keep-aspect", "crop", "stretch")
 
+PREVIEW_ZOOM_MIN = 25.0
+PREVIEW_ZOOM_MAX = 400.0
+PREVIEW_ZOOM_DEFAULT = 100.0
+PREVIEW_ZOOM_WHEEL_STEP = 10.0
+
+# ``PreviewAnchor`` tracks a canvas coordinate and the corresponding widget
+# pointer location to keep stable while zooming.
+type PreviewAnchor = tuple[float, float, float, float]
+
+
 SUPPORTED_IMAGE_SUFFIXES: tuple[str, ...] = (
     ".png",
     ".jpg",
@@ -309,7 +319,12 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
     app._preview_canvas_image: int | None = None
     app._preview_display_override: Image.Image | None = None
     app._preview_last_fill_color: tuple[int, int, int] | None = None
-    app.preview_zoom_var = tb.DoubleVar(value=100.0)
+    app.preview_zoom_var = tb.DoubleVar(value=PREVIEW_ZOOM_DEFAULT)
+    app._preview_zoom_manual_override = False
+    app._preview_zoom_updating = False
+    app._preview_render_size: tuple[int, int] = (0, 0)
+    app._preview_canvas_size: tuple[int, int] = (0, 0)
+    app._preview_canvas_hover = False
 
     app._build_ui()
     app._register_root_drop_target()
@@ -1022,6 +1037,11 @@ class BackgroundRemoverApp(_TkRoot):
         self.preview_canvas = Canvas(canvas_container, highlightthickness=0, background="#111827")
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
         self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+        self.preview_canvas.bind("<Enter>", self._on_preview_canvas_enter)
+        self.preview_canvas.bind("<Leave>", self._on_preview_canvas_leave)
+        self.preview_canvas.bind("<MouseWheel>", self._on_preview_mouse_wheel)
+        self.preview_canvas.bind("<Button-4>", self._on_preview_mouse_wheel)
+        self.preview_canvas.bind("<Button-5>", self._on_preview_mouse_wheel)
 
         self.preview_overlay_frame = tb.Frame(canvas_container, bootstyle="dark")
         self.preview_overlay_label = tb.Label(
@@ -1059,14 +1079,16 @@ class BackgroundRemoverApp(_TkRoot):
         tb.Label(zoom_controls, text="Zoom").pack(side=LEFT)
         self.preview_zoom_slider = tb.Scale(
             zoom_controls,
-            from_=25,
-            to=400,
+            from_=int(PREVIEW_ZOOM_MIN),
+            to=int(PREVIEW_ZOOM_MAX),
             orient="horizontal",
             variable=self.preview_zoom_var,
             command=lambda _: self._on_preview_zoom(),
         )
         self.preview_zoom_slider.pack(side=LEFT, fill=BOTH, expand=True, padx=6)
-        self.preview_zoom_value = tb.Label(zoom_controls, text="100%", width=6)
+        self.preview_zoom_value = tb.Label(
+            zoom_controls, text=f"{int(PREVIEW_ZOOM_DEFAULT)}%", width=6
+        )
         self.preview_zoom_value.pack(side=LEFT)
 
         action_frame = tb.Frame(preview_frame)
@@ -2095,25 +2117,43 @@ class BackgroundRemoverApp(_TkRoot):
         self._preview_last_fill_color = None
         self.preview_canvas.delete("all")
         self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
-        self.preview_zoom_var.set(100.0)
-        self.preview_zoom_value.configure(text="100%")
+        self._preview_zoom_manual_override = False
+        self._preview_render_size = (0, 0)
+        self._preview_canvas_size = (
+            max(1, self.preview_canvas.winfo_width()),
+            max(1, self.preview_canvas.winfo_height()),
+        )
+        self._preview_zoom_updating = True
+        try:
+            self.preview_zoom_var.set(PREVIEW_ZOOM_DEFAULT)
+        finally:
+            self._preview_zoom_updating = False
+        self.preview_zoom_value.configure(text=f"{int(PREVIEW_ZOOM_DEFAULT)}%")
         self.preview_info.configure(text="No preview available yet.")
         self._update_preview_controls()
 
-    def _render_preview_image(self) -> None:
+    def _render_preview_image(self, anchor: PreviewAnchor | None = None) -> None:
         """Render the in-memory preview image respecting the zoom slider."""
 
         if not self._preview_image:
             self.preview_canvas.delete("all")
             self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
+            self._preview_render_size = (0, 0)
             return
 
-        zoom_value = max(25.0, min(400.0, float(self.preview_zoom_var.get())))
-        self.preview_zoom_var.set(zoom_value)
+        zoom_value = max(PREVIEW_ZOOM_MIN, min(PREVIEW_ZOOM_MAX, float(self.preview_zoom_var.get())))
+        if zoom_value != float(self.preview_zoom_var.get()):
+            self._preview_zoom_updating = True
+            try:
+                self.preview_zoom_var.set(zoom_value)
+            finally:
+                self._preview_zoom_updating = False
         scale = zoom_value / 100.0
         source_image = self._preview_display_override or self._preview_image
-        width = max(1, int(source_image.width * scale))
-        height = max(1, int(source_image.height * scale))
+        width = max(1, int(round(source_image.width * scale)))
+        height = max(1, int(round(source_image.height * scale)))
+        previous_size = self._preview_render_size
+        self._preview_render_size = (width, height)
         resized = source_image.resize((width, height), Image.LANCZOS)
         self._preview_photo = ImageTk.PhotoImage(resized)
         self.preview_canvas.delete("all")
@@ -2124,24 +2164,202 @@ class BackgroundRemoverApp(_TkRoot):
             image=self._preview_photo,
         )
         self.preview_canvas.configure(scrollregion=(0, 0, width, height))
-        self.preview_zoom_value.configure(text=f"{int(zoom_value)}%")
+        self.preview_zoom_value.configure(text=f"{int(round(zoom_value))}%")
+        self._update_preview_view(anchor, previous_size)
+
+    def _update_preview_view(
+        self,
+        anchor: PreviewAnchor | None,
+        previous_size: tuple[int, int],
+    ) -> None:
+        """Adjust the canvas viewport to keep the ``anchor`` position stable."""
+
+        if self._preview_canvas_image is None:
+            return
+
+        widget_width = max(1, self.preview_canvas.winfo_width())
+        widget_height = max(1, self.preview_canvas.winfo_height())
+        new_width, new_height = self._preview_render_size
+        if new_width <= 0 or new_height <= 0:
+            return
+
+        if anchor is None:
+            anchor = self._current_view_anchor()
+            if anchor is None:
+                return
+
+        canvas_x, canvas_y, pointer_x, pointer_y = anchor
+        pointer_x = float(min(max(pointer_x, 0.0), widget_width))
+        pointer_y = float(min(max(pointer_y, 0.0), widget_height))
+
+        old_width, old_height = previous_size
+        if old_width <= 0 or old_height <= 0:
+            anchor_ratio_x = pointer_x / widget_width
+            anchor_ratio_y = pointer_y / widget_height
+        else:
+            anchor_ratio_x = float(canvas_x) / float(old_width)
+            anchor_ratio_y = float(canvas_y) / float(old_height)
+
+        anchor_ratio_x = min(max(anchor_ratio_x, 0.0), 1.0)
+        anchor_ratio_y = min(max(anchor_ratio_y, 0.0), 1.0)
+
+        new_anchor_x = anchor_ratio_x * new_width
+        new_anchor_y = anchor_ratio_y * new_height
+
+        max_x = max(0.0, new_width - widget_width)
+        max_y = max(0.0, new_height - widget_height)
+        target_x = min(max(new_anchor_x - pointer_x, 0.0), max_x)
+        target_y = min(max(new_anchor_y - pointer_y, 0.0), max_y)
+
+        if new_width > 0:
+            self.preview_canvas.xview_moveto(target_x / new_width)
+        if new_height > 0:
+            self.preview_canvas.yview_moveto(target_y / new_height)
+
+    def _current_view_anchor(self) -> PreviewAnchor | None:
+        """Return the anchor representing the viewport centre."""
+
+        width, height = self._preview_render_size
+        if width <= 0 or height <= 0:
+            return None
+
+        widget_width = max(1, self.preview_canvas.winfo_width())
+        widget_height = max(1, self.preview_canvas.winfo_height())
+        start_x, _ = self.preview_canvas.xview()
+        start_y, _ = self.preview_canvas.yview()
+        canvas_x = start_x * width + widget_width / 2.0
+        canvas_y = start_y * height + widget_height / 2.0
+        return (canvas_x, canvas_y, widget_width / 2.0, widget_height / 2.0)
+
+    def _auto_fit_preview(self) -> None:
+        """Scale the preview to fit inside the canvas when auto-fit is active."""
+
+        if not self._preview_image:
+            return
+
+        canvas_width, canvas_height = self._preview_canvas_size
+        if canvas_width <= 0 or canvas_height <= 0:
+            canvas_width = max(1, self.preview_canvas.winfo_width())
+            canvas_height = max(1, self.preview_canvas.winfo_height())
+
+        source_image = self._preview_display_override or self._preview_image
+        if source_image.width <= 0 or source_image.height <= 0:
+            return
+
+        scale = min(canvas_width / source_image.width, canvas_height / source_image.height)
+        if scale <= 0:
+            return
+
+        zoom_value = max(PREVIEW_ZOOM_MIN, min(PREVIEW_ZOOM_MAX, scale * 100.0))
+        if abs(zoom_value - float(self.preview_zoom_var.get())) < 0.1 and self._preview_canvas_image:
+            return
+
+        self._preview_zoom_manual_override = False
+        self._apply_preview_zoom(zoom_value)
+
+    def _apply_preview_zoom(
+        self,
+        zoom_value: float,
+        *,
+        anchor: PreviewAnchor | None = None,
+        manual_override: bool = False,
+    ) -> None:
+        """Clamp and apply ``zoom_value`` while optionally preserving ``anchor``."""
+
+        clamped = max(PREVIEW_ZOOM_MIN, min(PREVIEW_ZOOM_MAX, float(zoom_value)))
+        if manual_override:
+            self._preview_zoom_manual_override = True
+        self._preview_zoom_updating = True
+        try:
+            self.preview_zoom_var.set(clamped)
+        finally:
+            self._preview_zoom_updating = False
+        self._render_preview_image(anchor)
+
+    def _build_anchor_from_event(self, event: Any) -> PreviewAnchor | None:
+        """Return an anchor derived from ``event`` coordinates if possible."""
+
+        if self._preview_canvas_image is None:
+            return None
+
+        pointer_x = float(getattr(event, "x", 0.0))
+        pointer_y = float(getattr(event, "y", 0.0))
+        canvas_x = self.preview_canvas.canvasx(pointer_x)
+        canvas_y = self.preview_canvas.canvasy(pointer_y)
+        return (canvas_x, canvas_y, pointer_x, pointer_y)
+
+    def _on_preview_canvas_enter(self, _event: Any) -> None:
+        """Focus the preview canvas when the cursor enters its bounds."""
+
+        self._preview_canvas_hover = True
+        try:
+            self.preview_canvas.focus_set()
+        except Exception:  # pragma: no cover - focus best effort
+            pass
+
+    def _on_preview_canvas_leave(self, _event: Any) -> None:
+        """Track when the pointer leaves the preview canvas."""
+
+        self._preview_canvas_hover = False
+
+    def _on_preview_mouse_wheel(self, event: Any) -> None:
+        """Adjust zoom in response to mouse wheel events."""
+
+        if not self._preview_image:
+            return
+
+        if not self._preview_canvas_hover and self.focus_get() is not self.preview_canvas:
+            return
+
+        delta = 0
+        if hasattr(event, "delta") and event.delta:
+            delta = 1 if event.delta > 0 else -1
+        elif getattr(event, "num", None) in (4, 5):
+            delta = 1 if event.num == 4 else -1
+        if delta == 0:
+            return
+
+        anchor = self._build_anchor_from_event(event)
+        new_zoom = float(self.preview_zoom_var.get()) + delta * PREVIEW_ZOOM_WHEEL_STEP
+        self._apply_preview_zoom(new_zoom, anchor=anchor, manual_override=True)
 
     def _on_preview_zoom(self) -> None:
         """Handle zoom slider changes by re-rendering the preview image."""
 
         if not self._preview_image:
-            self.preview_zoom_var.set(100.0)
-            self.preview_zoom_value.configure(text="100%")
+            self._preview_zoom_updating = True
+            try:
+                self.preview_zoom_var.set(PREVIEW_ZOOM_DEFAULT)
+            finally:
+                self._preview_zoom_updating = False
+            self.preview_zoom_value.configure(text=f"{int(PREVIEW_ZOOM_DEFAULT)}%")
             return
-        self._render_preview_image()
 
-    def _on_preview_canvas_resize(self, _event: Any) -> None:
+        anchor = None
+        if not self._preview_zoom_updating:
+            self._preview_zoom_manual_override = True
+            anchor = self._current_view_anchor()
+        self._render_preview_image(anchor)
+
+    def _on_preview_canvas_resize(self, event: Any) -> None:
         """Update the canvas scroll region after a resize event."""
+
+        previous_size = self._preview_canvas_size
+        width = max(1, int(getattr(event, "width", self.preview_canvas.winfo_width())))
+        height = max(1, int(getattr(event, "height", self.preview_canvas.winfo_height())))
+        self._preview_canvas_size = (width, height)
 
         if self._preview_canvas_image is not None:
             bbox = self.preview_canvas.bbox(self._preview_canvas_image)
             if bbox:
                 self.preview_canvas.configure(scrollregion=bbox)
+
+        if (
+            self._preview_image
+            and not self._preview_zoom_manual_override
+            and previous_size != self._preview_canvas_size
+        ):
+            self._auto_fit_preview()
 
     def _on_preview_save(self) -> None:
         """Persist the preview image using the configured output path."""
@@ -2209,9 +2427,19 @@ class BackgroundRemoverApp(_TkRoot):
         self._preview_original_name = original_name
         self._preview_saved_path = None
         self._preview_display_override = None
-        self.preview_zoom_var.set(100.0)
+        self._preview_zoom_manual_override = False
+        self._preview_zoom_updating = True
+        try:
+            self.preview_zoom_var.set(PREVIEW_ZOOM_DEFAULT)
+        finally:
+            self._preview_zoom_updating = False
+        self._preview_canvas_size = (
+            max(1, self.preview_canvas.winfo_width()),
+            max(1, self.preview_canvas.winfo_height()),
+        )
         self.preview_info.configure(text=f"Preview ready: {original_name}")
         self._render_preview_image()
+        self._auto_fit_preview()
         self._log("Preview generated successfully ✔")
         self._update_preview_controls()
 

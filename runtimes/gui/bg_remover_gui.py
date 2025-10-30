@@ -43,6 +43,7 @@ try:
     from bgremover_core.models.specs import MODEL_SPECS
     from bgremover_core.paths import CONFIG_FILE, INPUT_DIR, MODELS_DIR, OUTPUT_DIR
     from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry
+    from bgremover_core.processing.utils import iter_image_files
 except ImportError:  # pragma: no cover - allow running from source without package install
     ROOT_DIR = Path(__file__).resolve().parents[2]
     if str(ROOT_DIR) not in sys.path:
@@ -54,6 +55,7 @@ except ImportError:  # pragma: no cover - allow running from source without pack
     from bgremover_core.models.specs import MODEL_SPECS
     from bgremover_core.paths import CONFIG_FILE, INPUT_DIR, MODELS_DIR, OUTPUT_DIR
     from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry
+    from bgremover_core.processing.utils import iter_image_files
 
 LOGGER = logging.getLogger(__name__)
 
@@ -278,6 +280,12 @@ def _initialize_background_remover_app(app: BackgroundRemoverApp) -> None:
     app.batch_drop_label: tb.Label | None = None
     app._batch_staged_dir: Path | None = None
     app._batch_staged_count = 0
+    app._batch_total_count = 0
+    app._batch_processed_count = 0
+    app.batch_progress_text = tb.StringVar(value="")
+    app.batch_progress_container: tb.Frame | None = None
+    app.batch_progress_bar: tb.Progressbar | None = None
+    app.batch_progress_label: tb.Label | None = None
 
     app._init_styles()
 
@@ -1127,6 +1135,23 @@ class BackgroundRemoverApp(_TkRoot):
         self.log_widget = ScrolledText(log_frame, height=10)
         self.log_widget.pack(fill=BOTH, expand=True)
         self.log_widget.tag_config("error", foreground="#b91c1c")
+
+        self.batch_progress_container = tb.Frame(container, padding=(0, 8, 0, 0))
+        self.batch_progress_container.pack(fill="x", expand=False)
+        self.batch_progress_bar = tb.Progressbar(
+            self.batch_progress_container,
+            mode="determinate",
+            bootstyle="info-striped",
+        )
+        self.batch_progress_bar.pack(fill="x")
+        self.batch_progress_label = tb.Label(
+            self.batch_progress_container,
+            textvariable=self.batch_progress_text,
+            anchor="w",
+            padding=(0, 4, 0, 0),
+        )
+        self.batch_progress_label.pack(anchor="w")
+        self._hide_batch_progress()
 
     def _build_single_tab(self, parent: tb.Frame) -> None:
         """Create widgets for single image processing."""
@@ -2412,6 +2437,52 @@ class BackgroundRemoverApp(_TkRoot):
         for item in self.batch_tree.get_children():
             self.batch_tree.delete(item)
         self._batch_tree_output_paths.clear()
+        self._batch_total_count = 0
+        self._batch_processed_count = 0
+        self._hide_batch_progress()
+
+    def _show_batch_progress(self, total: int) -> None:
+        """Display the batch progress bar configured for ``total`` entries."""
+
+        container = getattr(self, "batch_progress_container", None)
+        bar = getattr(self, "batch_progress_bar", None)
+        if container is None or bar is None:
+            return
+        if total <= 0:
+            self._hide_batch_progress()
+            return
+        bar.configure(maximum=total, value=0)
+        if not container.winfo_manager():
+            container.pack(fill="x", expand=False, pady=(6, 0))
+        self._update_batch_progress_label()
+
+    def _update_batch_progress_label(self) -> None:
+        """Refresh the batch progress label and bar based on current counts."""
+
+        total = max(0, int(self._batch_total_count))
+        processed = max(0, min(int(self._batch_processed_count), total))
+        bar = getattr(self, "batch_progress_bar", None)
+        if bar is not None:
+            maximum = total if total else 1
+            bar.configure(maximum=maximum, value=processed)
+        if total <= 0:
+            self.batch_progress_text.set("")
+            return
+        percentage = int((processed / total) * 100)
+        self.batch_progress_text.set(
+            f"{percentage}% — {processed} / {total} processed"
+        )
+
+    def _hide_batch_progress(self) -> None:
+        """Conceal the batch progress bar and reset its presentation."""
+
+        container = getattr(self, "batch_progress_container", None)
+        if container is not None and container.winfo_manager():
+            container.pack_forget()
+        bar = getattr(self, "batch_progress_bar", None)
+        if bar is not None:
+            bar.configure(value=0, maximum=1)
+        self.batch_progress_text.set("")
 
     def _run_batch(self, input_dir: Path, output_dir: Path | None) -> None:
         """Worker that performs batch processing."""
@@ -2427,6 +2498,11 @@ class BackgroundRemoverApp(_TkRoot):
                     "preserve_names": bool(self.settings.get("preserve_names", False)),
                 }
             )
+            recursive = bool(kwargs.get("recursive", False))
+            total_items = sum(1 for _ in iter_image_files(input_dir, recursive=recursive))
+            self._batch_total_count = total_items
+            self._batch_processed_count = 0
+            self.after(0, lambda: self._show_batch_progress(total_items))
             batch_output_dir = output_dir or OUTPUT_DIR
             batch_output_dir.mkdir(parents=True, exist_ok=True)
             report = process_folder(
@@ -2463,6 +2539,8 @@ class BackgroundRemoverApp(_TkRoot):
         item_id = self.batch_tree.insert("", END, values=(entry.path_in.name, status, details))
         if entry.path_out is not None:
             self._batch_tree_output_paths[item_id] = entry.path_out
+        self._batch_processed_count += 1
+        self._update_batch_progress_label()
         if entry.success:
             log_message = f"{entry.path_in.name} processed successfully ✓"
         else:
@@ -2552,6 +2630,8 @@ class BackgroundRemoverApp(_TkRoot):
             self.single_process_button.configure(state="normal")
             self.batch_process_button.configure(state="normal")
             self._update_preview_controls()
+            if context == "batch":
+                self._hide_batch_progress()
 
 
 def main() -> None:

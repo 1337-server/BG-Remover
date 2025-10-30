@@ -348,8 +348,68 @@ def _prepare_session(
     return get_session(model_key, providers=providers, model_dir=config.resolved_model_dir())
 
 
-def preprocess(img_rgb: np.ndarray, spec: Any) -> np.ndarray:
-    """Return a contiguous CHW float32 tensor according to ``spec``."""
+def preprocess_image(
+    img: np.ndarray,
+    input_size: tuple[int, int],
+    resize_mode: str = "stretch",
+) -> np.ndarray:
+    """Return ``img`` resized to ``input_size`` while logging debug metadata."""
+
+    if img.ndim != 3 or img.shape[2] != 3:
+        raise ValueError("preprocess_image expects an RGB image with shape HxWx3")
+    if img.dtype != np.uint8:
+        raise ValueError("preprocess_image expects uint8 input data")
+
+    height, width = img.shape[:2]
+    target_width, target_height = input_size
+    LOGGER.debug(
+        "[PREPROCESS] Original image shape: %sx%s, resize_mode=%s, target=%s",
+        width,
+        height,
+        resize_mode,
+        input_size,
+    )
+
+    mode = (resize_mode or "stretch").strip().lower()
+    if mode == "stretch":
+        resized = cv2.resize(img, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+        pad_meta: dict[str, Any] = {"scale": None, "pad": None}
+    elif mode == "keep-aspect":
+        scale = min(target_width / width, target_height / height)
+        new_width, new_height = int(width * scale), int(height * scale)
+        resized = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+        pad_width, pad_height = target_width - new_width, target_height - new_height
+        top, bottom = pad_height // 2, pad_height - pad_height // 2
+        left, right = pad_width // 2, pad_width - pad_width // 2
+        resized = cv2.copyMakeBorder(
+            resized,
+            top,
+            bottom,
+            left,
+            right,
+            borderType=cv2.BORDER_CONSTANT,
+            value=(0, 0, 0),
+        )
+        pad_meta = {"scale": scale, "pad": (top, bottom, left, right)}
+    elif mode == "crop":
+        resized = cv2.resize(img, (target_width, target_height), interpolation=cv2.INTER_AREA)
+        pad_meta = {"scale": "crop", "pad": None}
+    else:
+        LOGGER.warning("[PREPROCESS] Unknown resize_mode=%s, defaulting to stretch.", resize_mode)
+        resized = cv2.resize(img, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+        pad_meta = {"scale": None, "pad": None}
+
+    LOGGER.debug("[PREPROCESS] After resize: %s, meta=%s", resized.shape, pad_meta)
+    return resized
+
+
+def preprocess(img_rgb: np.ndarray, spec: Any, *, resize: bool = True) -> np.ndarray:
+    """Return a contiguous CHW float32 tensor according to ``spec``.
+
+    When ``resize`` is ``False`` the caller must supply an image already matching
+    ``spec.input_size``. The function still enforces the expected RGB shape and
+    dtype to keep downstream processing predictable.
+    """
 
     if img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
         raise ValueError("preprocess expects an RGB image with shape HxWx3")
@@ -359,8 +419,15 @@ def preprocess(img_rgb: np.ndarray, spec: Any) -> np.ndarray:
         raise ValueError("spec must expose input_size, mean, and std attributes")
 
     width, height = spec.input_size
-    resized = cv2.resize(img_rgb, (width, height), interpolation=cv2.INTER_LINEAR)
-    tensor = resized.astype(np.float32) / 255.0
+    if resize:
+        working = cv2.resize(img_rgb, (width, height), interpolation=cv2.INTER_LINEAR)
+    else:
+        working = img_rgb
+        if (working.shape[1], working.shape[0]) != (width, height):
+            raise ValueError(
+                "preprocess expects input matching spec.input_size when resize is False",
+            )
+    tensor = working.astype(np.float32) / 255.0
     mean = np.asarray(spec.mean, dtype=np.float32)
     std = np.asarray(spec.std, dtype=np.float32)
     tensor = (tensor - mean) / std
@@ -439,9 +506,9 @@ def _process_loaded_image(
     """Execute the inference pipeline for ``image`` using ``session``."""
 
     source_rgba = image.convert("RGBA")
-    model_input = _resize_for_mode(source_rgba.convert("RGB"), session.spec.input_size, options.resize_mode)
-    rgb_array = _ensure_rgb(model_input)
-    tensor = preprocess(rgb_array, session.spec)
+    rgb_array = _ensure_rgb(source_rgba)
+    resized_rgb = preprocess_image(rgb_array, session.spec.input_size, options.resize_mode)
+    tensor = preprocess(resized_rgb, session.spec, resize=False)
     LOGGER.info(
         "PRE shape=%s dtype=%s min=%.6f max=%.6f",
         tensor.shape,
@@ -449,9 +516,16 @@ def _process_loaded_image(
         float(tensor.min()),
         float(tensor.max()),
     )
+    LOGGER.debug("[INFER] Input tensor shape: %s, dtype=%s", tensor.shape, tensor.dtype)
     raw_logits = _run_session(session, tensor)
     logits = np.asarray(raw_logits, dtype=np.float32)
     mask_raw = np.squeeze(logits).astype(np.float32)
+    LOGGER.debug(
+        "[INFER] Output mask shape: %s, min=%.4f, max=%.4f",
+        mask_raw.shape,
+        float(mask_raw.min()),
+        float(mask_raw.max()),
+    )
     mask_min, mask_max = float(mask_raw.min()), float(mask_raw.max())
     should_normalise = mask_max - mask_min > 1e-6
     LOGGER.info(
@@ -466,6 +540,11 @@ def _process_loaded_image(
     else:
         mask_pre = np.zeros_like(mask_raw, dtype=np.float32)
     original_width, original_height = source_rgba.size
+    LOGGER.debug(
+        "[POSTPROCESS] Resizing mask back to %sx%s",
+        original_width,
+        original_height,
+    )
     resized_mask = cv2.resize(mask_pre, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
     resized_mask = np.clip(resized_mask, 0.0, 1.0).astype(np.float32)
     mask_image = Image.fromarray((resized_mask * 255.0).round().astype(np.uint8), mode="L")

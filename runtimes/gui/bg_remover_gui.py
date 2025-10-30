@@ -1263,6 +1263,7 @@ class BackgroundRemoverApp(_TkRoot):
         self.batch_tree.column("status", width=70, anchor=W)
         self.batch_tree.column("details", anchor=W)
         self.batch_tree.pack(fill=BOTH, expand=True)
+        self.batch_tree.bind("<Double-1>", self._on_batch_item_double_click)
         self._add_tooltip(
             self.batch_tree,
             "Shows progress and results for each processed file.",
@@ -2457,6 +2458,34 @@ class BackgroundRemoverApp(_TkRoot):
         else:
             log_message = f"{entry.path_in.name} failed ✗ — Reason: {details}"
         self._log(log_message, error=not entry.success)
+
+    def _on_batch_item_double_click(self, event: Any) -> None:
+        """Load and display the selected batch file in the preview window."""
+
+        selection = self.batch_tree.selection()
+        if not selection:
+            return
+        item_id = selection[0]
+        values = self.batch_tree.item(item_id, "values")
+        if not values or not values[0]:
+            return
+
+        filename = values[0]
+        output_dir = self.batch_output_var.get() or self.output_dir_var.get() or str(OUTPUT_DIR)
+        file_path = Path(output_dir) / filename
+        if not file_path.exists():
+            messagebox.showerror("File not found", f"Cannot preview {filename}: file not found.")
+            return
+
+        try:
+            with Image.open(file_path) as img:
+                img = img.convert("RGBA")
+            format_hint, _ = _format_meta(self.settings.get("output_format", "PNG"))
+            self._show_preview(img, file_path, format_hint, filename)
+            self._log(f"Loaded preview for {filename} from batch output ✓")
+        except Exception as error:  # pragma: no cover - defensive log for preview failures
+            messagebox.showerror("Preview failed", f"Unable to load {filename}: {error}")
+            self._log(f"Failed to load preview for {filename} ✗ — Reason: {error}", error=True)
 
     def _set_processing_state(self, active: bool, context: str) -> None:
         """Toggle interactive widgets and visual indicators for processing state."""

@@ -2,25 +2,30 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
+import shutil
 import tempfile
 import zipfile
+import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
 from bgremover_core import Config, load_config, remove_background
 from bgremover_core.config import persist_config
-from bgremover_core.io.image_io import image_to_numpy
+from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
 from bgremover_core.models.loader import detect_providers
 from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
 from bgremover_core.paths import CONFIG_FILE
-from bgremover_core.processing.pipeline import PipelineError, process_folder
+from bgremover_core.processing import pipeline as pipeline_module
+from bgremover_core.processing.pipeline import PipelineError
 from flask import (
     Blueprint,
     Flask,
@@ -31,10 +36,14 @@ from flask import (
     render_template,
     request,
     send_file,
+    stream_with_context,
     url_for,
 )
 
-from .services import ResultRecord, ResultStore, ensure_filename, total_size
+from werkzeug.datastructures import FileStorage
+from werkzeug.utils import secure_filename
+
+from .services import BatchJob, BatchJobManager, ResultRecord, ResultStore, ensure_filename
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +55,27 @@ webui = Blueprint(
 )
 
 __all__ = ["webui"]
+
+
+ALLOWED_BATCH_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+
+
+@dataclass(slots=True)
+class BatchCandidate:
+    """Describe a queued file for batch processing."""
+
+    source: Path
+    relative_path: Path
+
+
+@dataclass(slots=True)
+class BatchSource:
+    """Describe the prepared inputs for a batch job."""
+
+    root: Path
+    candidates: list[BatchCandidate]
+    label: str
+    cleanup: Callable[[], None] | None = None
 
 
 OPTION_HELP: dict[str, str] = {
@@ -99,6 +129,12 @@ def _get_executor() -> ThreadPoolExecutor:
 
 def _get_store() -> ResultStore:
     return current_app.extensions["result_store"]
+
+
+def _get_batch_manager() -> BatchJobManager:
+    """Return the shared :class:`BatchJobManager` instance."""
+
+    return current_app.extensions["batch_manager"]
 
 
 def _provider_badge(providers: list[str]) -> tuple[str, list[str]]:
@@ -275,6 +311,344 @@ def _resolve_output_directory(store: ResultStore, subdir: str) -> Path:
     destination = base_dir / subdir
     destination.mkdir(parents=True, exist_ok=True)
     return destination
+
+
+def _normalise_relative_path(name: str) -> Path:
+    """Return a sanitised relative path derived from ``name``."""
+
+    candidate = Path(name)
+    safe_parts: list[str] = []
+    for part in candidate.parts:
+        if part in {"", ".", ".."}:
+            continue
+        cleaned = secure_filename(part)
+        if cleaned:
+            safe_parts.append(cleaned)
+    if not safe_parts:
+        fallback = secure_filename(candidate.name) or "upload"
+        return Path(fallback)
+    return Path(*safe_parts)
+
+
+def _ensure_unique_path(destination: Path) -> Path:
+    """Return ``destination`` or a unique variant if it already exists."""
+
+    if not destination.exists():
+        return destination
+    counter = 1
+    stem = destination.stem
+    suffix = destination.suffix
+    parent = destination.parent
+    while True:
+        candidate = parent / f"{stem}_{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def _collect_candidates(source_dir: Path, recursive: bool) -> list[BatchCandidate]:
+    """Return the list of image files ready for processing."""
+
+    candidates: list[BatchCandidate] = []
+    if recursive:
+        iterator = source_dir.rglob("*")
+    else:
+        iterator = source_dir.iterdir()
+    for path in iterator:
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in ALLOWED_BATCH_EXTENSIONS:
+            continue
+        try:
+            relative = path.relative_to(source_dir)
+        except ValueError:
+            continue
+        if not recursive and len(relative.parts) > 1:
+            continue
+        candidates.append(BatchCandidate(source=path, relative_path=relative))
+    candidates.sort(key=lambda item: str(item.relative_path).lower())
+    return candidates
+
+
+def _persist_folder_upload(files: Iterable[FileStorage]) -> Path:
+    """Persist uploaded folder contents to a temporary directory."""
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="bgr-folder-"))
+    for storage in files:
+        if not storage or not storage.filename:
+            continue
+        relative = _normalise_relative_path(storage.filename)
+        if not relative.parts:
+            continue
+        destination = temp_dir / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        storage.stream.seek(0)
+        storage.save(str(destination))
+    return temp_dir
+
+
+def _safe_extract_zip(file_storage: FileStorage) -> Path:
+    """Extract ``file_storage`` into a temporary directory with sanitisation."""
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="bgr-zip-"))
+    file_storage.stream.seek(0)
+    with zipfile.ZipFile(file_storage.stream) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            relative = _normalise_relative_path(info.filename)
+            if not relative.suffix:
+                continue
+            if relative.suffix.lower() not in ALLOWED_BATCH_EXTENSIONS:
+                continue
+            destination = temp_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info, "r") as source, destination.open("wb") as target:
+                shutil.copyfileobj(source, target)
+    return temp_dir
+
+
+def _prepare_batch_source(
+    *,
+    folder_files: list[FileStorage],
+    folder_path_raw: str | None,
+    zip_file: FileStorage | None,
+    recursive: bool,
+) -> BatchSource:
+    """Return a :class:`BatchSource` describing the batch inputs."""
+
+    cleanup: Callable[[], None] | None = None
+    if folder_files:
+        root = _persist_folder_upload(folder_files)
+        cleanup = lambda: shutil.rmtree(root, ignore_errors=True)
+        candidates = _collect_candidates(root, recursive)
+        label = folder_path_raw or Path(root).name
+        return BatchSource(root=root, candidates=candidates, label=label, cleanup=cleanup)
+    if folder_path_raw:
+        root = Path(folder_path_raw).expanduser()
+        if not root.exists() or not root.is_dir():
+            raise FileNotFoundError(f"Input directory does not exist: {root}")
+        candidates = _collect_candidates(root, recursive)
+        return BatchSource(root=root, candidates=candidates, label=root.name)
+    if zip_file and zip_file.filename:
+        root = _safe_extract_zip(zip_file)
+        cleanup = lambda: shutil.rmtree(root, ignore_errors=True)
+        candidates = _collect_candidates(root, recursive)
+        label = Path(zip_file.filename).stem
+        return BatchSource(root=root, candidates=candidates, label=label, cleanup=cleanup)
+    raise ValueError("No batch inputs provided")
+
+
+def _execute_batch_job(
+    app: Flask,
+    job: BatchJob,
+    *,
+    batch_source: BatchSource,
+    output_dir: Path,
+    options: dict[str, Any],
+    config: Config,
+    recursive: bool,
+    remember_preferences: bool,
+) -> None:
+    """Process ``batch_source`` and emit progress events via ``job``."""
+
+    app_logger = LOGGER.getChild(f"batch.{job.identifier}")
+    generated_paths: list[Path] = []
+    status = "finished"
+    message: str | None = None
+    processing_kwargs = _pipeline_kwargs(options)
+    processing_kwargs.update(
+        {
+            "output_format": options.get("output_format", "PNG"),
+            "preserve_names": options.get("preserve_names", False),
+        }
+    )
+    options_obj = pipeline_module.ProcessingOptions.from_kwargs(
+        feather_radius=options.get("feather_radius", 3),
+        **processing_kwargs,
+    )
+
+    with app.app_context():
+        store = _get_store()
+        try:
+            session = pipeline_module._prepare_session(
+                options["model_key"],
+                config=config,
+                providers=config.provider_hints,
+            )
+        except Exception as error:  # pragma: no cover - defensive
+            message = str(error)
+            status = "error"
+            job.emit(
+                "finished",
+                {
+                    "status": status,
+                    "message": message,
+                    "summary": {
+                        "total": job.total_items,
+                        "success": 0,
+                        "failed": job.total_items,
+                        "size_bytes": 0,
+                    },
+                },
+            )
+            job.mark_finished()
+            return
+
+        for candidate in batch_source.candidates:
+            if job.cancelled():
+                status = "cancelled"
+                message = "Batch cancelled by client"
+                break
+            start = time.perf_counter()
+            relative_text = str(candidate.relative_path)
+            try:
+                with Image.open(candidate.source) as source:
+                    pil_image = source.convert("RGBA")
+                result = pipeline_module._process_loaded_image(
+                    pil_image, session=session, options=options_obj
+                )
+                pillow_format, suffix = pipeline_module._infer_output_suffix(
+                    options_obj.output_format
+                )
+                if recursive and len(candidate.relative_path.parts) > 1:
+                    destination_parent = output_dir / candidate.relative_path.parent
+                else:
+                    destination_parent = output_dir
+                destination_parent.mkdir(parents=True, exist_ok=True)
+                if options_obj.preserve_names:
+                    destination_name = f"{candidate.relative_path.stem}.{suffix}"
+                else:
+                    destination_name = f"{candidate.relative_path.stem}_no_bg.{suffix}"
+                destination = destination_parent / destination_name
+                destination = _ensure_unique_path(destination)
+                result_image = result.image
+                if pillow_format != "PNG" and result_image.mode != "RGB":
+                    result_image = result_image.convert("RGB")
+                save_image_to_path(result_image, destination, format_hint=pillow_format)
+                generated_paths.append(destination)
+                job.success_count += 1
+                if destination.exists():
+                    job.size_bytes += destination.stat().st_size
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                job.emit(
+                    "item_success",
+                    {
+                        "input": relative_text,
+                        "output": str(destination.relative_to(output_dir)),
+                        "elapsed_ms": round(elapsed_ms, 2),
+                    },
+                )
+            except UnidentifiedImageError as error:
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                job.failure_count += 1
+                error_message = f"Unsupported image format: {error}"
+                app_logger.warning("%s", error_message)
+                job.emit(
+                    "item_error",
+                    {
+                        "input": relative_text,
+                        "elapsed_ms": round(elapsed_ms, 2),
+                        "error": error_message,
+                    },
+                )
+            except PermissionError as error:
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                job.failure_count += 1
+                error_message = f"Permission error: {error}"
+                app_logger.warning("%s", error_message)
+                job.emit(
+                    "item_error",
+                    {
+                        "input": relative_text,
+                        "elapsed_ms": round(elapsed_ms, 2),
+                        "error": error_message,
+                    },
+                )
+            except Exception as error:  # pragma: no cover - defensive
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                job.failure_count += 1
+                error_message = str(error)
+                app_logger.exception("Processing failed for %s", candidate.source)
+                job.emit(
+                    "item_error",
+                    {
+                        "input": relative_text,
+                        "elapsed_ms": round(elapsed_ms, 2),
+                        "error": error_message,
+                    },
+                )
+
+        download_url: str | None = None
+        try:
+            if generated_paths:
+                zip_name = ensure_filename(f"batch_{job.identifier}.zip")
+                zip_path = output_dir / zip_name
+                with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for file_path in generated_paths:
+                        arcname = str(file_path.relative_to(output_dir))
+                        archive.write(file_path, arcname=arcname)
+                job.zip_path = zip_path
+                record_options = _serialise_options({"batch": True, **options})
+                record_options["output_directory"] = str(output_dir)
+                record = ResultRecord(
+                    identifier=job.identifier,
+                    original_name=batch_source.label,
+                    result_name=zip_name,
+                    path=zip_path,
+                    mime_type="application/zip",
+                    created_at=datetime.now(UTC),
+                    options=record_options,
+                    size_bytes=zip_path.stat().st_size,
+                )
+                store.add_record(record)
+                download_url = url_for("webui.download", identifier=job.identifier)
+
+            if remember_preferences and options.get("model_dir"):
+                persist_config(config)
+
+            summary = {
+                "total": job.total_items,
+                "success": job.success_count,
+                "failed": job.failure_count,
+                "size_bytes": job.size_bytes,
+            }
+            payload: dict[str, Any] = {
+                "status": status,
+                "summary": summary,
+                "download_url": download_url,
+                "output_dir": str(output_dir),
+            }
+            if job.zip_path:
+                payload["zip_name"] = job.zip_path.name
+            if message:
+                payload["message"] = message
+            job.emit("finished", payload)
+        finally:
+            job.mark_finished()
+
+
+def _event_stream(job: BatchJob, manager: BatchJobManager):
+    """Yield server-sent events produced by ``job``."""
+
+    try:
+        while True:
+            event = job.next_event()
+            if event is None:
+                if job.finished():
+                    break
+                yield ": keep-alive\n\n"
+                continue
+            chunk = f"event: {event.name}\ndata: {json.dumps(event.payload)}\n\n"
+            yield chunk
+            if event.name == "finished":
+                break
+    except GeneratorExit:  # pragma: no cover - triggered by client disconnect
+        job.cancel()
+        raise
+    finally:
+        if job.finished():
+            manager.discard(job.identifier)
 
 
 def _determine_output_meta(format_name: str) -> tuple[str, str]:
@@ -503,87 +877,116 @@ def process_images() -> Response:
     return jsonify({"results": results})
 
 
-@webui.route("/batch", methods=["POST"])
-def batch_process() -> Response:
+@webui.route("/api/process/batch", methods=["POST"])
+def api_process_batch() -> Response:
     config = _get_config()
     options = _options_from_request(config)
     active_config = _prepare_config(config, options["model_dir"], options["provider_choice"])
 
-    archive = request.files.get("archive")
-    if not archive or not archive.filename:
-        return jsonify({"error": "Upload a ZIP archive containing images."}), 400
+    recursive = _parse_bool(request.form.get("recursive"))
+    folder_files = [file for file in request.files.getlist("folder_files") if file and file.filename]
+    zip_file = request.files.get("zip_file") or request.files.get("archive")
+    folder_path_raw = (request.form.get("folder_path") or "").strip() or None
 
     try:
-        output_dir = _resolve_output_directory(_get_store(), options["output_subdir"])
-        batch_id = uuid4().hex
-        batch_output = output_dir / f"batch_{batch_id}"
-        batch_output.mkdir(parents=True, exist_ok=True)
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            archive.stream.seek(0)
-            with zipfile.ZipFile(archive.stream) as zip_file:
-                zip_file.extractall(temp_path)
-
-            executor = _get_executor()
-            future = executor.submit(
-                process_folder,
-                temp_path,
-                output_dir=batch_output,
-                model_key=options["model_key"],
-                config=active_config,
-                feather_radius=options["feather_radius"],
-                **_pipeline_kwargs(options),
-            )
-            report = future.result()
-
-        generated_files = [entry.path_out for entry in report.entries if entry.success and entry.path_out]
-        if not generated_files:
-            return jsonify({"error": "No images were processed successfully."}), 422
-
-        zip_name = ensure_filename(f"batch_{batch_id}.zip")
-        zip_path = batch_output / zip_name
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as result_zip:
-            for file_path in generated_files:
-                if file_path is None:
-                    continue
-                result_zip.write(file_path, arcname=file_path.name)
-
-        store = _get_store()
-        record = ResultRecord(
-            identifier=batch_id,
-            original_name=archive.filename,
-            result_name=zip_name,
-            path=zip_path,
-            mime_type="application/zip",
-            created_at=datetime.now(UTC),
-            options=_serialise_options({"batch": True, **options}),
-            size_bytes=zip_path.stat().st_size,
+        batch_source = _prepare_batch_source(
+            folder_files=folder_files,
+            folder_path_raw=folder_path_raw,
+            zip_file=zip_file,
+            recursive=recursive,
         )
-        store.add_record(record)
-
-        response_payload = {
-            "batch_id": batch_id,
-            "zip_name": zip_name,
-            "download_url": f"/download/{batch_id}",
-            "entries": report.to_rows(),
-            "summary": {
-                "total": report.total,
-                "success": report.successes,
-                "failed": report.failures,
-                "size_bytes": total_size(generated_files),
-            },
-        }
-        if options["remember"] and options["model_dir"]:
-            persist_config(active_config)
-        return jsonify(response_payload)
-    except zipfile.BadZipFile:
-        return jsonify({"error": "The uploaded file is not a valid ZIP archive."}), 400
     except FileNotFoundError as error:
         return jsonify({"error": str(error)}), 404
-    except PipelineError as error:
-        LOGGER.error("Batch processing failed: %s", error)
-        return jsonify({"error": str(error)}), 422
+    except zipfile.BadZipFile:
+        return jsonify({"error": "The uploaded file is not a valid ZIP archive."}), 400
+    except ValueError:
+        return jsonify({"error": "Provide a folder path, folder upload, or ZIP archive."}), 400
+
+    if not batch_source.candidates:
+        if batch_source.cleanup:
+            batch_source.cleanup()
+        return jsonify({"error": "No valid images found in folder."}), 400
+
+    store = _get_store()
+    base_output = _resolve_output_directory(store, options["output_subdir"])
+    batch_id = uuid4().hex
+    batch_output = base_output / f"batch_{batch_id}"
+    batch_output.mkdir(parents=True, exist_ok=True)
+
+    job = BatchJob(batch_id, len(batch_source.candidates), output_dir=batch_output)
+    manager = _get_batch_manager()
+    manager.register(job)
+    if batch_source.cleanup:
+        job.add_cleanup(batch_source.cleanup)
+
+    job.emit(
+        "started",
+        {
+            "total": job.total_items,
+            "label": batch_source.label,
+            "recursive": recursive,
+        },
+    )
+
+    executor = _get_executor()
+    app_obj = current_app._get_current_object()
+    future = executor.submit(
+        _execute_batch_job,
+        app_obj,
+        job,
+        batch_source=batch_source,
+        output_dir=batch_output,
+        options=options,
+        config=active_config,
+        recursive=recursive,
+        remember_preferences=options.get("remember", True),
+    )
+    job.attach_future(future)
+    return jsonify({"status": "accepted", "job_id": batch_id, "total": job.total_items})
+
+
+@webui.route("/api/process/batch/<string:job_id>/stream", methods=["GET"])
+def api_process_batch_stream(job_id: str) -> Response:
+    manager = _get_batch_manager()
+    job = manager.get(job_id)
+    if job is None:
+        return jsonify({"error": "Batch job not found"}), 404
+
+    response = Response(stream_with_context(_event_stream(job, manager)), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Connection"] = "keep-alive"
+    return response
+
+
+@webui.route("/api/process/batch/<string:job_id>/files", methods=["GET"])
+def api_process_batch_files(job_id: str) -> Response:
+    store = _get_store()
+    record = store.get(job_id)
+    if record is None:
+        return jsonify({"error": "Batch job not found"}), 404
+    output_dir_raw = record.options.get("output_directory") if isinstance(record.options, dict) else None
+    if not output_dir_raw:
+        return jsonify({"error": "Output directory not recorded for this batch."}), 404
+    output_dir = Path(output_dir_raw)
+    try:
+        if not output_dir.exists() or not output_dir.is_dir():
+            raise FileNotFoundError
+        base_dir = store.base_dir
+        if hasattr(output_dir, "is_relative_to"):
+            if not output_dir.is_relative_to(base_dir):
+                return jsonify({"error": "Access to this directory is not permitted."}), 403
+        else:  # pragma: no cover - Python <3.9 fallback not expected
+            output_dir.resolve().relative_to(base_dir.resolve())
+    except (FileNotFoundError, ValueError):
+        return jsonify({"error": "Output directory not found"}), 404
+
+    files: list[str] = []
+    for path in sorted(output_dir.rglob("*")):
+        if path.is_file():
+            relative = path.relative_to(output_dir)
+            files.append(str(relative).replace("\\", "/"))
+    return jsonify({"output_dir": str(output_dir), "files": files})
 
 
 @webui.route("/result/<string:identifier>", methods=["GET"])

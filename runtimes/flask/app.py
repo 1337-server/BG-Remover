@@ -10,7 +10,7 @@ from bgremover_core.paths import CONFIG_FILE, INPUT_DIR, OUTPUT_DIR
 from flask import Flask
 
 from .routes import webui
-from .services import ResultStore
+from .services import BatchJobManager, ResultStore
 
 _DEFAULT_SECRET = "bgremover-secret"
 
@@ -52,6 +52,7 @@ def create_app(config_overrides: dict[str, object] | None = None) -> Flask:
 
     app.extensions["executor"] = ThreadPoolExecutor(max_workers=4)
     app.extensions["result_store"] = _create_result_store(app)
+    app.extensions["batch_manager"] = BatchJobManager()
 
     app.register_blueprint(webui)
     return app

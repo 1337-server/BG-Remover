@@ -1,10 +1,12 @@
 """ONNX runtime session management and model download helpers."""
+
 from __future__ import annotations
 
 import contextlib
 import hashlib
 import logging
 import os
+import subprocess
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -14,6 +16,11 @@ from typing import Any
 
 import numpy as np
 import onnxruntime as ort
+
+try:  # pragma: no cover - optional dependency fallback
+    import pynvml  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency fallback
+    pynvml = None
 
 try:  # pragma: no cover - optional dependency fallback
     import requests  # type: ignore[import]
@@ -30,7 +37,6 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for restricted enviro
     )
 
 from ..paths import MODELS_DIR
-from ..utils.gpu_memory import query_gpu_memory
 from .specs import MODEL_SPECS, ModelSpec
 
 LOGGER = logging.getLogger(__name__)
@@ -79,68 +85,60 @@ _DOWNLOAD_STATUS_LOCK = threading.Lock()
 _DOWNLOAD_STATUSES: dict[tuple[Path, str], DownloadStatus] = {}
 
 
-def _normalise_cuda_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return CUDA provider options augmented with safe defaults."""
+def get_gpu_memory(device_index: int = 0) -> tuple[int | None, int | None, int | None]:
+    """Return the total, free, and used VRAM for ``device_index`` in bytes."""
 
-    merged: dict[str, Any] = {}
-    if options:
-        merged.update({str(key): value for key, value in options.items()})
-
-    merged.setdefault("arena_extend_strategy", "kSameAsRequested")
-    merged.setdefault("cudnn_conv_use_max_workspace", "1")
-    merged.setdefault("do_copy_in_default_stream", "1")
-
-    snapshot = query_gpu_memory()
-    if snapshot is not None and snapshot.free > 0:
-        limit_bytes = int(snapshot.free * 0.8)
-        if limit_bytes > 0:
-            merged["gpu_mem_limit"] = str(limit_bytes)
-            LOGGER.info(
-                "Configuring CUDAExecutionProvider gpu_mem_limit to %s MiB based on NVML free memory.",
-                limit_bytes // (1024 * 1024),
+    nvml_initialised = False
+    try:
+        if pynvml is None:
+            raise RuntimeError("pynvml is not available")
+        pynvml.nvmlInit()
+        nvml_initialised = True
+        handle = pynvml.nvmlDeviceGetHandleByIndex(device_index)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        total = int(info.total)
+        free = int(info.free)
+        used = int(info.used)
+        return total, free, used
+    except Exception as error:  # pragma: no cover - depends on NVML availability
+        LOGGER.warning("Failed to query GPU memory via NVML: %s", error)
+        try:
+            output = subprocess.check_output(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.total,memory.free,memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                text=True,
             )
-    elif "gpu_mem_limit" in merged:
-        merged["gpu_mem_limit"] = str(merged["gpu_mem_limit"])
-    else:
-        LOGGER.info(
-            "CUDAExecutionProvider memory limit could not be determined from NVML; "
-            "proceeding without an explicit limit.",
+        except Exception as fallback_error:  # pragma: no cover - depends on environment
+            LOGGER.warning(
+                "Fallback nvidia-smi memory query failed: %s",
+                fallback_error,
+            )
+            return None, None, None
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not lines:
+            return None, None, None
+        target = lines[device_index] if device_index < len(lines) else lines[0]
+        try:
+            total_mib, free_mib, used_mib = (
+                int(part.strip()) for part in target.split(",")
+            )
+        except ValueError:  # pragma: no cover - defensive parsing guard
+            return None, None, None
+        mib_to_bytes = 1024 * 1024
+        return (
+            total_mib * mib_to_bytes,
+            free_mib * mib_to_bytes,
+            used_mib * mib_to_bytes,
         )
-
-    return merged
-
-
-def _apply_cuda_provider_defaults(entry: ProviderEntry) -> ProviderEntry:
-    """Return ``entry`` with adaptive CUDA provider defaults applied."""
-
-    if isinstance(entry, tuple):
-        name, options = entry
-    else:
-        name, options = entry, {}
-    if name != "CUDAExecutionProvider":
-        return entry
-
-    if isinstance(options, Mapping):
-        raw_options: Mapping[str, Any] = options
-    else:  # pragma: no cover - defensive fallback for unexpected sequences
-        raw_options = dict(options)  # type: ignore[arg-type]
-    return (name, _normalise_cuda_options(raw_options))
-
-
-def _normalise_providers(providers: Sequence[ProviderEntry]) -> list[ProviderEntry]:
-    """Return ``providers`` augmented with safe defaults for GPU execution."""
-
-    normalised: list[ProviderEntry] = []
-    for entry in providers:
-        if isinstance(entry, tuple):
-            name = entry[0]
-        else:
-            name = entry
-        if name == "CUDAExecutionProvider":
-            normalised.append(_apply_cuda_provider_defaults(entry))
-        else:
-            normalised.append(entry)
-    return normalised
+    finally:
+        if nvml_initialised:
+            try:  # pragma: no cover - NVML shutdown failures are benign
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
 
 
 def _provider_name(entry: ProviderEntry) -> str:
@@ -451,7 +449,7 @@ class BackgroundRemovalSession:
         spec: ModelSpec,
         model_path: Path,
         *,
-        providers: Sequence[str],
+        providers: Sequence[ProviderEntry],
     ) -> None:
         self.spec = spec
         self.model_path = Path(model_path)
@@ -465,7 +463,50 @@ class BackgroundRemovalSession:
             else:
                 session_options.inter_op_num_threads = value
                 session_options.intra_op_num_threads = value
-        provider_entries = _normalise_providers(list(providers) or ["CPUExecutionProvider"])
+
+        requested = list(providers or ["CPUExecutionProvider"])
+        extras: list[ProviderEntry] = []
+        extras_seen: set[str] = set()
+        wants_cuda = False
+        for entry in requested:
+            name = _provider_name(entry)
+            if name == "CUDAExecutionProvider":
+                wants_cuda = True
+                continue
+            if name == "CPUExecutionProvider":
+                continue
+            if name in extras_seen:
+                continue
+            extras.append(entry)
+            extras_seen.add(name)
+
+        provider_entries: list[ProviderEntry] = []
+        total_vram: int | None = None
+        free_vram: int | None = None
+        gpu_mem_limit = 0
+        cuda_provider_options: dict[str, Any] | None = None
+
+        if wants_cuda:
+            total_vram, free_vram, _ = get_gpu_memory(0)
+            if free_vram:
+                gpu_mem_limit = int(free_vram * 0.9)
+            LOGGER.info(
+                "Detected GPU memory total=%s, free=%s, setting limit=%s",
+                total_vram,
+                free_vram,
+                gpu_mem_limit,
+            )
+            cuda_provider_options = {
+                "device_id": 0,
+                "arena_extend_strategy": "kSameAsRequested",
+                "gpu_mem_limit": gpu_mem_limit,
+                "cudnn_conv_algo_search": "EXHAUSTIVE",
+            }
+            provider_entries.append(("CUDAExecutionProvider", cuda_provider_options))
+
+        provider_entries.extend(extras)
+        provider_entries.append(("CPUExecutionProvider", {}))
+
         try:
             self.inner = ort.InferenceSession(
                 str(self.model_path),
@@ -473,30 +514,55 @@ class BackgroundRemovalSession:
                 providers=provider_entries,
             )
         except Exception as error:  # pragma: no cover - depends on onnxruntime
-            if any(_provider_name(entry) == "CUDAExecutionProvider" for entry in provider_entries):
+            if wants_cuda:
                 LOGGER.warning(
-                    "CUDAExecutionProvider initialisation failed: %s. Falling back to CPUExecutionProvider.",
+                    "GPU session failed (%s); retrying with reduced memory limit...",
                     error,
                 )
-                cpu_only = [
-                    entry
-                    for entry in provider_entries
-                    if _provider_name(entry) == "CPUExecutionProvider"
-                ] or ["CPUExecutionProvider"]
-                try:
-                    self.inner = ort.InferenceSession(
-                        str(self.model_path),
-                        sess_options=session_options,
-                        providers=cpu_only,
+                if gpu_mem_limit > 0 and cuda_provider_options is not None:
+                    reduced_limit = int(gpu_mem_limit * 0.8)
+                    cuda_provider_options["gpu_mem_limit"] = reduced_limit
+                    try:
+                        self.inner = ort.InferenceSession(
+                            str(self.model_path),
+                            sess_options=session_options,
+                            providers=provider_entries,
+                        )
+                    except Exception as retry_error:  # pragma: no cover - depends on onnxruntime
+                        LOGGER.error(
+                            "GPU retry failed (%s); falling back to CPU provider.",
+                            retry_error,
+                        )
+                        try:
+                            self.inner = ort.InferenceSession(
+                                str(self.model_path),
+                                sess_options=session_options,
+                                providers=["CPUExecutionProvider"],
+                            )
+                        except Exception as cpu_error:  # pragma: no cover - depends on onnxruntime
+                            message = (
+                                f"Failed to load ONNX model {spec.key} from {self.model_path}: {cpu_error}"
+                            )
+                            raise ModelUnavailableError(message) from cpu_error
+                else:
+                    LOGGER.error(
+                        "No GPU memory limit available; falling back to CPU provider.",
                     )
-                except Exception as cpu_error:  # pragma: no cover - depends on onnxruntime
-                    message = (
-                        f"Failed to load ONNX model {spec.key} from {self.model_path}: {cpu_error}"
-                    )
-                    raise ModelUnavailableError(message) from cpu_error
+                    try:
+                        self.inner = ort.InferenceSession(
+                            str(self.model_path),
+                            sess_options=session_options,
+                            providers=["CPUExecutionProvider"],
+                        )
+                    except Exception as cpu_error:  # pragma: no cover - depends on onnxruntime
+                        message = (
+                            f"Failed to load ONNX model {spec.key} from {self.model_path}: {cpu_error}"
+                        )
+                        raise ModelUnavailableError(message) from cpu_error
             else:
                 message = f"Failed to load ONNX model {spec.key} from {self.model_path}: {error}"
                 raise ModelUnavailableError(message) from error
+        LOGGER.info("Active providers: %s", self.inner.get_providers())
         self.input_name = self.inner.get_inputs()[0].name
         providers_available = self.inner.get_providers()
         self.providers_available = tuple(providers_available)
@@ -526,7 +592,7 @@ def _resolve_spec(model_key: str) -> ModelSpec:
 def get_session(
     model_key: str,
     *,
-    providers: Sequence[str] | None = None,
+    providers: Sequence[ProviderEntry] | None = None,
     model_dir: Path | None = None,
 ) -> BackgroundRemovalSession:
     """Return a cached :class:`BackgroundRemovalSession` for ``model_key``."""
@@ -541,7 +607,7 @@ def get_session(
         return cached
 
     spec = _resolve_spec(model_key)
-    providers = _normalise_providers(list(providers or detect_providers()))
+    providers = list(providers or detect_providers())
     try:
         model_path = _download_model(spec, resolved_dir)
     except ModelUnavailableError:

@@ -20,7 +20,6 @@ from bgremover_core.models.loader import (
     get_session,
 )
 from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
-from bgremover_core.utils.gpu_memory import GpuMemorySnapshot
 
 
 def test_detect_providers_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,8 +88,8 @@ def test_cuda_provider_uses_dynamic_memory_limit(
     monkeypatch.setattr(loader, "_SESSION_CACHE", {})
     monkeypatch.setattr(
         loader,
-        "query_gpu_memory",
-        lambda: GpuMemorySnapshot(total=8 * 1024**3, free=6 * 1024**3),
+        "get_gpu_memory",
+        lambda _device=0: (8 * 1024**3, 6 * 1024**3, 2 * 1024**3),
     )
 
     def fake_download(model_spec, model_dir):
@@ -119,11 +118,11 @@ def test_cuda_provider_uses_dynamic_memory_limit(
     assert isinstance(provider_entries, list)
     assert provider_entries[0][0] == "CUDAExecutionProvider"
     options = provider_entries[0][1]
+    assert options["device_id"] == 0
     assert options["arena_extend_strategy"] == "kSameAsRequested"
-    assert options["cudnn_conv_use_max_workspace"] == "1"
-    assert options["do_copy_in_default_stream"] == "1"
-    assert options["gpu_mem_limit"] == str(int(6 * 1024**3 * 0.8))
-    assert provider_entries[1] == "CPUExecutionProvider"
+    assert options["cudnn_conv_algo_search"] == "EXHAUSTIVE"
+    assert options["gpu_mem_limit"] == int(6 * 1024**3 * 0.9)
+    assert provider_entries[1] == ("CPUExecutionProvider", {})
 
 
 def test_cuda_provider_without_memory_info(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -134,7 +133,7 @@ def test_cuda_provider_without_memory_info(monkeypatch: pytest.MonkeyPatch, tmp_
     model_path.write_bytes(b"dummy")
 
     monkeypatch.setattr(loader, "_SESSION_CACHE", {})
-    monkeypatch.setattr(loader, "query_gpu_memory", lambda: None)
+    monkeypatch.setattr(loader, "get_gpu_memory", lambda _device=0: (None, None, None))
 
     def fake_download(model_spec, model_dir):
         assert model_dir == tmp_path
@@ -162,11 +161,11 @@ def test_cuda_provider_without_memory_info(monkeypatch: pytest.MonkeyPatch, tmp_
     assert isinstance(provider_entries, list)
     assert provider_entries[0][0] == "CUDAExecutionProvider"
     options = provider_entries[0][1]
+    assert options["device_id"] == 0
     assert options["arena_extend_strategy"] == "kSameAsRequested"
-    assert options["cudnn_conv_use_max_workspace"] == "1"
-    assert options["do_copy_in_default_stream"] == "1"
-    assert "gpu_mem_limit" not in options
-    assert provider_entries[1] == "CPUExecutionProvider"
+    assert options["cudnn_conv_algo_search"] == "EXHAUSTIVE"
+    assert options["gpu_mem_limit"] == 0
+    assert provider_entries[1] == ("CPUExecutionProvider", {})
 
 
 def _provider_entry_name(entry):
@@ -189,8 +188,8 @@ def test_cuda_initialisation_falls_back_to_cpu(
     monkeypatch.setattr(loader, "_SESSION_CACHE", {})
     monkeypatch.setattr(
         loader,
-        "query_gpu_memory",
-        lambda: GpuMemorySnapshot(total=8 * 1024**3, free=4 * 1024**3),
+        "get_gpu_memory",
+        lambda _device=0: (8 * 1024**3, 4 * 1024**3, 4 * 1024**3),
     )
 
     def fake_download(model_spec, model_dir):

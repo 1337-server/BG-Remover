@@ -8,21 +8,17 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+import cv2
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from bgremover_core.config import Config, load_config
 from bgremover_core.io.image_io import load_image_from_array, save_image_to_path
 from bgremover_core.io.paths import resolve_batch_output_dir
 from bgremover_core.models.loader import BackgroundRemovalSession, detect_providers, get_session
-from bgremover_core.processing.utils import (
-    apply_mask_to_image,
-    compute_mask_image,
-    iter_image_files,
-    normalise_image,
-    refine_mask,
-)
+from bgremover_core.processing.utils import apply_mask_to_image, iter_image_files, refine_mask
 
 LOGGER = logging.getLogger(__name__)
 
@@ -171,6 +167,32 @@ class ProcessingOptions:
         )
 
 
+@dataclass(slots=True, frozen=True)
+class ProcessingDebugInfo:
+    """Snapshot of intermediate tensors collected during processing."""
+
+    pre_shape: tuple[int, ...]
+    pre_min: float
+    pre_max: float
+    logits_shape: tuple[int, ...]
+    logits_min: float
+    logits_max: float
+    mask_pre_min: float
+    mask_pre_max: float
+    mask_post_min: float
+    mask_post_max: float
+
+
+@dataclass(slots=True)
+class ProcessingResult:
+    """Aggregate result returned by :func:`process_image`."""
+
+    image: Image.Image
+    mask: np.ndarray
+    alpha: np.ndarray
+    debug: ProcessingDebugInfo
+
+
 def _coerce_int(
     value: object,
     *,
@@ -228,6 +250,32 @@ def _coerce_color(value: object) -> tuple[int, int, int] | None:
     return None
 
 
+def _resize_for_mode(image: Image.Image, size: tuple[int, int], mode: str) -> Image.Image:
+    """Return ``image`` resized to ``size`` using the requested ``mode``."""
+
+    mode = (mode or "stretch").lower()
+    if mode == "stretch":
+        return image.resize(size, Image.Resampling.LANCZOS)
+    if mode == "keep-aspect":
+        return ImageOps.pad(image, size, method=Image.Resampling.LANCZOS, color=None, centering=(0.5, 0.5))
+    if mode == "crop":
+        return ImageOps.fit(image, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    if mode == "auto":
+        width, height = image.size
+        target_width, target_height = size
+        if height == 0 or target_height == 0:
+            return image.resize(size, Image.Resampling.LANCZOS)
+        aspect_ratio = width / height
+        target_ratio = target_width / target_height
+        if abs(aspect_ratio - target_ratio) <= 0.1:
+            return image.resize(size, Image.Resampling.LANCZOS)
+        if aspect_ratio > target_ratio:
+            return ImageOps.fit(image, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+        return ImageOps.pad(image, size, method=Image.Resampling.LANCZOS, color=None, centering=(0.5, 0.5))
+    LOGGER.warning("Unknown resize mode %s; falling back to 'stretch'", mode)
+    return image.resize(size, Image.Resampling.LANCZOS)
+
+
 def _apply_background(image: Image.Image, color: tuple[int, int, int] | None) -> Image.Image:
     """Return ``image`` composited onto ``color`` when provided."""
 
@@ -259,49 +307,200 @@ def _prepare_session(
     return get_session(model_key, providers=providers, model_dir=config.resolved_model_dir())
 
 
+def preprocess(img_rgb: np.ndarray, spec: Any) -> np.ndarray:
+    """Return a contiguous CHW float32 tensor according to ``spec``."""
+
+    if img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        raise ValueError("preprocess expects an RGB image with shape HxWx3")
+    if img_rgb.dtype != np.uint8:
+        raise ValueError("preprocess expects uint8 input data")
+    if not hasattr(spec, "input_size") or not hasattr(spec, "mean") or not hasattr(spec, "std"):
+        raise ValueError("spec must expose input_size, mean, and std attributes")
+
+    width, height = spec.input_size
+    resized = cv2.resize(img_rgb, (width, height), interpolation=cv2.INTER_LINEAR)
+    tensor = resized.astype(np.float32) / 255.0
+    mean = np.asarray(spec.mean, dtype=np.float32)
+    std = np.asarray(spec.std, dtype=np.float32)
+    tensor = (tensor - mean) / std
+    tensor = np.transpose(tensor, (2, 0, 1))[None, ...].astype(np.float32)
+    tensor = np.ascontiguousarray(tensor)
+    if tensor.dtype != np.float32:
+        raise AssertionError("Preprocess output must be float32")
+    if not tensor.flags.c_contiguous:
+        raise AssertionError("Preprocess output must be contiguous in memory")
+    return tensor
+
+
+def _ensure_rgb(pil_image: Image.Image) -> np.ndarray:
+    """Return a contiguous RGB numpy array from ``pil_image``."""
+
+    rgb_image = pil_image.convert("RGB")
+    array = np.asarray(rgb_image, dtype=np.uint8)
+    if array.ndim != 3 or array.shape[2] != 3:
+        raise PipelineError("Input image must be RGB")
+    return np.ascontiguousarray(array)
+
+
+def _run_session(session: BackgroundRemovalSession, tensor: np.ndarray) -> np.ndarray:
+    """Execute ``session`` using ``tensor`` while logging inference context."""
+
+    providers = getattr(session, "providers_available", ())
+    input_name = getattr(session, "input_name", None)
+    LOGGER.info("RUN providers=%s input=%s", providers, input_name)
+    if input_name and hasattr(session, "inner"):
+        outputs = session.inner.run(None, {input_name: tensor})
+    else:
+        outputs = session.run(tensor)
+    prediction = np.asarray(outputs[0], dtype=np.float32)
+    LOGGER.info("RUN output_shape=%s", prediction.shape)
+    return prediction
+
+
+def _sigmoid(array: np.ndarray) -> np.ndarray:
+    """Return ``array`` squashed into the ``0`` – ``1`` range using sigmoid."""
+
+    return 1.0 / (1.0 + np.exp(-array))
+
+
+def _format_unique_values(alpha: np.ndarray) -> str:
+    """Return a compact textual summary of unique alpha values in ``alpha``."""
+
+    uniques = np.unique(alpha)
+    preview = ", ".join(str(value) for value in uniques[:10])
+    if uniques.size > 10:
+        preview = f"{preview}, …"
+    return f"count={uniques.size} values=[{preview}]"
+
+
+def _prepare_debug(
+    tensor: np.ndarray,
+    logits: np.ndarray,
+    mask_pre: np.ndarray,
+    mask_post: np.ndarray,
+) -> ProcessingDebugInfo:
+    """Return populated :class:`ProcessingDebugInfo` for the provided tensors."""
+
+    return ProcessingDebugInfo(
+        pre_shape=tuple(int(value) for value in tensor.shape),
+        pre_min=float(np.min(tensor)),
+        pre_max=float(np.max(tensor)),
+        logits_shape=tuple(int(value) for value in logits.shape),
+        logits_min=float(np.min(logits)),
+        logits_max=float(np.max(logits)),
+        mask_pre_min=float(np.min(mask_pre)),
+        mask_pre_max=float(np.max(mask_pre)),
+        mask_post_min=float(np.min(mask_post)),
+        mask_post_max=float(np.max(mask_post)),
+    )
+
+
+def _process_loaded_image(
+    image: Image.Image,
+    *,
+    session: BackgroundRemovalSession,
+    options: ProcessingOptions,
+) -> ProcessingResult:
+    """Execute the inference pipeline for ``image`` using ``session``."""
+
+    source_rgba = image.convert("RGBA")
+    model_input = _resize_for_mode(source_rgba.convert("RGB"), session.spec.input_size, options.resize_mode)
+    rgb_array = _ensure_rgb(model_input)
+    tensor = preprocess(rgb_array, session.spec)
+    LOGGER.info(
+        "PRE shape=%s dtype=%s min=%.6f max=%.6f",
+        tensor.shape,
+        tensor.dtype,
+        float(tensor.min()),
+        float(tensor.max()),
+    )
+    logits = _run_session(session, tensor)
+    mask_pre = np.squeeze(_sigmoid(logits)).astype(np.float32)
+    LOGGER.info("POST1 min=%.6f max=%.6f", float(mask_pre.min()), float(mask_pre.max()))
+    mask_pre_stats = mask_pre.copy()
+    mask_min, mask_max = float(mask_pre.min()), float(mask_pre.max())
+    if mask_max - mask_min > 1e-6:
+        mask_pre = (mask_pre - mask_min) / (mask_max - mask_min)
+    original_width, original_height = source_rgba.size
+    resized_mask = cv2.resize(mask_pre, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+    resized_mask = np.clip(resized_mask, 0.0, 1.0).astype(np.float32)
+    mask_image = Image.fromarray((resized_mask * 255.0).round().astype(np.uint8), mode="L")
+    refined = refine_mask(
+        mask_image,
+        source_rgba,
+        alpha_matting=options.alpha_matting,
+        foreground_threshold=options.foreground_threshold,
+        background_threshold=options.background_threshold,
+        erode_size=options.erode_size,
+        smoothing=options.smoothing,
+        mask_blur=options.mask_blur,
+        edge_refinement=options.edge_refinement,
+    )
+    refined_array = np.asarray(refined, dtype=np.float32) / 255.0
+    refined_array = np.clip(refined_array, 0.0, 1.0).astype(np.float32)
+    LOGGER.info("POST2 min=%.6f max=%.6f", float(refined_array.min()), float(refined_array.max()))
+    if np.any((refined_array < 0.0) | (refined_array > 1.0)):
+        raise PipelineError("Mask values must be within [0, 1] before composing alpha")
+    mask_to_apply = Image.fromarray((refined_array * 255.0).round().astype(np.uint8), mode="L")
+    result_image = apply_mask_to_image(source_rgba, mask_to_apply, feather_radius=options.feather_radius)
+    result_image = _apply_background(result_image, options.background_color)
+    alpha_channel = np.asarray(result_image.getchannel("A"), dtype=np.uint8)
+    LOGGER.info("OUT alpha_unique=%s", _format_unique_values(alpha_channel))
+    debug = _prepare_debug(tensor, logits, mask_pre_stats, refined_array)
+    return ProcessingResult(
+        image=result_image,
+        mask=np.ascontiguousarray(refined_array),
+        alpha=np.ascontiguousarray(alpha_channel),
+        debug=debug,
+    )
+
+
 def remove_background(
     image: np.ndarray,
     model_key: str,
     *,
     config: Config | None = None,
     feather_radius: int = 3,
-    **_advanced_options: object,
+    **advanced_options: object,
 ) -> np.ndarray:
-    """Return ``image`` with its background removed using ``model_key``.
+    """Return ``image`` with its background removed using ``model_key``."""
 
-    The ``_advanced_options`` parameter accepts keyword arguments controlling
-    resize behaviour, alpha matting, mask smoothing, edge refinement, background
-    fills, and other advanced tuning exposed by the GUI and Flask runtimes.  All
-    parameters are optional and default to backwards compatible behaviour when
-    omitted.
-    """
+    result = process_image(
+        image,
+        model_key=model_key,
+        config=config,
+        feather_radius=feather_radius,
+        **advanced_options,
+    )
+    return np.asarray(result.image)
+
+
+def process_image(
+    image: np.ndarray,
+    *,
+    model_key: str | None = None,
+    config: Config | None = None,
+    feather_radius: int = 3,
+    providers: Sequence[str] | None = None,
+    **advanced_options: object,
+) -> ProcessingResult:
+    """Return a :class:`ProcessingResult` for the supplied ``image``."""
 
     active_config = config or load_config()
-    session = _prepare_session(model_key or active_config.default_model, config=active_config)
-    options = ProcessingOptions.from_kwargs(feather_radius=feather_radius, **_advanced_options)
+    resolved_model = model_key or active_config.default_model
+    session = _prepare_session(resolved_model, config=active_config, providers=providers)
+    options = ProcessingOptions.from_kwargs(feather_radius=feather_radius, **advanced_options)
     try:
         pil_image = load_image_from_array(image)
-        tensor = normalise_image(pil_image, session.spec, resize_mode=options.resize_mode)
+    except Exception as error:  # pragma: no cover - defensive logging
+        raise PipelineError(str(error)) from error
+    try:
         LOGGER.info("Starting processing for in-memory image…")
         start = time.perf_counter()
-        outputs = session.run(tensor)
-        mask = compute_mask_image(outputs, pil_image.size)
-        mask = refine_mask(
-            mask,
-            pil_image,
-            alpha_matting=options.alpha_matting,
-            foreground_threshold=options.foreground_threshold,
-            background_threshold=options.background_threshold,
-            erode_size=options.erode_size,
-            smoothing=options.smoothing,
-            mask_blur=options.mask_blur,
-            edge_refinement=options.edge_refinement,
-        )
-        result_image = apply_mask_to_image(pil_image, mask, feather_radius=options.feather_radius)
-        result_image = _apply_background(result_image, options.background_color)
+        result = _process_loaded_image(pil_image, session=session, options=options)
         elapsed_ms = (time.perf_counter() - start) * 1000
         LOGGER.info("In-memory image processed successfully ✓ (%.2f ms)", elapsed_ms)
-        return np.asarray(result_image)
+        return result
     except Exception as error:  # pragma: no cover - defensive logging
         message = str(error)
         LOGGER.error("In-memory image failed ✗ — Reason: %s", message)
@@ -320,22 +519,8 @@ def _process_single_path(
     try:
         with Image.open(path) as source:
             pil_image = source.convert("RGBA")
-            tensor = normalise_image(pil_image, session.spec, resize_mode=options.resize_mode)
-        outputs = session.run(tensor)
-        mask = compute_mask_image(outputs, pil_image.size)
-        mask = refine_mask(
-            mask,
-            pil_image,
-            alpha_matting=options.alpha_matting,
-            foreground_threshold=options.foreground_threshold,
-            background_threshold=options.background_threshold,
-            erode_size=options.erode_size,
-            smoothing=options.smoothing,
-            mask_blur=options.mask_blur,
-            edge_refinement=options.edge_refinement,
-        )
-        result_image = apply_mask_to_image(pil_image, mask, feather_radius=options.feather_radius)
-        result_image = _apply_background(result_image, options.background_color)
+        processing_result = _process_loaded_image(pil_image, session=session, options=options)
+        result_image = processing_result.image
         pillow_format, suffix = _infer_output_suffix(options.output_format)
         destination_name = (
             f"{path.stem}.{suffix}"
@@ -432,4 +617,14 @@ def process_folder(
     return Report(entries)
 
 
-__all__ = ["Report", "ReportEntry", "PipelineError", "process_folder", "remove_background"]
+__all__ = [
+    "Report",
+    "ReportEntry",
+    "PipelineError",
+    "ProcessingDebugInfo",
+    "ProcessingResult",
+    "process_folder",
+    "process_image",
+    "remove_background",
+    "preprocess",
+]

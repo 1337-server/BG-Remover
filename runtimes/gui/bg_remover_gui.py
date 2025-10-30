@@ -1,11 +1,13 @@
 """Tkinter GUI for the background remover runtimes."""
 from __future__ import annotations
-import sys, os
+
+import os
+import sys
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 import json
 import logging
-import os
 import threading
 import webbrowser
 from pathlib import Path
@@ -224,6 +226,9 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_display_override: Image.Image | None = None
         self._preview_last_fill_color: tuple[int, int, int] | None = None
         self.preview_zoom_var = tb.DoubleVar(value=100.0)
+        self._preview_user_zoom_override = False
+        self._suppress_zoom_callback = False
+        self._pending_auto_fit_job: str | None = None
 
         self._build_ui()
         self._clear_preview_state()
@@ -1412,7 +1417,12 @@ class BackgroundRemoverApp(tb.Window):
         self.preview_canvas.configure(scrollregion=(0, 0, 0, 0))
         self.preview_zoom_var.set(100.0)
         self.preview_zoom_value.configure(text="100%")
+        self.preview_zoom_slider.configure(from_=25)
         self.preview_info.configure(text="No preview available yet.")
+        self._preview_user_zoom_override = False
+        if self._pending_auto_fit_job is not None:
+            self.after_cancel(self._pending_auto_fit_job)
+            self._pending_auto_fit_job = None
         self._update_preview_controls()
 
     def _render_preview_image(self) -> None:
@@ -1432,13 +1442,19 @@ class BackgroundRemoverApp(tb.Window):
         resized = source_image.resize((width, height), Image.LANCZOS)
         self._preview_photo = ImageTk.PhotoImage(resized)
         self.preview_canvas.delete("all")
+        canvas_width = max(1, self.preview_canvas.winfo_width())
+        canvas_height = max(1, self.preview_canvas.winfo_height())
+        offset_x = max((canvas_width - width) // 2, 0)
+        offset_y = max((canvas_height - height) // 2, 0)
         self._preview_canvas_image = self.preview_canvas.create_image(
-            0,
-            0,
+            offset_x,
+            offset_y,
             anchor="nw",
             image=self._preview_photo,
         )
-        self.preview_canvas.configure(scrollregion=(0, 0, width, height))
+        scroll_width = max(width, canvas_width)
+        scroll_height = max(height, canvas_height)
+        self.preview_canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
         self.preview_zoom_value.configure(text=f"{int(zoom_value)}%")
 
     def _on_preview_zoom(self) -> None:
@@ -1448,15 +1464,68 @@ class BackgroundRemoverApp(tb.Window):
             self.preview_zoom_var.set(100.0)
             self.preview_zoom_value.configure(text="100%")
             return
+        if self._suppress_zoom_callback:
+            self._render_preview_image()
+            return
+        self._preview_user_zoom_override = True
+        if self._pending_auto_fit_job is not None:
+            self.after_cancel(self._pending_auto_fit_job)
+            self._pending_auto_fit_job = None
+        current_min = float(self.preview_zoom_slider.cget("from"))
+        current_zoom = float(self.preview_zoom_var.get())
+        if current_min != 25.0 and current_zoom >= 25.0:
+            self.preview_zoom_slider.configure(from_=25)
         self._render_preview_image()
 
     def _on_preview_canvas_resize(self, _event: Any) -> None:
         """Update the canvas scroll region after a resize event."""
 
-        if self._preview_canvas_image is not None:
-            bbox = self.preview_canvas.bbox(self._preview_canvas_image)
-            if bbox:
-                self.preview_canvas.configure(scrollregion=bbox)
+        if self._preview_canvas_image is None:
+            return
+        if self._preview_user_zoom_override:
+            self._render_preview_image()
+            return
+        self._schedule_auto_fit()
+
+    def _schedule_auto_fit(self, *, force: bool = False) -> None:
+        """Schedule an auto-fit pass unless the user set a manual zoom."""
+
+        if not force and self._preview_user_zoom_override:
+            return
+        if self._pending_auto_fit_job is not None:
+            self.after_cancel(self._pending_auto_fit_job)
+        self._pending_auto_fit_job = self.after(120, lambda: self.auto_fit_preview(force=force))
+
+    def auto_fit_preview(self, *, force: bool = False) -> None:
+        """Fit the preview image within the visible canvas area."""
+
+        self._pending_auto_fit_job = None
+        if not self._preview_image:
+            return
+        if not force and self._preview_user_zoom_override:
+            return
+        canvas_width = self.preview_canvas.winfo_width()
+        canvas_height = self.preview_canvas.winfo_height()
+        if canvas_width <= 1 or canvas_height <= 1:
+            self._schedule_auto_fit(force=force)
+            return
+        source_image = self._preview_display_override or self._preview_image
+        if source_image.width == 0 or source_image.height == 0:
+            return
+        width_ratio = canvas_width / source_image.width
+        height_ratio = canvas_height / source_image.height
+        scale = min(width_ratio, height_ratio, 1.0)
+        zoom_percent = max(25.0, min(400.0, scale * 100.0))
+        if zoom_percent < float(self.preview_zoom_slider.cget("from")):
+            self.preview_zoom_slider.configure(from_=max(1.0, zoom_percent))
+        elif float(self.preview_zoom_slider.cget("from")) != 25.0:
+            self.preview_zoom_slider.configure(from_=25)
+        self._suppress_zoom_callback = True
+        self.preview_zoom_var.set(zoom_percent)
+        self.preview_zoom_value.configure(text=f"{int(zoom_percent)}%")
+        self._suppress_zoom_callback = False
+        self._preview_user_zoom_override = False
+        self._render_preview_image()
 
     def _on_preview_save(self) -> None:
         """Persist the preview image using the configured output path."""
@@ -1526,7 +1595,7 @@ class BackgroundRemoverApp(tb.Window):
         self._preview_display_override = None
         self.preview_zoom_var.set(100.0)
         self.preview_info.configure(text=f"Preview ready: {original_name}")
-        self._render_preview_image()
+        self.auto_fit_preview(force=True)
         self._log("Preview generated successfully ✔")
         self._update_preview_controls()
 

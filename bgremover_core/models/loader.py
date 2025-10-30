@@ -28,6 +28,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for restricted enviro
         Response=Response,
     )
 
+from ..paths import MODELS_DIR
 from .specs import MODEL_SPECS, ModelSpec
 
 LOGGER = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ def _default_model_dir() -> Path:
     env_dir = os.getenv("MODEL_DIR")
     if env_dir:
         return Path(env_dir).expanduser()
-    return Path.home() / ".cache" / "bg-remover" / "models"
+    return MODELS_DIR
 
 
 def _update_download_status(

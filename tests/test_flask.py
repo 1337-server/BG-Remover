@@ -20,11 +20,28 @@ from runtimes.flask.app import create_app
 def _mock_successful_batch_executor(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch the batch executor to synchronously generate placeholder outputs."""
 
-    def fake_execute_batch_job(app, job, *, batch_source, output_dir, options, config, recursive, remember_preferences):
+    def fake_execute_batch_job(
+        app,
+        job,
+        *,
+        batch_source,
+        output_dir,
+        options,
+        config,
+        recursive,
+        remember_preferences,
+    ):
         with app.app_context():
             store = routes._get_store()
             output_dir.mkdir(parents=True, exist_ok=True)
-            job.emit('started', {"total": job.total_items, "label": batch_source.label, "recursive": recursive})
+            job.emit(
+                'started',
+                {
+                    "total": job.total_items,
+                    "label": batch_source.label,
+                    "recursive": recursive,
+                },
+            )
             generated: list[Path] = []
             for candidate in batch_source.candidates:
                 dest_parent = (
@@ -235,7 +252,12 @@ def test_batch_processing_success(monkeypatch: pytest.MonkeyPatch, client, flask
     assert download_response.headers["Content-Type"] == "application/zip"
 
 
-def test_batch_processing_server_folder(monkeypatch: pytest.MonkeyPatch, client, flask_app, tmp_path: Path) -> None:
+def test_batch_processing_server_folder(
+    monkeypatch: pytest.MonkeyPatch,
+    client,
+    flask_app,
+    tmp_path: Path,
+) -> None:
     _mock_successful_batch_executor(monkeypatch)
 
     server_folder = tmp_path / "server-input"

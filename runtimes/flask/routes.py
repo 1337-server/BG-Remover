@@ -6,17 +6,19 @@ import json
 import logging
 import shutil
 import tempfile
-import zipfile
 import time
-from collections.abc import Iterable
+import zipfile
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
+from werkzeug.datastructures import FileStorage
+from werkzeug.utils import secure_filename
 
 from bgremover_core import Config, load_config, remove_background
 from bgremover_core.config import persist_config
@@ -39,9 +41,6 @@ from flask import (
     stream_with_context,
     url_for,
 )
-
-from werkzeug.datastructures import FileStorage
-from werkzeug.utils import secure_filename
 
 from .services import BatchJob, BatchJobManager, ResultRecord, ResultStore, ensure_filename
 
@@ -420,7 +419,13 @@ def _prepare_batch_source(
     cleanup: Callable[[], None] | None = None
     if folder_files:
         root = _persist_folder_upload(folder_files)
-        cleanup = lambda: shutil.rmtree(root, ignore_errors=True)
+
+        def _cleanup() -> None:
+            """Remove the temporary folder upload directory."""
+
+            shutil.rmtree(root, ignore_errors=True)
+
+        cleanup = _cleanup
         candidates = _collect_candidates(root, recursive)
         label = folder_path_raw or Path(root).name
         return BatchSource(root=root, candidates=candidates, label=label, cleanup=cleanup)
@@ -432,7 +437,13 @@ def _prepare_batch_source(
         return BatchSource(root=root, candidates=candidates, label=root.name)
     if zip_file and zip_file.filename:
         root = _safe_extract_zip(zip_file)
-        cleanup = lambda: shutil.rmtree(root, ignore_errors=True)
+
+        def _cleanup_zip() -> None:
+            """Remove the temporary extracted archive directory."""
+
+            shutil.rmtree(root, ignore_errors=True)
+
+        cleanup = _cleanup_zip
         candidates = _collect_candidates(root, recursive)
         label = Path(zip_file.filename).stem
         return BatchSource(root=root, candidates=candidates, label=label, cleanup=cleanup)

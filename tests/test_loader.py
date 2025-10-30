@@ -1,6 +1,7 @@
 """Tests for the model loader utilities."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,7 +9,15 @@ import numpy as np
 import pytest
 
 from bgremover_core.models import loader
-from bgremover_core.models.loader import BackgroundRemovalSession, detect_providers, get_session
+from bgremover_core.models.loader import (
+    DOWNLOAD_AVAILABLE,
+    DOWNLOAD_PENDING,
+    BackgroundRemovalSession,
+    DownloadStatus,
+    _update_download_status,
+    detect_providers,
+    get_session,
+)
 from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
 
 
@@ -144,3 +153,27 @@ def test_download_via_http_creates_nested_directories(
     assert path == destination
     assert path.exists()
     assert path.read_bytes() == b"dummy-weights"
+
+
+def test_update_download_status_refreshes_timestamp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ensure repeated status updates produce monotonically increasing timestamps."""
+
+    monkeypatch.setattr(loader, "_DOWNLOAD_STATUSES", {})
+
+    initial_status = _update_download_status(tmp_path, "model", state=DOWNLOAD_PENDING)
+    time.sleep(0.01)
+    refreshed_status = _update_download_status(tmp_path, "model", state=DOWNLOAD_AVAILABLE)
+
+    assert refreshed_status.updated_at > initial_status.updated_at
+
+
+def test_download_status_uses_runtime_timestamp() -> None:
+    """Direct :class:`DownloadStatus` instantiation should record the current time."""
+
+    first_status = DownloadStatus(key="model", state=DOWNLOAD_PENDING)
+    time.sleep(0.01)
+    second_status = DownloadStatus(key="model", state=DOWNLOAD_AVAILABLE)
+
+    assert second_status.updated_at > first_status.updated_at

@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -58,7 +58,7 @@ class DownloadStatus:
     path: Path | None = None
     error: str | None = None
     attempts: int = 0
-    updated_at: float = time.time()
+    updated_at: float = field(default_factory=time.time)
 
 
 DOWNLOAD_AVAILABLE = "available"
@@ -147,7 +147,6 @@ def _update_download_status(
         path=path,
         error=error,
         attempts=attempts or 0,
-        updated_at=time.time(),
     )
     with _DOWNLOAD_STATUS_LOCK:
         _DOWNLOAD_STATUSES[(model_dir, key)] = status

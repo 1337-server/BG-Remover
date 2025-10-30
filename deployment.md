@@ -66,7 +66,7 @@ valid ranges, and lets users choose the ONNX model storage directory.
 Use PyInstaller to build a standalone executable with the project icon:
 
 ```bash
-pyinstaller runtimes/gui/bg_remover_gui.py --noconfirm --onefile --windowed --icon=assets/icon.ico
+pyinstaller runtimes/gui/bg_remover_gui.py --noconfirm --onefile --windowed --paths=. --hidden-import=onnxruntime --additional-hooks-dir=hooks --icon=runtimes/gui/bg_icon.ico --add-data "runtimes/gui/bg_icon.ico;." --name=bg_remover_gui_cpu --clean
 ```
 
 The generated binary reads and writes configuration to `config/config.json` in

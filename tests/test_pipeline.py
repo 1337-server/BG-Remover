@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -130,3 +131,45 @@ def test_process_folder_clamps_workers_for_gpu(tmp_path: Path, monkeypatch: pyte
     assert report.total == 1
     assert entries
     assert "downgraded to a single worker" in caplog.text
+
+
+def test_process_folder_releases_sessions_between_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = ModelSpec(
+        key="test-model",
+        input_size=(32, 32),
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+    )
+
+    def fake_prepare(*_args, **_kwargs) -> StubSession:
+        return StubSession(spec)
+
+    release_calls: list[StubSession] = []
+
+    def fake_release(session) -> None:
+        release_calls.append(session)
+
+    def fake_loaded_image(*_args, **_kwargs):
+        return SimpleNamespace(image=Image.new("RGBA", (32, 32)))
+
+    monkeypatch.setattr(pipeline, "_prepare_session", fake_prepare)
+    monkeypatch.setattr(pipeline, "release_session", fake_release)
+    monkeypatch.setattr(pipeline, "_process_loaded_image", fake_loaded_image)
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    for index in range(2):
+        Image.new("RGBA", (32, 32), color=(255, 0, 0, 255)).save(input_dir / f"sample_{index}.png")
+
+    report = pipeline.process_folder(
+        input_dir,
+        pattern="*.png",
+        model_key="test-model",
+        config=Config(model_dir=tmp_path),
+    )
+
+    assert report.total == 2
+    assert len(release_calls) == 2
+    assert release_calls[0] is not release_calls[1]

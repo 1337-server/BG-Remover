@@ -13,13 +13,17 @@ from typing import Any
 
 import cv2
 import numpy as np
-import torch
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from bgremover_core.config import Config, load_config
 from bgremover_core.io.image_io import load_image_from_array, save_image_to_path
 from bgremover_core.io.paths import resolve_batch_output_dir
-from bgremover_core.models.loader import BackgroundRemovalSession, detect_providers, get_session
+from bgremover_core.models.loader import (
+    BackgroundRemovalSession,
+    detect_providers,
+    get_session,
+    release_session,
+)
 from bgremover_core.processing.utils import apply_mask_to_image, iter_image_files, refine_mask
 
 LOGGER = logging.getLogger(__name__)
@@ -554,33 +558,48 @@ def process_image(
 
     active_config = config or load_config()
     resolved_model = model_key or active_config.default_model
-    session = _prepare_session(resolved_model, config=active_config, providers=providers)
-    options = ProcessingOptions.from_kwargs(feather_radius=feather_radius, **advanced_options)
+    session: BackgroundRemovalSession | None = None
     try:
-        pil_image = load_image_from_array(image)
-    except Exception as error:  # pragma: no cover - defensive logging
-        raise PipelineError(str(error)) from error
-    try:
-        LOGGER.info("Starting processing for in-memory image…")
-        start = time.perf_counter()
-        result = _process_loaded_image(pil_image, session=session, options=options)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        LOGGER.info("In-memory image processed successfully ✓ (%.2f ms)", elapsed_ms)
-        return result
-    except Exception as error:  # pragma: no cover - defensive logging
-        message = str(error)
-        LOGGER.error("In-memory image failed ✗ — Reason: %s", message)
-        raise PipelineError(message) from error
+        session = _prepare_session(resolved_model, config=active_config, providers=providers)
+        options = ProcessingOptions.from_kwargs(feather_radius=feather_radius, **advanced_options)
+        try:
+            pil_image = load_image_from_array(image)
+        except Exception as error:  # pragma: no cover - defensive logging
+            raise PipelineError(str(error)) from error
+        try:
+            LOGGER.info("Starting processing for in-memory image…")
+            start = time.perf_counter()
+            result = _process_loaded_image(pil_image, session=session, options=options)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            LOGGER.info("In-memory image processed successfully ✓ (%.2f ms)", elapsed_ms)
+            return result
+        except Exception as error:  # pragma: no cover - defensive logging
+            message = str(error)
+            LOGGER.error("In-memory image failed ✗ — Reason: %s", message)
+            raise PipelineError(message) from error
+    finally:
+        if session is not None:
+            release_session(session)
+            del session
+            gc.collect()
 
 
 def _process_single_path(
     path: Path,
     *,
-    session: BackgroundRemovalSession,
     destination_dir: Path,
     options: ProcessingOptions,
     progress_callback: Callable[[ReportEntry], None] | None = None,
+    session: BackgroundRemovalSession | None = None,
+    session_factory: Callable[[], BackgroundRemovalSession] | None = None,
 ) -> ReportEntry:
+    """Process ``path`` using a fresh session and persist the resulting image."""
+
+    if session is None:
+        if session_factory is None:
+            raise ValueError("session_factory must be provided when session is None")
+        session = session_factory()
+
     start = time.perf_counter()
     try:
         with Image.open(path) as source:
@@ -600,9 +619,6 @@ def _process_single_path(
             result_to_save = result_image
         save_image_to_path(result_to_save, destination, format_hint=pillow_format)
         elapsed_ms = (time.perf_counter() - start) * 1000
-        # Release GPU memory between images to avoid accumulating allocations.
-        gc.collect()
-        torch.cuda.empty_cache()
         LOGGER.info("%s processed successfully ✓", path.name)
         entry = ReportEntry(path_in=path, path_out=destination, success=True, elapsed_ms=elapsed_ms)
         if progress_callback:
@@ -625,6 +641,10 @@ def _process_single_path(
         if progress_callback:
             progress_callback(entry)
         return entry
+    finally:
+        release_session(session)
+        del session
+        gc.collect()
 
 
 def process_folder(
@@ -662,33 +682,49 @@ def process_folder(
             primary_provider or "unknown",
         )
         options.max_workers = 1
+    def session_factory() -> BackgroundRemovalSession:
+        """Return a fresh session for batch processing."""
+
+        return _prepare_session(resolved_model, config=active_config)
     entries: list[ReportEntry] = []
     candidates = [
         path
         for path in iter_image_files(source_dir, recursive)
         if fnmatch.fnmatch(path.name, pattern)
     ]
+    if not candidates:
+        release_session(session)
+        del session
+        gc.collect()
+        return Report(entries)
+
     if options.max_workers <= 1:
-        for path in candidates:
+        for index, path in enumerate(candidates):
             LOGGER.info("Starting processing for %s…", path.name)
             entry = _process_single_path(
                 path,
-                session=session,
                 destination_dir=output_root,
                 options=options,
                 progress_callback=progress_callback,
+                session=session if index == 0 else None,
+                session_factory=session_factory,
             )
             entries.append(entry)
+            if index == 0:
+                session = None
     else:
+        release_session(session)
+        del session
+        gc.collect()
         with ThreadPoolExecutor(max_workers=options.max_workers) as executor:
             future_map = {
                 executor.submit(
                     _process_single_path,
                     path,
-                    session=session,
                     destination_dir=output_root,
                     options=options,
                     progress_callback=progress_callback,
+                    session_factory=session_factory,
                 ): path
                 for path in candidates
             }

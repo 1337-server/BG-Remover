@@ -533,6 +533,26 @@ def get_session(
     return session
 
 
+def release_session(session: BackgroundRemovalSession | None) -> None:
+    """Remove ``session`` from caches and drop references to release resources."""
+
+    if session is None:
+        return
+
+    with _SESSION_CACHE_LOCK:
+        keys_to_delete = [
+            key for key, cached in _SESSION_CACHE.items() if cached is session
+        ]
+        for key in keys_to_delete:
+            _SESSION_CACHE.pop(key, None)
+
+    if hasattr(session, "inner"):
+        try:
+            session.inner = None  # type: ignore[assignment]
+        except Exception:  # pragma: no cover - defensive fallback
+            pass
+
+
 __all__ = [
     "BackgroundRemovalSession",
     "DownloadStatus",
@@ -540,4 +560,5 @@ __all__ = [
     "ModelUnavailableError",
     "detect_providers",
     "get_session",
+    "release_session",
 ]

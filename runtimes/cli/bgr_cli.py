@@ -9,7 +9,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
-import torch
 from PIL import Image
 
 from bgremover_core import (
@@ -163,9 +162,8 @@ def _handle_single(args: argparse.Namespace, config: Config) -> int:
         )
         result_image = Image.fromarray(result_array)
         save_image_to_path(result_image, output_path)
-        # Release GPU allocations immediately after finishing a single image.
+        # Release Python objects to encourage prompt resource reclamation.
         gc.collect()
-        torch.cuda.empty_cache()
         print(f"{STATUS_SUCCESS} {input_path} → {output_path}")
         return 0
     except Exception as error:  # pragma: no cover - defensive logging

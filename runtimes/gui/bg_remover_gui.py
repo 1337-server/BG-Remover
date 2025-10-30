@@ -15,7 +15,6 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-import torch
 import ttkbootstrap as tb
 from PIL import Image, ImageDraw, ImageTk
 from ttkbootstrap.constants import BOTH, END, LEFT, RIGHT, W
@@ -1993,9 +1992,8 @@ class BackgroundRemoverApp(_TkRoot):
             self.after(0, lambda: self._set_processing_state(False, "single"))
             self.after(0, lambda: self._on_single_run_complete(input_path))
         finally:
-            # Ensure GPU and Python memory are reclaimed after each single-image run.
+            # Ensure Python memory is reclaimed after each single-image run.
             gc.collect()
-            torch.cuda.empty_cache()
 
     def _load_source_image(self, path: Path) -> Image.Image:
         """Return a freshly loaded RGBA image from ``path``."""
@@ -2017,7 +2015,6 @@ class BackgroundRemoverApp(_TkRoot):
         save_image_to_path(image_to_save, output_path, format_hint=format_hint)
         # Release caches after persisting the processed preview image.
         gc.collect()
-        torch.cuda.empty_cache()
 
     def _clear_preview_state(self) -> None:
         """Reset preview data structures and disable preview controls."""

@@ -28,7 +28,7 @@ GUI entry points simply import and orchestrate these shared utilities.
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - `pip install -r requirements.txt`
 - Optional GPU acceleration: install an ONNX Runtime build for your platform
   (e.g. `onnxruntime-gpu`, `onnxruntime-directml`, or `onnxruntime-rocm`).

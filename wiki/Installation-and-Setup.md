@@ -7,7 +7,7 @@
 
 | Component | Notes |
 | --- | --- |
-| Python | 3.10 or later. Create a virtual environment for isolation. |
+| Python | 3.10 or later (the project is routinely verified on Python 3.12). Create a virtual environment for isolation. |
 | Pip packages | `pip install -r requirements.txt` installs the shared core and runtime dependencies. |
 | GPU acceleration | Install the appropriate ONNX Runtime build: `onnxruntime-gpu` (CUDA), `onnxruntime-directml`, or `onnxruntime-rocm`. |
 | Drivers | Keep GPU drivers current (NVIDIA CUDA, AMD ROCm, Intel DML). |
@@ -74,8 +74,15 @@ file:
 
 5. **Verify directories**: ensure `input/`, `output/`, and `config/` exist (they
    are generated automatically, but double-check for CI/deployment pipelines).
-6. **Test a runtime** (see [CLI Usage](CLI-Usage.md) or
-   [Using the GUI](Using-the-GUI.md)).
+6. **Test a runtime** by launching the Flask server directly:
+
+   ```bash
+   python -m runtimes.flask.app
+   ```
+
+   When the console reports `Running on http://127.0.0.1:5000`, open the URL in a
+   browser. You can also explore the [CLI Usage](CLI-Usage.md) and
+   [Using the GUI](Using-the-GUI.md) guides.
 
 ## Updating dependencies
 

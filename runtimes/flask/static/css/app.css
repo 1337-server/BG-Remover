@@ -709,8 +709,16 @@ tr:nth-child(even) {
     .sidepanel .drawer-body {
         height: 100%;
         overflow-y: auto;
-        padding: 0!important;
+        padding: 0 !important;
         background: var(--panel-bg);
+    }
+
+    /* Optional: turn FAB into a full-width bottom bar on small screens */
+    .fab-submit {
+        left: 1rem;
+        right: 1rem;
+        width: calc(100vw - 2rem);
+        border-radius: .75rem;
     }
 }
 
@@ -784,12 +792,3 @@ div#page-content section.card {
     backdrop-filter: none !important;
 }
 
-/* Optional: turn FAB into a full-width bottom bar on small screens */
-@media (max-width: 640px) {
-    .fab-submit {
-        left: 1rem;
-        right: 1rem;
-        width: calc(100vw - 2rem);
-        border-radius: .75rem;
-    }
-}

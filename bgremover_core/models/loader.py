@@ -429,7 +429,7 @@ def _download_model_from_url(spec: ModelSpec, destination: Path) -> Path:
     if not spec.url:
         raise ValueError(f"No download URL configured for model {spec.key}")
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; br-remover/1.0; +https://github.com/your-org/br-remover)",
+        "User-Agent": "Mozilla/5.0 (compatible; bg-remover/1.0; +https://github.com/your-org/bg-remover)",
         "Accept": "application/octet-stream",
     }
     return _download_model_via_http(spec, spec.url, destination, headers)
@@ -447,7 +447,7 @@ def _download_model_from_huggingface(spec: ModelSpec, destination: Path) -> Path
         "?download=1"
     )
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; br-remover/1.0; +https://github.com/your-org/br-remover)",
+        "User-Agent": "Mozilla/5.0 (compatible; bg-remover/1.0; +https://github.com/your-org/bg-remover)",
         "Accept": "application/octet-stream",
     }
     token = _resolve_huggingface_token()

@@ -1293,24 +1293,55 @@ class BackgroundRemoverApp(_TkRoot):
     def _build_batch_tab(self, parent: tb.Frame) -> None:
         """Create widgets for batch folder processing."""
 
-        input_frame = tb.Frame(parent)
-        input_frame.pack(fill=BOTH, expand=False, pady=5)
-        tb.Label(input_frame, text="Input folder").pack(anchor="w")
-        control = tb.Frame(input_frame)
-        control.pack(fill=BOTH, expand=False)
+        # --- Batch Input / Output with tall Process Button ---
+        batch_frame = tb.Frame(parent)
+        batch_frame.pack(fill="x", pady=5)
+
+        # Shared style options for tight alignment
+        label_opts = dict(sticky="w", padx=(0, 4))
+        entry_opts = dict(sticky="ew", padx=(0, 4))
+        button_opts = dict(padx=(0, 8))
+
+        # Input folder
+        tb.Label(batch_frame, text="Input folder").grid(row=0, column=0, **label_opts)
         self.batch_input_var = tb.StringVar(value="")
-        tb.Entry(control, textvariable=self.batch_input_var, width=60).pack(side=LEFT, padx=(0, 8))
-        tb.Button(control, text="Browse", command=self._choose_batch_folder).pack(side=LEFT)
+        tb.Entry(batch_frame, textvariable=self.batch_input_var).grid(row=0, column=1, **entry_opts)
+        tb.Button(batch_frame, text="Browse", command=self._choose_batch_folder).grid(row=0, column=2, **button_opts)
 
-        output_frame = tb.Frame(parent)
-        output_frame.pack(fill=BOTH, expand=False, pady=5)
-        tb.Label(output_frame, text="Output folder (optional)").pack(anchor="w")
+        # Output folder
+        tb.Label(batch_frame, text="Output folder (optional)").grid(row=1, column=0, **label_opts, pady=(4, 0))
         self.batch_output_var = tb.StringVar(value="")
-        tb.Entry(output_frame, textvariable=self.batch_output_var, width=60).pack(side=LEFT, padx=(0, 8))
-        tb.Button(output_frame, text="Browse", command=self._choose_batch_output).pack(side=LEFT)
+        tb.Entry(batch_frame, textvariable=self.batch_output_var).grid(row=1, column=1, **entry_opts, pady=(4, 0))
+        tb.Button(batch_frame, text="Browse", command=self._choose_batch_output).grid(row=1, column=2, **button_opts,
+                                                                                      pady=(4, 0))
 
-        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame")
-        drop_zone.pack(fill=BOTH, expand=True, pady=(15, 5))
+        # Process Batch button spanning both rows
+        process_frame = tb.Frame(batch_frame)
+        process_frame.grid(row=0, column=3, rowspan=2, sticky="ns", padx=(6, 0))
+
+        self.batch_process_button = tb.Button(
+            process_frame,
+            text="Process Batch/Folder",
+            bootstyle="primary",
+            command=self._process_batch,
+            width=16,
+        )
+        self.batch_process_button.pack(fill="both", expand=True)
+
+        # Internal progress spinner (hidden until processing starts)
+        self.batch_spinner = tb.Progressbar(
+            process_frame, mode="indeterminate", length=120, bootstyle="info-striped"
+        )
+        self.batch_spinner.pack(pady=(4, 0))
+        self.batch_spinner.stop()
+        self.batch_spinner.pack_forget()
+
+        # Allow entry boxes to expand when resizing
+        batch_frame.columnconfigure(1, weight=1)
+
+        # --- Drop Zone for folders ---
+        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame", relief="ridge", borderwidth=2)
+        drop_zone.pack(fill=BOTH, expand=True, pady=(10, 5))
         drop_zone.columnconfigure(0, weight=1)
         drop_zone.rowconfigure(0, weight=1)
 
@@ -1339,14 +1370,6 @@ class BackgroundRemoverApp(_TkRoot):
 
         self._update_batch_drop_message()
 
-        self.batch_process_button = tb.Button(
-            parent,
-            text="Process Folder",
-            bootstyle="primary",
-            command=self._process_batch,
-        )
-        self.batch_process_button.pack(pady=(10, 10))
-
         self.batch_spinner = tb.Progressbar(parent, mode="indeterminate", length=220)
         self.batch_spinner.pack(fill="x", pady=(0, 10))
         self.batch_spinner.stop()
@@ -1357,9 +1380,10 @@ class BackgroundRemoverApp(_TkRoot):
             pack_kwargs={"fill": "x", "expand": False, "pady": (0, 10)},
         )
 
+        # --- Batch Progress Tree (hidden initially) ---
         progress_frame = tb.Labelframe(parent, text="Batch Progress", padding=6)
-        progress_frame.pack(fill=BOTH, expand=True)
         columns = ("file", "status", "details")
+
         self.batch_tree = tb.Treeview(progress_frame, columns=columns, show="headings", height=6)
         self.batch_tree.heading("file", text="File")
         self.batch_tree.heading("status", text="Status")
@@ -1368,12 +1392,16 @@ class BackgroundRemoverApp(_TkRoot):
         self.batch_tree.column("status", width=70, anchor=W)
         self.batch_tree.column("details", anchor=W)
         self.batch_tree.pack(fill=BOTH, expand=True)
+
         self.batch_tree.bind("<Double-1>", self._on_batch_item_double_click)
         self._batch_tree_output_paths: dict[str, Path] = {}
-        self._add_tooltip(
-            self.batch_tree,
-            "Shows progress and results for each processed file.",
-        )
+        self._add_tooltip(self.batch_tree, "Shows progress and results for each processed file.")
+
+        # Hide the entire progress frame until processing starts
+        progress_frame.pack_forget()
+
+        # Keep reference so we can show/hide later
+        self.batch_progress_frame = progress_frame
 
     def _register_batch_progress_widget(
         self,
@@ -2547,26 +2575,65 @@ class BackgroundRemoverApp(_TkRoot):
         if not path.exists() or not path.is_dir():
             messagebox.showerror("Error", "Please choose a valid input folder.")
             return
+
         if self.batch_output_var.get():
             output_dir = Path(self.batch_output_var.get())
         elif self.output_dir_var.get():
             output_dir = Path(self.output_dir_var.get())
         else:
             output_dir = None
+
+        # Reset and show progress UI
         self._reset_batch_progress()
+        self._start_batch_processing()
+
         self._log(f"Starting processing for {path.name}…")
         self._set_processing_state(True, "batch")
-        threading.Thread(target=self._run_batch, args=(path, output_dir), daemon=True).start()
+
+        # Run batch in background thread
+        threading.Thread(
+            target=self._run_batch, args=(path, output_dir), daemon=True
+        ).start()
+
+    def _start_batch_processing(self):
+        """Prepare UI for active batch run."""
+        # Show the progress frame if hidden
+        if not self.batch_progress_frame.winfo_ismapped():
+            self.batch_progress_frame.pack(fill="both", expand=True, pady=(10, 5))
+
+        # Clear previous results
+        for item in self.batch_tree.get_children():
+            self.batch_tree.delete(item)
+
+        # Disable button and show spinner
+        self.batch_process_button.config(state="disabled", text="")
+        self.batch_spinner.place(relx=0.5, rely=0.5, anchor="center")
+        self.batch_spinner.start()
+
+    def _end_batch_processing(self):
+        """Restore UI after batch completes."""
+        self.batch_spinner.stop()
+        self.batch_spinner.place_forget()
+        self.batch_process_button.config(state="normal", text="Process Batch")
+
+        # Optionally hide progress frame again
+        self._hide_batch_progress()
 
     def _reset_batch_progress(self) -> None:
         """Clear progress indicators for a new batch run."""
-
         for item in self.batch_tree.get_children():
             self.batch_tree.delete(item)
         self._batch_tree_output_paths.clear()
         self._batch_total_count = 0
         self._batch_processed_count = 0
+
+        # Hide progress frame until we start again
         self._hide_batch_progress()
+
+    def _hide_batch_progress(self):
+        """Hide the batch progress UI."""
+        if self.batch_progress_frame.winfo_ismapped():
+            self.batch_progress_frame.pack_forget()
 
     def _show_batch_progress(self, total: int) -> None:
         """Display the batch progress bar configured for ``total`` entries."""

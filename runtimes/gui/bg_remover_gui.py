@@ -1555,8 +1555,9 @@ class BackgroundRemoverApp(_TkRoot):
         self._add_tooltip(
             resize_combo,
             (
-                "Controls how input images are resized before inference. 'Stretch' matches "
-                "CLI and Flask results; other modes preserve composition differently."
+                "Controls how input images are resized before inference. 'stretch' matches "
+                "CLI and Flask defaults, 'keep-aspect' pads to preserve framing, 'crop' "
+                "fills the frame, and 'auto' picks padding or cropping dynamically."
             ),
         )
 

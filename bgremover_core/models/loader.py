@@ -75,7 +75,8 @@ DOWNLOAD_IN_PROGRESS = "in-progress"
 DOWNLOAD_FAILED = "failed"
 
 
-CacheKey = tuple[Path, str, int | None]
+ProviderOptionsSignature = tuple[tuple[str, tuple[tuple[str, str], ...] | None], ...] | None
+CacheKey = tuple[Path, str, int | None, bool, ProviderOptionsSignature]
 
 
 _SESSION_CACHE: dict[CacheKey, BackgroundRemovalSession] = {}
@@ -192,6 +193,31 @@ def _normalise_providers(
         else:
             normalised.append(entry)
     return normalised
+
+
+def _provider_options_signature(
+    providers: Sequence[ProviderEntry] | None,
+) -> ProviderOptionsSignature:
+    """Return a hashable signature representing ``providers`` for caching."""
+
+    if not providers:
+        return None
+
+    signature: list[tuple[str, tuple[tuple[str, str], ...] | None]] = []
+    for entry in providers:
+        if isinstance(entry, tuple):
+            name, options = entry
+            if isinstance(options, Mapping):
+                raw_items = options.items()
+            else:  # pragma: no cover - defensive fallback for unexpected sequences
+                raw_items = dict(options).items()  # type: ignore[arg-type]
+            normalised_options = tuple(
+                sorted((str(key), str(value)) for key, value in raw_items)
+            )
+            signature.append((name, normalised_options))
+        else:
+            signature.append((entry, None))
+    return tuple(signature)
 
 
 def _provider_name(entry: ProviderEntry) -> str:
@@ -721,7 +747,21 @@ def get_session(
 
     resolved_dir = Path(model_dir or _default_model_dir()).expanduser()
     thread_key = threading.get_ident() if thread_isolated else None
-    cache_key: CacheKey = (resolved_dir, model_key, thread_key)
+
+    provider_entries: Sequence[ProviderEntry] | None
+    if providers is None:
+        provider_entries = None
+    else:
+        provider_entries = tuple(providers)
+    provider_signature = _provider_options_signature(provider_entries)
+
+    cache_key: CacheKey = (
+        resolved_dir,
+        model_key,
+        thread_key,
+        bool(max_performance),
+        provider_signature,
+    )
 
     with _SESSION_CACHE_LOCK:
         cached = _SESSION_CACHE.get(cache_key)
@@ -734,7 +774,7 @@ def get_session(
 
     session = _initialise_session(
         model_key,
-        providers=providers,
+        providers=provider_entries,
         model_dir=resolved_dir,
         max_performance=max_performance,
         disable_cuda_graph=thread_isolated,

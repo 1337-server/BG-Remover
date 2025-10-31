@@ -51,6 +51,7 @@ def _mock_successful_batch_executor(monkeypatch: pytest.MonkeyPatch) -> None:
                 )
                 dest_parent.mkdir(parents=True, exist_ok=True)
                 destination = dest_parent / f"{candidate.relative_path.stem}.png"
+                destination = routes._ensure_unique_path(destination)
                 Image.new("RGBA", (2, 2), color=(255, 255, 255, 255)).save(destination)
                 generated.append(destination)
                 job.success_count += 1
@@ -124,9 +125,15 @@ def client(flask_app):
     return flask_app.test_client()
 
 
-def _image_bytes(color: tuple[int, int, int, int] = (255, 255, 255, 255)) -> bytes:
+def _image_bytes(
+    color: tuple[int, int, int, int] = (255, 255, 255, 255),
+    *,
+    image_format: str = "PNG",
+) -> bytes:
+    """Return binary image data for the provided ``color`` and ``image_format``."""
+
     buffer = io.BytesIO()
-    Image.new("RGBA", (4, 4), color=color).save(buffer, format="PNG")
+    Image.new("RGBA", (4, 4), color=color).save(buffer, format=image_format)
     return buffer.getvalue()
 
 
@@ -213,6 +220,11 @@ def test_batch_processing_success(monkeypatch: pytest.MonkeyPatch, client, flask
     folder_files = [
         (io.BytesIO(_image_bytes()), "animals/cat.png"),
         (io.BytesIO(_image_bytes((120, 40, 255, 255))), "animals/dogs/dog.png"),
+        (io.BytesIO(_image_bytes((10, 200, 10, 255), image_format="BMP")), "animals/dogs/dog.bmp"),
+        (
+            io.BytesIO(_image_bytes((200, 10, 200, 255), image_format="TIFF")),
+            "scenery/garden/flowers.tiff",
+        ),
     ]
     data = MultiDict(
         [("folder_files", file_tuple) for file_tuple in folder_files]
@@ -231,6 +243,7 @@ def test_batch_processing_success(monkeypatch: pytest.MonkeyPatch, client, flask
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["status"] == "accepted"
+    assert payload["total"] == len(folder_files)
     job_id = payload["job_id"]
     assert job_id
 
@@ -244,8 +257,11 @@ def test_batch_processing_success(monkeypatch: pytest.MonkeyPatch, client, flask
     assert files_response.status_code == 200
     files_payload = files_response.get_json()
     files_list = set(files_payload["files"])
-    assert "animals/cat.png" in files_list
-    assert "animals/dogs/dog.png" in files_list
+    png_outputs = {path for path in files_list if path.endswith(".png")}
+    assert "animals/cat.png" in png_outputs
+    assert "scenery/garden/flowers.png" in png_outputs
+    assert sum(path.startswith("animals/dogs/dog") for path in png_outputs) == 2
+    assert len(png_outputs) == len(folder_files)
 
     download_response = client.get(f"/download/{job_id}")
     assert download_response.status_code == 200
@@ -265,6 +281,12 @@ def test_batch_processing_server_folder(
     (server_folder / "dogs" / "working").mkdir(parents=True, exist_ok=True)
     Image.new("RGBA", (2, 2), color=(255, 255, 255, 255)).save(server_folder / "cats" / "cat.png")
     Image.new("RGBA", (2, 2), color=(0, 0, 255, 255)).save(server_folder / "dogs" / "working" / "dog.png")
+    Image.new("RGBA", (2, 2), color=(0, 255, 0, 255)).save(
+        server_folder / "cats" / "cat.bmp", format="BMP"
+    )
+    Image.new("RGBA", (2, 2), color=(255, 0, 0, 255)).save(
+        server_folder / "dogs" / "working" / "dog.tiff", format="TIFF"
+    )
 
     data = {
         "folder_path": str(server_folder),
@@ -280,6 +302,7 @@ def test_batch_processing_server_folder(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["status"] == "accepted"
+    assert payload["total"] == 4
     job_id = payload["job_id"]
 
     manager = flask_app.extensions["batch_manager"]
@@ -292,8 +315,58 @@ def test_batch_processing_server_folder(
     assert files_response.status_code == 200
     files_payload = files_response.get_json()
     files_list = set(files_payload["files"])
-    assert "cats/cat.png" in files_list
-    assert "dogs/working/dog.png" in files_list
+    png_outputs = {path for path in files_list if path.endswith(".png")}
+    assert "cats/cat.png" in png_outputs
+    assert "dogs/working/dog.png" in png_outputs
+    assert sum(path.startswith("cats/cat") for path in png_outputs) == 2
+    assert sum(path.startswith("dogs/working/dog") for path in png_outputs) == 2
+    assert len(png_outputs) == 4
+
+
+def test_batch_processing_zip_upload(
+    monkeypatch: pytest.MonkeyPatch, client, flask_app
+) -> None:
+    """Ensure ZIP uploads accept BMP and TIFF files for batch processing."""
+
+    _mock_successful_batch_executor(monkeypatch)
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("pictures/cat.bmp", _image_bytes(image_format="BMP"))
+        archive.writestr("pictures/dog.tiff", _image_bytes(image_format="TIFF"))
+        archive.writestr("pictures/readme.txt", "ignore me")
+    archive_buffer.seek(0)
+
+    response = client.post(
+        "/api/process/batch",
+        data={
+            "zip_file": (archive_buffer, "pictures.zip"),
+            "model_key": "isnet-general-use",
+            "recursive": "true",
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "accepted"
+    assert payload["total"] == 2
+    job_id = payload["job_id"]
+
+    manager = flask_app.extensions["batch_manager"]
+    job = manager.get(job_id)
+    assert job is not None
+    assert job._future is not None
+    job._future.result(timeout=2)
+
+    files_response = client.get(f"/api/process/batch/{job_id}/files")
+    assert files_response.status_code == 200
+    files_payload = files_response.get_json()
+    files_list = set(files_payload["files"])
+    png_outputs = {path for path in files_list if path.endswith(".png")}
+    assert len(png_outputs) == 2
+    assert sum(path.startswith("pictures/cat") for path in png_outputs) == 1
+    assert sum(path.startswith("pictures/dog") for path in png_outputs) == 1
+    assert any(path.endswith(".zip") for path in files_list)
 
 def test_history_endpoint_updates_after_processing(client) -> None:
     image_buffer = io.BytesIO(_image_bytes())

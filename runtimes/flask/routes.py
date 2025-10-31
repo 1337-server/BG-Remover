@@ -29,6 +29,7 @@ from bgremover_core.models.specs import MODEL_SPECS, ModelSpec
 from bgremover_core.paths import CONFIG_FILE
 from bgremover_core.processing import pipeline as pipeline_module
 from bgremover_core.processing.pipeline import PipelineError
+from bgremover_core.processing.utils import SUPPORTED_EXTENSIONS
 from flask import (
     Blueprint,
     Flask,
@@ -57,7 +58,7 @@ webui = Blueprint(
 __all__ = ["webui"]
 
 
-ALLOWED_BATCH_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+ALLOWED_BATCH_EXTENSIONS: frozenset[str] = frozenset(SUPPORTED_EXTENSIONS)
 
 
 @dataclass(slots=True)

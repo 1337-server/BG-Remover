@@ -886,10 +886,13 @@ def process_folder(
                     for provider in provider_candidates
                     if str(provider).upper() != "TENSORRTEXECUTIONPROVIDER"
                 ]
-                concurrent_providers: list[str] = []
-                if "CUDAExecutionProvider" in filtered_providers:
-                    concurrent_providers.append("CUDAExecutionProvider")
-                if "CPUExecutionProvider" not in concurrent_providers:
+                gpu_providers = [
+                    provider
+                    for provider in filtered_providers
+                    if str(provider).upper() != "CPUEXECUTIONPROVIDER"
+                ]
+                concurrent_providers: list[str] = list(gpu_providers)
+                if "CPUExecutionProvider" in filtered_providers and "CPUExecutionProvider" not in concurrent_providers:
                     concurrent_providers.append("CPUExecutionProvider")
                 if not concurrent_providers:
                     concurrent_providers = list(filtered_providers) or ["CPUExecutionProvider"]

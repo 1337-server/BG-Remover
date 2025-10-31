@@ -4,6 +4,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import sys
@@ -78,6 +79,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "device": "Auto",
     "recursive": False,
     "parallel_threads": 4,
+    "max_performance": False,
     "model_dir": str(MODELS_DIR),
     "theme": "flatly",
 }
@@ -906,6 +908,7 @@ class BackgroundRemoverApp(_TkRoot):
         settings.setdefault("model_dir", str(base_config.model_dir))
         settings["input_resize"] = _resolve_resize_mode(settings.get("input_resize"))
         settings["smoothing"] = _coerce_smoothing(settings.get("smoothing", 0.0))
+        settings["max_performance"] = bool(settings.get("max_performance", False))
         return settings
 
     def _save_settings(self) -> None:
@@ -930,6 +933,26 @@ class BackgroundRemoverApp(_TkRoot):
         self.settings[key] = value
         if persist:
             self._save_settings()
+
+    def _max_performance_enabled(self) -> bool:
+        """Return ``True`` when Max Performance mode is currently active."""
+
+        var = getattr(self, "__dict__", {}).get("max_perf_var")
+        if var is not None:
+            try:
+                return bool(var.get())
+            except Exception:  # pragma: no cover - fall back to stored state
+                pass
+        settings = getattr(self, "__dict__", {}).get("settings") or {}
+        if "max_performance" in settings:
+            return bool(settings.get("max_performance"))
+        config = getattr(self, "__dict__", {}).get("config")
+        if config is not None and hasattr(config, "max_performance"):
+            try:
+                return bool(config.max_performance)
+            except Exception:  # pragma: no cover - safeguard
+                return False
+        return False
 
     def _provider_hints(self) -> tuple[str, ...]:
         """Return provider hints derived from current settings."""
@@ -960,12 +983,13 @@ class BackgroundRemoverApp(_TkRoot):
         provider_hints = self._provider_hints()
         if provider_hints != self.config.provider_hints:
             updates["provider_hints"] = provider_hints
-        return self.config.with_updates(**updates) if updates else self.config
+        updates["max_performance"] = self._max_performance_enabled()
+        return self.config.with_updates(**updates)
 
     def _processing_kwargs(self) -> dict[str, Any]:
         """Return advanced processing keyword arguments."""
 
-        return {
+        kwargs: dict[str, Any] = {
             "resize_mode": _resolve_resize_mode(self.settings.get("input_resize")),
             "alpha_matting": bool(self.settings.get("alpha_matting", False)),
             "alpha_foreground_threshold": self.settings.get("alpha_foreground_threshold", 240),
@@ -977,6 +1001,13 @@ class BackgroundRemoverApp(_TkRoot):
             "preserve_names": bool(self.settings.get("preserve_names", False)),
             "parallel_threads": int(self.settings.get("parallel_threads", 1)),
         }
+        if self._max_performance_enabled():
+            try:
+                cpu_total = multiprocessing.cpu_count()
+            except NotImplementedError:  # pragma: no cover - platform specific
+                cpu_total = 1
+            kwargs["max_workers"] = max(1, cpu_total)
+        return kwargs
 
     # ------------------------------------------------------------------
     # UI builders
@@ -1010,6 +1041,25 @@ class BackgroundRemoverApp(_TkRoot):
         self._add_tooltip(self.theme_toggle_btn, "Toggle dark/light mode")
         self._add_tooltip(self.badge, "Providers: detecting…")
 
+        self.max_perf_var = tk.BooleanVar(
+            value=bool(self.settings.get("max_performance", False))
+        )
+        self.max_perf_check = tb.Checkbutton(
+            control_frame,
+            text="Max Performance (use all CPU/GPU resources)",
+            variable=self.max_perf_var,
+            bootstyle="danger-round-toggle",
+            command=self._on_max_performance_toggle,
+        )
+        self.max_perf_check.pack(fill="x", pady=(10, 0))
+        self._add_tooltip(
+            self.max_perf_check,
+            (
+                "When enabled, the app will use all available GPU VRAM, CPU cores, "
+                "and concurrent workers for fastest processing."
+            ),
+        )
+
         notebook = tb.Notebook(control_frame, bootstyle="tabs")
         notebook.pack(fill=BOTH, expand=True, pady=(20, 10))
 
@@ -1021,8 +1071,10 @@ class BackgroundRemoverApp(_TkRoot):
         notebook.add(self.batch_tab, text="Batch Folder")
         self._build_batch_tab(self.batch_tab)
 
-        advanced_frame = tb.Frame(control_frame)
-        advanced_frame.pack(fill=BOTH, expand=False, pady=(0, 10))
+        advanced_frame = tb.Frame(control_frame,
+                                  borderwidth=2,
+                                  relief="groove")
+        advanced_frame.pack(fill=BOTH, expand=False, pady=(2, 10))
         self._build_advanced_panel(advanced_frame)
 
         preview_frame = tb.Labelframe(top_frame, text="Preview", padding=10)
@@ -1058,14 +1110,19 @@ class BackgroundRemoverApp(_TkRoot):
 
         self.preview_canvas = Canvas(canvas_container, highlightthickness=0, background="#111827")
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
-        self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+
+        # --- universal bindings for zoom + pan ---
         self.preview_canvas.bind("<Enter>", self._on_preview_canvas_enter)
-        self.preview_canvas.bind("<Leave>", self._on_preview_canvas_leave)
+        self.preview_canvas.bind("<Leave>", lambda e: self.preview_canvas.config(cursor=""))
+        self.preview_canvas.bind("<ButtonPress-1>", self._on_preview_drag_start)
+        self.preview_canvas.bind("<B1-Motion>", self._on_preview_drag_motion)
+        self.preview_canvas.bind("<ButtonRelease-1>", self._on_preview_drag_end)
+        self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+
+        # Zoom (Windows/macOS = <MouseWheel>, Linux = <Button-4/5>)
         self.preview_canvas.bind("<MouseWheel>", self._on_preview_mouse_wheel)
         self.preview_canvas.bind("<Button-4>", self._on_preview_mouse_wheel)
         self.preview_canvas.bind("<Button-5>", self._on_preview_mouse_wheel)
-        self.preview_canvas.bind("<ButtonPress-1>", self._on_preview_drag_start)
-        self.preview_canvas.bind("<B1-Motion>", self._on_preview_drag_motion)
 
         self.preview_overlay_frame = tb.Frame(canvas_container, bootstyle="dark")
         self.preview_overlay_label = tb.Label(
@@ -1148,46 +1205,58 @@ class BackgroundRemoverApp(_TkRoot):
         self.log_widget.pack(fill=BOTH, expand=True)
         self.log_widget.tag_config("error", foreground="#b91c1c")
 
-        self._register_batch_progress_widget(
-            container,
-            pack_kwargs={"fill": "x", "expand": False, "pady": (12, 0)},
-        )
-
     def _build_single_tab(self, parent: tb.Frame) -> None:
         """Create widgets for single image processing."""
 
-        input_frame = tb.Frame(parent)
-        input_frame.pack(fill=BOTH, expand=False, pady=5)
+        # --- Input / Output with tall Process Button ---
+        io_frame = tb.Frame(parent)
+        io_frame.pack(fill="x", pady=5)
 
-        tb.Label(input_frame, text="Input image").pack(anchor="w")
-        control = tb.Frame(input_frame)
-        control.pack(fill=BOTH, expand=False)
+        # Shared styling for tighter layout
+        label_opts = dict(sticky="w", padx=(0, 4))
+        entry_opts = dict(sticky="ew", padx=(0, 4))
+        button_opts = dict(padx=(0, 8))
+
+        # Input row
+        tb.Label(io_frame, text="Input image").grid(row=0, column=0, **label_opts)
         self.single_input_var = tb.StringVar(value="")
-        tb.Entry(control, textvariable=self.single_input_var, width=60).pack(side=LEFT, padx=(0, 8))
-        tb.Button(control, text="Browse", command=self._choose_single_file).pack(side=LEFT)
+        tb.Entry(io_frame, textvariable=self.single_input_var).grid(row=0, column=1, **entry_opts)
+        tb.Button(io_frame, text="Browse", command=self._choose_single_file).grid(row=0, column=2, **button_opts)
 
-        output_frame = tb.Frame(parent)
-        output_frame.pack(fill=BOTH, expand=False, pady=5)
-        tb.Label(output_frame, text="Output file (optional)").pack(anchor="w")
+        # Output row
+        tb.Label(io_frame, text="Output file").grid(row=1, column=0, **label_opts, pady=(4, 0))
         self.single_output_var = tb.StringVar(value="")
-        tb.Entry(output_frame, textvariable=self.single_output_var, width=60).pack(side=LEFT, padx=(0, 8))
-        tb.Button(output_frame, text="Browse", command=self._choose_single_output).pack(side=LEFT)
+        tb.Entry(io_frame, textvariable=self.single_output_var).grid(row=1, column=1, **entry_opts, pady=(4, 0))
+        tb.Button(io_frame, text="Browse", command=self._choose_single_output).grid(row=1, column=2, **button_opts,
+                                                                                    pady=(4, 0))
+
+        # Process Image button (tall, with internal spinner)
+        process_frame = tb.Frame(io_frame)
+        process_frame.grid(row=0, column=3, rowspan=2, sticky="ns", padx=(6, 0))
 
         self.single_process_button = tb.Button(
-            parent,
+            process_frame,
             text="Process Image",
             bootstyle="primary",
             command=self._process_single,
+            width=16,
         )
-        self.single_process_button.pack(pady=(10, 0))
+        self.single_process_button.pack(fill="both", expand=True)
 
-        self.single_spinner = tb.Progressbar(parent, mode="indeterminate", length=220)
-        self.single_spinner.pack(fill="x", pady=(6, 0))
+        # Small spinner (inside button area)
+        self.single_spinner = tb.Progressbar(
+            process_frame, mode="indeterminate", length=120, bootstyle="info-striped"
+        )
+        self.single_spinner.pack(pady=(4, 0))
         self.single_spinner.stop()
         self.single_spinner.pack_forget()
 
-        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame")
-        drop_zone.pack(fill=BOTH, expand=True, pady=(15, 5))
+        # Make entry fields expand properly
+        io_frame.columnconfigure(1, weight=1)
+
+        # --- Drop Zone ---
+        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame", relief="ridge", borderwidth=2)
+        drop_zone.pack(fill=BOTH, expand=True, pady=(10, 5))
         drop_zone.columnconfigure(0, weight=1)
         drop_zone.rowconfigure(0, weight=1)
 
@@ -1219,24 +1288,55 @@ class BackgroundRemoverApp(_TkRoot):
     def _build_batch_tab(self, parent: tb.Frame) -> None:
         """Create widgets for batch folder processing."""
 
-        input_frame = tb.Frame(parent)
-        input_frame.pack(fill=BOTH, expand=False, pady=5)
-        tb.Label(input_frame, text="Input folder").pack(anchor="w")
-        control = tb.Frame(input_frame)
-        control.pack(fill=BOTH, expand=False)
+        # --- Batch Input / Output with tall Process Button ---
+        batch_frame = tb.Frame(parent)
+        batch_frame.pack(fill="x", pady=5)
+
+        # Shared style options for tight alignment
+        label_opts = dict(sticky="w", padx=(0, 4))
+        entry_opts = dict(sticky="ew", padx=(0, 4))
+        button_opts = dict(padx=(0, 8))
+
+        # Input folder
+        tb.Label(batch_frame, text="Input folder").grid(row=0, column=0, **label_opts)
         self.batch_input_var = tb.StringVar(value="")
-        tb.Entry(control, textvariable=self.batch_input_var, width=60).pack(side=LEFT, padx=(0, 8))
-        tb.Button(control, text="Browse", command=self._choose_batch_folder).pack(side=LEFT)
+        tb.Entry(batch_frame, textvariable=self.batch_input_var).grid(row=0, column=1, **entry_opts)
+        tb.Button(batch_frame, text="Browse", command=self._choose_batch_folder).grid(row=0, column=2, **button_opts)
 
-        output_frame = tb.Frame(parent)
-        output_frame.pack(fill=BOTH, expand=False, pady=5)
-        tb.Label(output_frame, text="Output folder (optional)").pack(anchor="w")
+        # Output folder
+        tb.Label(batch_frame, text="Output folder (optional)").grid(row=1, column=0, **label_opts, pady=(4, 0))
         self.batch_output_var = tb.StringVar(value="")
-        tb.Entry(output_frame, textvariable=self.batch_output_var, width=60).pack(side=LEFT, padx=(0, 8))
-        tb.Button(output_frame, text="Browse", command=self._choose_batch_output).pack(side=LEFT)
+        tb.Entry(batch_frame, textvariable=self.batch_output_var).grid(row=1, column=1, **entry_opts, pady=(4, 0))
+        tb.Button(batch_frame, text="Browse", command=self._choose_batch_output).grid(row=1, column=2, **button_opts,
+                                                                                      pady=(4, 0))
 
-        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame")
-        drop_zone.pack(fill=BOTH, expand=True, pady=(15, 5))
+        # Process Batch button spanning both rows
+        process_frame = tb.Frame(batch_frame)
+        process_frame.grid(row=0, column=3, rowspan=2, sticky="ns", padx=(6, 0))
+
+        self.batch_process_button = tb.Button(
+            process_frame,
+            text="Process Batch/Folder",
+            bootstyle="primary",
+            command=self._process_batch,
+            width=16,
+        )
+        self.batch_process_button.pack(fill="both", expand=True)
+
+        # Internal progress spinner (hidden until processing starts)
+        self.batch_spinner = tb.Progressbar(
+            process_frame, mode="indeterminate", length=120, bootstyle="info-striped"
+        )
+        self.batch_spinner.pack(pady=(4, 0))
+        self.batch_spinner.stop()
+        self.batch_spinner.pack_forget()
+
+        # Allow entry boxes to expand when resizing
+        batch_frame.columnconfigure(1, weight=1)
+
+        # --- Drop Zone for folders ---
+        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame", relief="ridge", borderwidth=2)
+        drop_zone.pack(fill=BOTH, expand=True, pady=(10, 5))
         drop_zone.columnconfigure(0, weight=1)
         drop_zone.rowconfigure(0, weight=1)
 
@@ -1265,14 +1365,6 @@ class BackgroundRemoverApp(_TkRoot):
 
         self._update_batch_drop_message()
 
-        self.batch_process_button = tb.Button(
-            parent,
-            text="Process Folder",
-            bootstyle="primary",
-            command=self._process_batch,
-        )
-        self.batch_process_button.pack(pady=(10, 10))
-
         self.batch_spinner = tb.Progressbar(parent, mode="indeterminate", length=220)
         self.batch_spinner.pack(fill="x", pady=(0, 10))
         self.batch_spinner.stop()
@@ -1283,9 +1375,10 @@ class BackgroundRemoverApp(_TkRoot):
             pack_kwargs={"fill": "x", "expand": False, "pady": (0, 10)},
         )
 
+        # --- Batch Progress Tree (hidden initially) ---
         progress_frame = tb.Labelframe(parent, text="Batch Progress", padding=6)
-        progress_frame.pack(fill=BOTH, expand=True)
         columns = ("file", "status", "details")
+
         self.batch_tree = tb.Treeview(progress_frame, columns=columns, show="headings", height=6)
         self.batch_tree.heading("file", text="File")
         self.batch_tree.heading("status", text="Status")
@@ -1294,12 +1387,16 @@ class BackgroundRemoverApp(_TkRoot):
         self.batch_tree.column("status", width=70, anchor=W)
         self.batch_tree.column("details", anchor=W)
         self.batch_tree.pack(fill=BOTH, expand=True)
+
         self.batch_tree.bind("<Double-1>", self._on_batch_item_double_click)
         self._batch_tree_output_paths: dict[str, Path] = {}
-        self._add_tooltip(
-            self.batch_tree,
-            "Shows progress and results for each processed file.",
-        )
+        self._add_tooltip(self.batch_tree, "Shows progress and results for each processed file.")
+
+        # Hide the entire progress frame until processing starts
+        progress_frame.pack_forget()
+
+        # Keep reference so we can show/hide later
+        self.batch_progress_frame = progress_frame
 
     def _register_batch_progress_widget(
         self,
@@ -1393,17 +1490,29 @@ class BackgroundRemoverApp(_TkRoot):
     def _toggle_all_sections(self) -> None:
         """Expand or collapse every collapsible advanced settings section."""
 
+        # If the entire advanced panel is hidden, show it first
+        if not self.advanced_visible.get():
+            self.advanced_body.pack(fill=BOTH, expand=True)
+            self.advanced_visible.set(True)
+            if self.toggle_button:
+                self.toggle_button.configure(text="Hide")
+
+        # Determine target state (expand or collapse)
         expand = not getattr(self, "_sections_expanded", False)
+
+        # Toggle each collapsible section
         for child in self.advanced_body.winfo_children():
             if isinstance(child, CollapsibleSection):
                 if expand and not child.content_visible:
                     child.toggle()
                 elif not expand and child.content_visible:
                     child.toggle()
+
+        # Update tracking + button text
         self._sections_expanded = expand
         if self.toggle_all_button:
             self.toggle_all_button.configure(
-                text="Collapse All" if self._sections_expanded else "Expand All"
+                text="Collapse All" if expand else "Expand All"
             )
 
     def _build_general_section(self, parent: tb.Frame) -> None:
@@ -1716,6 +1825,13 @@ class BackgroundRemoverApp(_TkRoot):
         except AttributeError:  # pragma: no cover - fallback
             tooltip.text = text
 
+    def _on_max_performance_toggle(self) -> None:
+        """Persist the Max Performance toggle and refresh indicators."""
+
+        enabled = self._max_performance_enabled()
+        self._update_setting("max_performance", enabled)
+        self._update_batch_progress_label()
+
     def _toggle_theme(self) -> None:
         """Toggle between light and dark themes and persist selection."""
 
@@ -1836,6 +1952,7 @@ class BackgroundRemoverApp(_TkRoot):
                     draw.rectangle([x, y, x + checker_size, y + checker_size], fill=(200, 200, 200))
 
         return Image.alpha_composite(checker.convert("RGBA"), rgba)
+
     def _on_model_change(self) -> None:
         """Handle updates to the selected model."""
 
@@ -2025,6 +2142,8 @@ class BackgroundRemoverApp(_TkRoot):
             source_image = self._load_source_image(input_path)
             array = image_to_numpy(source_image)
             config = self._active_config()
+            config.max_performance = self._max_performance_enabled()
+            logging.info("Max Performance Mode: %s", config.max_performance)
             kwargs = self._processing_kwargs()
             kwargs["feather_radius"] = int(self.settings.get("feather_radius", 3))
             result = process_image(
@@ -2281,6 +2400,8 @@ class BackgroundRemoverApp(_TkRoot):
         """Focus the preview canvas when the cursor enters its bounds."""
 
         self._preview_canvas_hover = True
+        self.preview_canvas.config(cursor="hand2")
+
         try:
             self.preview_canvas.focus_set()
         except Exception:  # pragma: no cover - focus best effort
@@ -2314,13 +2435,17 @@ class BackgroundRemoverApp(_TkRoot):
 
     def _on_preview_drag_start(self, event: Any) -> None:
         """Record the initial pointer position for preview panning."""
-
+        self.preview_canvas.config(cursor="fleur")
         self.preview_canvas.scan_mark(event.x, event.y)
 
     def _on_preview_drag_motion(self, event: Any) -> None:
         """Pan the image preview while the left mouse button is held."""
 
         self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def _on_preview_drag_end(self, _event: Any) -> None:
+        """Restore the hand cursor after dragging ends."""
+        self.preview_canvas.config(cursor="hand2")
 
     def _on_preview_zoom(self) -> None:
         """Handle zoom slider changes by re-rendering the preview image."""
@@ -2457,26 +2582,65 @@ class BackgroundRemoverApp(_TkRoot):
         if not path.exists() or not path.is_dir():
             messagebox.showerror("Error", "Please choose a valid input folder.")
             return
+
         if self.batch_output_var.get():
             output_dir = Path(self.batch_output_var.get())
         elif self.output_dir_var.get():
             output_dir = Path(self.output_dir_var.get())
         else:
             output_dir = None
+
+        # Reset and show progress UI
         self._reset_batch_progress()
+        self._start_batch_processing()
+
         self._log(f"Starting processing for {path.name}…")
         self._set_processing_state(True, "batch")
-        threading.Thread(target=self._run_batch, args=(path, output_dir), daemon=True).start()
+
+        # Run batch in background thread
+        threading.Thread(
+            target=self._run_batch, args=(path, output_dir), daemon=True
+        ).start()
+
+    def _start_batch_processing(self):
+        """Prepare UI for active batch run."""
+        # Show the progress frame if hidden
+        if not self.batch_progress_frame.winfo_ismapped():
+            self.batch_progress_frame.pack(fill="both", expand=True, pady=(10, 5))
+
+        # Clear previous results
+        for item in self.batch_tree.get_children():
+            self.batch_tree.delete(item)
+
+        # Disable button and show spinner
+        self.batch_process_button.config(state="disabled", text="")
+        self.batch_spinner.place(relx=0.5, rely=0.5, anchor="center")
+        self.batch_spinner.start()
+
+    def _end_batch_processing(self):
+        """Restore UI after batch completes."""
+        self.batch_spinner.stop()
+        self.batch_spinner.place_forget()
+        self.batch_process_button.config(state="normal", text="Process Batch")
+
+        # Optionally hide progress frame again
+        self._hide_batch_progress()
 
     def _reset_batch_progress(self) -> None:
         """Clear progress indicators for a new batch run."""
-
         for item in self.batch_tree.get_children():
             self.batch_tree.delete(item)
         self._batch_tree_output_paths.clear()
         self._batch_total_count = 0
         self._batch_processed_count = 0
+
+        # Hide progress frame until we start again
         self._hide_batch_progress()
+
+    def _hide_batch_progress(self):
+        """Hide the batch progress UI."""
+        if self.batch_progress_frame.winfo_ismapped():
+            self.batch_progress_frame.pack_forget()
 
     def _show_batch_progress(self, total: int) -> None:
         """Display the batch progress bar configured for ``total`` entries."""
@@ -2500,14 +2664,22 @@ class BackgroundRemoverApp(_TkRoot):
         processed = max(0, min(int(self._batch_processed_count), total))
         widgets = getattr(self, "_batch_progress_widgets", [])
         maximum = total if total else 1
+        max_perf = self._max_performance_enabled()
         for widget in widgets:
             widget.bar.configure(maximum=maximum, value=processed)
+            if hasattr(widget.label, "configure"):
+                bootstyle = "danger" if max_perf else ""
+                try:
+                    widget.label.configure(bootstyle=bootstyle)
+                except Exception:  # pragma: no cover - visual hint best-effort
+                    pass
         if total <= 0:
-            self.batch_progress_text.set("")
+            self.batch_progress_text.set("⚡ MAX" if max_perf else "")
             return
         percentage = int((processed / total) * 100)
+        prefix = "⚡ MAX — " if max_perf else ""
         self.batch_progress_text.set(
-            f"{percentage}% — {processed} / {total} processed"
+            f"{prefix}{percentage}% — {processed} / {total} processed"
         )
 
     def _hide_batch_progress(self) -> None:
@@ -2518,6 +2690,11 @@ class BackgroundRemoverApp(_TkRoot):
             if widget.container.winfo_manager():
                 widget.container.pack_forget()
             widget.bar.configure(value=0, maximum=1)
+            if hasattr(widget.label, "configure"):
+                try:
+                    widget.label.configure(bootstyle="")
+                except Exception:  # pragma: no cover - visual hint best-effort
+                    pass
         self.batch_progress_text.set("")
 
     def _run_batch(self, input_dir: Path, output_dir: Path | None) -> None:
@@ -2525,6 +2702,8 @@ class BackgroundRemoverApp(_TkRoot):
 
         try:
             config = self._active_config()
+            config.max_performance = self._max_performance_enabled()
+            logging.info("Max Performance Mode: %s", config.max_performance)
             kwargs = self._processing_kwargs()
             kwargs.update(
                 {
@@ -2541,6 +2720,22 @@ class BackgroundRemoverApp(_TkRoot):
             self.after(0, lambda: self._show_batch_progress(total_items))
             batch_output_dir = output_dir or OUTPUT_DIR
             batch_output_dir.mkdir(parents=True, exist_ok=True)
+            if config.max_performance:
+                try:
+                    cpu_total = multiprocessing.cpu_count()
+                except NotImplementedError:  # pragma: no cover - platform specific
+                    cpu_total = 1
+                requested_workers = kwargs.get("max_workers") or cpu_total
+                if not isinstance(requested_workers, int):
+                    try:
+                        requested_workers = int(requested_workers)
+                    except (TypeError, ValueError):
+                        requested_workers = cpu_total
+                if total_items > 0:
+                    requested_workers = max(1, min(requested_workers, total_items))
+                kwargs["max_workers"] = max(1, requested_workers)
+            else:
+                kwargs.pop("max_workers", None)
             report = process_folder(
                 input_dir,
                 batch_output_dir,

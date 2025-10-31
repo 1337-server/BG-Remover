@@ -1,4 +1,14 @@
 #other
+/input
+/output
+/models
+.run/*
+.github
+/build
+/dist
+/.venv
+error.log
+run.patch
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

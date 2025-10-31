@@ -9,6 +9,9 @@
 /.venv
 error.log
 run.patch
+*.iml
+*.xml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

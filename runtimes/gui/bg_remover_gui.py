@@ -1108,14 +1108,19 @@ class BackgroundRemoverApp(_TkRoot):
 
         self.preview_canvas = Canvas(canvas_container, highlightthickness=0, background="#111827")
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
-        self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+
+        # --- universal bindings for zoom + pan ---
         self.preview_canvas.bind("<Enter>", self._on_preview_canvas_enter)
-        self.preview_canvas.bind("<Leave>", self._on_preview_canvas_leave)
+        self.preview_canvas.bind("<Leave>", lambda e: self.preview_canvas.config(cursor=""))
+        self.preview_canvas.bind("<ButtonPress-1>", self._on_preview_drag_start)
+        self.preview_canvas.bind("<B1-Motion>", self._on_preview_drag_motion)
+        self.preview_canvas.bind("<ButtonRelease-1>", self._on_preview_drag_end)
+        self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+
+        # Zoom (Windows/macOS = <MouseWheel>, Linux = <Button-4/5>)
         self.preview_canvas.bind("<MouseWheel>", self._on_preview_mouse_wheel)
         self.preview_canvas.bind("<Button-4>", self._on_preview_mouse_wheel)
         self.preview_canvas.bind("<Button-5>", self._on_preview_mouse_wheel)
-        self.preview_canvas.bind("<ButtonPress-1>", self._on_preview_drag_start)
-        self.preview_canvas.bind("<B1-Motion>", self._on_preview_drag_motion)
 
         self.preview_overlay_frame = tb.Frame(canvas_container, bootstyle="dark")
         self.preview_overlay_label = tb.Label(
@@ -1893,6 +1898,7 @@ class BackgroundRemoverApp(_TkRoot):
                     draw.rectangle([x, y, x + checker_size, y + checker_size], fill=(200, 200, 200))
 
         return Image.alpha_composite(checker.convert("RGBA"), rgba)
+
     def _on_model_change(self) -> None:
         """Handle updates to the selected model."""
 
@@ -2340,6 +2346,8 @@ class BackgroundRemoverApp(_TkRoot):
         """Focus the preview canvas when the cursor enters its bounds."""
 
         self._preview_canvas_hover = True
+        self.preview_canvas.config(cursor="hand2")
+
         try:
             self.preview_canvas.focus_set()
         except Exception:  # pragma: no cover - focus best effort
@@ -2373,13 +2381,17 @@ class BackgroundRemoverApp(_TkRoot):
 
     def _on_preview_drag_start(self, event: Any) -> None:
         """Record the initial pointer position for preview panning."""
-
+        self.preview_canvas.config(cursor="fleur")
         self.preview_canvas.scan_mark(event.x, event.y)
 
     def _on_preview_drag_motion(self, event: Any) -> None:
         """Pan the image preview while the left mouse button is held."""
 
         self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def _on_preview_drag_end(self, _event: Any) -> None:
+        """Restore the hand cursor after dragging ends."""
+        self.preview_canvas.config(cursor="hand2")
 
     def _on_preview_zoom(self) -> None:
         """Handle zoom slider changes by re-rendering the preview image."""

@@ -1205,11 +1205,6 @@ class BackgroundRemoverApp(_TkRoot):
         self.log_widget.pack(fill=BOTH, expand=True)
         self.log_widget.tag_config("error", foreground="#b91c1c")
 
-        self._register_batch_progress_widget(
-            container,
-            pack_kwargs={"fill": "x", "expand": False, "pady": (12, 0)},
-        )
-
     def _build_single_tab(self, parent: tb.Frame) -> None:
         """Create widgets for single image processing."""
 
@@ -1495,17 +1490,29 @@ class BackgroundRemoverApp(_TkRoot):
     def _toggle_all_sections(self) -> None:
         """Expand or collapse every collapsible advanced settings section."""
 
+        # If the entire advanced panel is hidden, show it first
+        if not self.advanced_visible.get():
+            self.advanced_body.pack(fill=BOTH, expand=True)
+            self.advanced_visible.set(True)
+            if self.toggle_button:
+                self.toggle_button.configure(text="Hide")
+
+        # Determine target state (expand or collapse)
         expand = not getattr(self, "_sections_expanded", False)
+
+        # Toggle each collapsible section
         for child in self.advanced_body.winfo_children():
             if isinstance(child, CollapsibleSection):
                 if expand and not child.content_visible:
                     child.toggle()
                 elif not expand and child.content_visible:
                     child.toggle()
+
+        # Update tracking + button text
         self._sections_expanded = expand
         if self.toggle_all_button:
             self.toggle_all_button.configure(
-                text="Collapse All" if self._sections_expanded else "Expand All"
+                text="Collapse All" if expand else "Expand All"
             )
 
     def _build_general_section(self, parent: tb.Frame) -> None:

@@ -2,17 +2,6 @@
  * Base styles for the background remover application.
  * These rules configure the global body colors and the checkerboard background.
  */
-:root {
-  color-scheme: light;
-  --body-bg: #f5f6fa;
-  --body-color: #212529;
-  --card-bg: #ffffff;
-  --card-border: rgba(0, 0, 0, 0.125);
-  --card-header-bg: rgba(0, 0, 0, 0.03);
-  --pre-bg: #f8f9fa;
-  --checkerboard-color: #cccccc;
-  --checkerboard-solid-color: #cccccc;
-}
 
 body {
   background-color: var(--body-bg);

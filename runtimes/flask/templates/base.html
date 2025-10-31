@@ -16,7 +16,8 @@
     />
     <link rel="stylesheet" href="{{ url_for('webui.static', filename='css/tailwind.min.css') }}"/>
     <link rel="stylesheet" href="{{ url_for('webui.static', filename='css/app.css') }}"/>
-    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
+    <link rel="stylesheet" href="{{ url_for('webui.static', filename='css/base.css') }}"/>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/icon.png') }}">
 
     <script src="{{ url_for('webui.static', filename='js/theme.js') }}"></script>
     <script src="{{ url_for('webui.static', filename='js/app.js') }}" defer></script>
@@ -30,6 +31,7 @@
         });
     </script>
 </head>
+
 <body class="app-body">
 <div
         id="app-root"
@@ -43,8 +45,7 @@
         "model_specs": {{ model_specs|tojson }}
       }'
         x-data="bgrApp($el.dataset.config)"
-        x-init="init()"
->
+        x-init="init()">
     {% set current_page = active_page|default('single') %}
     <header class="app-navbar backdrop-blur">
         <div class="max-w-7xl mx-auto px-6 py-4 space-y-4">
@@ -102,5 +103,53 @@
     </footer>
 </div>
 <div id="toast-container" class="fixed top-6 right-6 space-y-3 z-50"></div>
+<script>
+    document.addEventListener("alpine:init", () => {
+        Alpine.data('submitFab', () => ({
+            showFab: false,
+            _obs: null,
+
+            init() {
+                const btn = this.$refs.submitBtn;
+                if (!btn) return;
+                this._obs = new IntersectionObserver((entries) => {
+                    const e = entries[0];
+                    this.showFab = !e.isIntersecting; // show FAB when original is off-screen
+                }, {root: null, threshold: 0.01});
+                this._obs.observe(btn);
+            },
+
+            triggerSubmit() {
+                // Dispatch submit on your existing form (adjust selector if needed)
+                const form = document.querySelector('#process-form');
+                if (form) {
+                    form.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}));
+                }
+            },
+
+            destroy() {
+                this._obs && this._obs.disconnect();
+            }
+        }));
+        Alpine.data("previewPanelState", () => ({
+            open: true,
+
+            init() {
+                // Restore saved state
+                const saved = localStorage.getItem("previewOpen");
+                if (saved !== null) {
+                    this.open = saved === "true";
+                }
+
+            },
+
+            toggle() {
+                this.open = !this.open;
+                // Save state persistently
+                localStorage.setItem("previewOpen", this.open);
+            },
+        }));
+    });
+</script>
 </body>
 </html>

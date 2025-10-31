@@ -131,4 +131,24 @@
     </ul>
   </section>
 </div>
+
 {% endblock %}
+            <!-- Floating right-hand drawer (contains preview.html) -->
+        <aside id="preview-drawer"
+               class="sidepanel"
+               :class="open && !isProcessing ? 'open' : 'collapsed'"
+               @keydown.escape.window="open && toggle()">
+
+            <!-- Fixed edge toggle tab (independent of aside stacking) -->
+            <button class="drawer-toggle-tab fixed"
+                    @click="toggle()"
+                    :aria-expanded="open.toString()"
+                    :title="open && !isProcessing ? 'Collapse preview' : 'Open preview'"
+                    :style="open ? 'right: var(--drawer-open-w);' : 'right: 0;'">
+                <span class="material-symbols-rounded" x-text="open ? 'chevron_right' : 'chevron_left'"></span>
+            </button>
+
+            <div class="drawer-body" x-show="open && !isProcessing" x-transition>
+                {% include "preview.html" %}
+            </div>
+        </aside>

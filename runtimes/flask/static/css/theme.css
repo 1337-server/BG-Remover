@@ -127,7 +127,7 @@ body {
   }
 }
 
-[data-reduced-motion='true'] *,
+[data-reduced-motion='true'] *
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;

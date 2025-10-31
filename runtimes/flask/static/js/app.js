@@ -569,6 +569,7 @@ window.bgrApp = function bgrApp(rawConfig) {
         this.setStatus(`Error: ${error.message}`, 'error');
       } finally {
         this.isProcessing = false;
+        this.open = true;
       }
     },
 

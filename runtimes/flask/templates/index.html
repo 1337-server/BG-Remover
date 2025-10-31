@@ -1,161 +1,220 @@
 {% extends "base.html" %}
 {% block title %}Background Remover — Flask UI{% endblock %}
 {% block content %}
-<div class="space-y-10" x-cloak>
-  <div class="grid gap-8 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-    <section class="card">
-      <header class="flex items-center justify-between">
-        <div>
-          <h2 class="text-lg font-semibold">Upload images</h2>
-          <p class="text-sm app-text-muted">Drag and drop multiple images or browse from disk.</p>
-        </div>
-        <button type="button" class="text-sm app-link" @click="resetSelections()">Reset</button>
-      </header>
-      <form id="process-form" class="mt-4 space-y-5" @submit.prevent="processImages()">
-        <div
-          id="drop-zone"
-          class="drop-zone"
-          @dragover.prevent="isDragging = true"
-          @dragleave.prevent="isDragging = false"
-          @drop.prevent="handleDrop($event)"
-          :class="{ 'drop-zone--dragging': isDragging }"
-        >
-          <div class="flex flex-col items-center justify-center text-center">
-            <span class="material-symbols-rounded text-4xl accent-icon">cloud_upload</span>
-            <p class="font-medium mt-2">Drop images here</p>
-            <p class="text-sm app-text-muted">PNG, JPEG, WebP up to 64 MB total</p>
-            <label
-              for="image-input"
-              class="mt-4 btn-primary"
-            >
-              <span class="material-symbols-rounded text-base">folder_open</span>
-              <span>Browse</span>
-            </label>
-            <input id="image-input" name="images" type="file" class="hidden" multiple accept="image/*" @change="updateSelections($event)" />
-          </div>
-        </div>
-        <div class="selected-files" x-show="selectedFiles.length">
-          <h3 class="text-sm font-medium app-text-muted">Selected images</h3>
-          <ul class="mt-2 space-y-1 text-sm">
-            <template x-for="file in selectedFiles" :key="file.name">
-              <li class="flex items-center justify-between">
-                <span x-text="file.name"></span>
-                <span class="text-xs app-text-muted" x-text="formatBytes(file.size)"></span>
-              </li>
-            </template>
-          </ul>
-        </div>
-        <div class="grid gap-4 md:grid-cols-2">
-          <label class="field">
-            <span class="field-label">
-              Background mode
-              <span class="info-icon" :title="getOptionHelp('background_mode')">i</span>
-            </span>
-            <select name="background_mode" class="input" x-model="settings.background_mode" @change="persistSettings()">
-              <option value="clear">Transparent (clear)</option>
-              <option value="fill">Fill with colour</option>
-              <option value="none">Keep original background</option>
-            </select>
-            <p class="field-help">Control how the resulting background is composed.</p>
-          </label>
-          <label class="field">
-            <span class="field-label">
-              Fill colour
-              <span class="info-icon" :title="getOptionHelp('background_color')">i</span>
-            </span>
-            <input type="color" name="background_color" class="input h-10 w-16" x-model="settings.background_color" @input="persistSettings()" />
-            <p class="field-help">Applies when background mode is set to Fill.</p>
-          </label>
-          <label class="field">
-            <span class="field-label">
-              Output format
-              <span class="info-icon" :title="getOptionHelp('output_format')">i</span>
-            </span>
-            <select name="output_format" x-model="settings.output_format" @change="persistSettings()" class="input">
-              <option value="PNG">PNG (transparent)</option>
-              <option value="JPEG">JPEG</option>
-              <option value="WEBP">WebP</option>
-            </select>
-            <p class="field-help">Choose the export format for processed images.</p>
-          </label>
-          <label class="field">
-            <span class="field-label">
-              Output folder
-              <span class="info-icon" :title="getOptionHelp('output_dir')">i</span>
-            </span>
-            <input type="text" name="output_dir" class="input" placeholder="optional" x-model="settings.output_dir" @change="persistSettings()" />
-            <p class="field-help">Optional subdirectory for results inside the cache.</p>
-          </label>
-        </div>
-        <div class="flex flex-wrap items-center justify-between gap-4 pt-2">
-          <div class="text-sm app-text-muted">Settings persist automatically in this browser.</div>
-          <button type="submit" class="btn-primary" :disabled="isProcessing">
-            <span class="material-symbols-rounded text-base" aria-hidden="true">auto_fix</span>
-            <span x-show="!isProcessing">Process images</span>
-            <span x-show="isProcessing" class="flex items-center gap-2">
-              <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle class="opacity-25" cx="12" cy="12" r="10"></circle><path class="opacity-75" d="M4 12a8 8 0 018-8"></path></svg>
-              Processing…
-            </span>
-          </button>
-        </div>
-      </form>
-    </section>
-    <section class="space-y-6">
-      {% include "preview.html" %}
-    </section>
-  </div>
-  {% include "settings.html" %}
-  <section class="card">
-  <header class="flex items-center justify-between">
-    <div>
-      <h2 class="text-lg font-semibold">Processing history</h2>
-      <p class="text-sm app-text-muted">Recent results are stored locally on this machine.</p>
-    </div>
-    <button type="button" class="text-sm app-link" @click="loadHistory()">Refresh</button>
-  </header>
-  <div class="mt-4 overflow-x-auto">
-    <table class="min-w-full text-left text-sm">
-      <thead>
-        <tr class="app-text-muted">
-          <th class="py-2 pr-4 font-medium">Result</th>
-          <th class="py-2 pr-4 font-medium">Original</th>
-          <th class="py-2 pr-4 font-medium">Created</th>
-          <th class="py-2 pr-4 font-medium">Size</th>
-          <th class="py-2 font-medium text-right">Actions</th>
-        </tr>
-      </thead>
-      <tbody id="history-body">
-        <tr x-show="!history.length">
-          <td colspan="5" class="py-6 text-center app-text-muted">Process an image to populate history.</td>
-        </tr>
-        <template x-for="item in history" :key="item.id">
-          <tr>
-            <td class="py-3 pr-4">
-              <div class="flex items-center gap-3">
-                <div class="history-thumb">
-                  <img :src="`/result/${item.id}`" alt="Preview" class="h-full w-full object-cover" x-show="item.mime_type.startsWith('image/')" />
-                  <span class="material-symbols-rounded text-2xl icon-muted flex h-full w-full items-center justify-center" x-show="!item.mime_type.startsWith('image/')">folder_zip</span>
+
+    <div id="page-root" x-data="previewPanelState()" x-cloak>
+        <!-- Main content shifts so it never hides under the drawer -->
+        <div id="page-content"
+             class="space-y-10"
+             :style="open ? 'margin-right:var(--drawer-open-w);' : 'margin-right:var(--drawer-closed-w);'">
+
+            <!-- Upload + form -->
+            <div class="grid gap-8 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+                <section class="card">
+                    <header class="flex items-center justify-between">
+                        <div>
+                            <h2 class="text-lg font-semibold">Upload images</h2>
+                            <p class="text-sm app-text-muted">Drag and drop multiple images or browse from disk.</p>
+                        </div>
+                        <button type="button" class="text-sm app-link" @click="resetSelections()">Reset</button>
+                    </header>
+                    <form id="process-form" class="mt-4 space-y-5" @submit.prevent="processImages()">
+                        <div id="drop-zone" class="drop-zone"
+                             @dragover.prevent="isDragging = true"
+                             @dragleave.prevent="isDragging = false"
+                             @drop.prevent="handleDrop($event)"
+                             :class="{ 'drop-zone--dragging': isDragging }">
+                            <div class="flex flex-col items-center justify-center text-center">
+                                <span class="material-symbols-rounded text-4xl accent-icon">cloud_upload</span>
+                                <p class="font-medium mt-2">Drop images here</p>
+                                <p class="text-sm app-text-muted">PNG, JPEG, WebP up to 64 MB total</p>
+                                <label for="image-input" class="mt-4 btn-primary">
+                                    <span class="material-symbols-rounded text-base">folder_open</span>
+                                    <span>Browse</span>
+                                </label>
+                                <input id="image-input" name="images" type="file" class="hidden" multiple
+                                       accept="image/*"
+                                       @change="updateSelections($event)"/>
+                            </div>
+                        </div>
+
+                        <div class="selected-files" x-show="selectedFiles.length">
+                            <h3 class="text-sm font-medium app-text-muted">Selected images</h3>
+                            <ul class="mt-2 space-y-1 text-sm">
+                                <template x-for="file in selectedFiles" :key="file.name">
+                                    <li class="flex items-center justify-between">
+                                        <span x-text="file.name"></span>
+                                        <span class="text-xs app-text-muted" x-text="formatBytes(file.size)"></span>
+                                    </li>
+                                </template>
+                            </ul>
+                        </div>
+
+                        <div class="grid gap-4 md:grid-cols-2">
+                            <!-- background mode -->
+                            <label class="field">
+                                <span class="field-label">Background mode
+                                    <span class="info-icon" :title="getOptionHelp('background_mode')">i</span>
+                                </span>
+                                <select name="background_mode" class="input" x-model="settings.background_mode"
+                                        @change="persistSettings()">
+                                    <option value="clear">Transparent (clear)</option>
+                                    <option value="fill">Fill with colour</option>
+                                    <option value="none">Keep original background</option>
+                                </select>
+                                <p class="field-help">Control how the resulting background is composed.</p>
+                            </label>
+                            <!-- output file type -->
+                            <label class="field">
+                                <span class="field-label">Output format
+                                    <span class="info-icon" :title="getOptionHelp('output_format')">i</span>
+                                </span>
+                                <select name="output_format" x-model="settings.output_format"
+                                        @change="persistSettings()" class="input">
+                                    <option value="PNG">PNG (transparent)</option>
+                                    <option value="JPEG">JPEG</option>
+                                    <option value="WEBP">WebP</option>
+                                </select>
+                                <p class="field-help">Choose the export format for processed images.</p>
+                            </label>
+                            <!-- output directory -->
+                            <label class="field">
+                                <span class="field-label">Output folder
+                                    <span class="info-icon" :title="getOptionHelp('output_dir')">i</span>
+                                </span>
+                                <input type="text" name="output_dir" class="input" placeholder="optional"
+                                       x-model="settings.output_dir" @change="persistSettings()"/>
+                                <p class="field-help">Optional subdirectory for results inside the cache.</p>
+                            </label>
+                        </div>
+
+
+                        <!-- submit button -->
+                        <div x-data="submitFab()" x-init="init()" x-cloak>
+                            <button type="submit" class="btn-primary" :disabled="isProcessing" x-ref="submitBtn">
+                                <span class="material-symbols-rounded text-base" aria-hidden="true">auto_fix</span>
+                                <span x-show="!isProcessing">Process images</span>
+                                <span x-show="isProcessing" class="flex items-center gap-2" style="display:none;">
+                                    <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"
+                                         stroke="currentColor" stroke-width="1.5">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10"></circle>
+                                        <path class="opacity-75" d="M4 12a8 8 0 018-8"></path>
+                                    </svg>
+                                    Processing…
+                                </span>
+                            </button>
+
+                            <!-- Floating clone: only shows when the original is off-screen -->
+                            <button
+                                    x-show="showFab"
+                                    x-transition
+                                    class="btn-primary fab-submit"
+                                    :disabled="isProcessing"
+                                    @click.prevent="triggerSubmit()"
+                                    aria-live="polite"
+                            >
+                                <span class="material-symbols-rounded text-base" aria-hidden="true">auto_fix</span>
+                                <span x-show="!isProcessing">Process images</span>
+                                <span x-show="isProcessing" class="flex items-center gap-2" style="display:none;">
+                                     <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"
+                                          stroke="currentColor" stroke-width="1.5">
+                                     <circle class="opacity-25" cx="12" cy="12" r="10"></circle>
+                                     <path class="opacity-75" d="M4 12a8 8 0 018-8"></path>
+                                                 </svg>
+                                        Processing…
+                                         </span>
+                            </button>
+                        </div>
+
+
+                    </form>
+                </section>
+            </div>
+
+            {% include "settings.html" %}
+
+            <!-- History -->
+            <section class="card">
+                <header class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-lg font-semibold">Processing history</h2>
+                        <p class="text-sm app-text-muted">Recent results are stored locally on this machine.</p>
+                    </div>
+                    <button type="button" class="text-sm app-link" @click="loadHistory()">Refresh</button>
+                </header>
+                <div class="mt-4 overflow-x-auto">
+                    <table class="min-w-full text-left text-sm">
+                        <thead>
+                        <tr class="app-text-muted">
+                            <th class="py-2 pr-4 font-medium">Result</th>
+                            <th class="py-2 pr-4 font-medium">Original</th>
+                            <th class="py-2 pr-4 font-medium">Created</th>
+                            <th class="py-2 pr-4 font-medium">Size</th>
+                            <th class="py-2 font-medium text-right">Actions</th>
+                        </tr>
+                        </thead>
+                        <tbody id="history-body">
+                        <tr x-show="!history.length">
+                            <td colspan="5" class="py-6 text-center app-text-muted">Process an image to populate
+                                history.
+                            </td>
+                        </tr>
+                        <template x-for="item in history" :key="item.id">
+                            <tr>
+                                <td class="py-3 pr-4">
+                                    <div class="flex items-center gap-3">
+                                        <div class="history-thumb">
+                                            <img :src="`/result/${item.id}`" alt="Preview"
+                                                 class="h-full w-full object-cover"
+                                                 x-show="item.mime_type.startsWith('image/')"/>
+                                            <span class="material-symbols-rounded text-2xl icon-muted flex h-full w-full items-center justify-center"
+                                                  x-show="!item.mime_type.startsWith('image/')">folder_zip</span>
+                                        </div>
+                                        <div>
+                                            <p class="font-medium" x-text="item.result_name"></p>
+                                            <p class="text-xs app-text-muted" x-text="item.options.model_key"></p>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="py-3 pr-4 text-sm" x-text="item.original_name"></td>
+                                <td class="py-3 pr-4 text-sm" x-text="formatDate(item.created_at)"></td>
+                                <td class="py-3 pr-4 text-sm" x-text="formatBytes(item.size_bytes)"></td>
+                                <td class="py-3 text-right">
+                                    <div class="flex justify-end gap-2">
+                                        <a :href="`/result/${item.id}`" target="_blank" class="btn-link">Preview</a>
+                                        <a :href="`/download/${item.id}`" class="btn-link">Download</a>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+                        </tbody>
+                    </table>
                 </div>
-                <div>
-                  <p class="font-medium" x-text="item.result_name"></p>
-                  <p class="text-xs app-text-muted" x-text="item.options.model_key"></p>
-                </div>
-              </div>
-            </td>
-            <td class="py-3 pr-4 text-sm" x-text="item.original_name"></td>
-            <td class="py-3 pr-4 text-sm" x-text="formatDate(item.created_at)"></td>
-            <td class="py-3 pr-4 text-sm" x-text="formatBytes(item.size_bytes)"></td>
-            <td class="py-3 text-right">
-              <div class="flex justify-end gap-2">
-                <a :href="`/result/${item.id}`" target="_blank" class="btn-link">Preview</a>
-                <a :href="`/download/${item.id}`" class="btn-link">Download</a>
-              </div>
-            </td>
-          </tr>
-        </template>
-      </tbody>
-    </table>
-  </div>
-</section>
-</div>
+            </section>
+        </div> <!-- /#page-content -->
+
+
+        <!-- Floating right-hand drawer (contains preview.html) -->
+        <aside id="preview-drawer"
+               class="sidepanel"
+               :class="open && !isProcessing ? 'open' : 'collapsed'"
+               @keydown.escape.window="open && toggle()">
+
+            <!-- Fixed edge toggle tab (independent of aside stacking) -->
+            <button class="drawer-toggle-tab fixed"
+                    @click="toggle()"
+                    :aria-expanded="open.toString()"
+                    :title="open && !isProcessing ? 'Collapse preview' : 'Open preview'"
+                    :style="open ? 'right: var(--drawer-open-w);' : 'right: 0;'">
+                <span class="material-symbols-rounded" x-text="open ? 'chevron_right' : 'chevron_left'"></span>
+            </button>
+
+            <div class="drawer-body" x-show="open && !isProcessing" x-transition>
+                {% include "preview.html" %}
+            </div>
+        </aside>
+
+    </div> <!-- /#page-root -->
+
+
 {% endblock %}

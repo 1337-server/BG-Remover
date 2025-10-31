@@ -26,7 +26,7 @@ model supports every option; incompatible selections are ignored.
 | Option | Default | Valid range / values | Notes |
 | --- | --- | --- | --- |
 | `feather_radius` | `3` | `0` – `50` | Softens the matte edges after inference. |
-| `resize_mode` | `stretch` | `stretch`, `longer-side`, `pad` | Controls preprocessing resize strategy. |
+| `resize_mode` | `stretch` | `stretch`, `keep-aspect`, `crop`, `auto` | Controls preprocessing resize strategy: `stretch` matches CLI/Flask defaults, `keep-aspect` pads to preserve composition, `crop` center-crops to fill, and `auto` dynamically switches between padding and cropping. |
 | `alpha_matting` | `false` | Boolean | Enables matting refinement for portraits. |
 | `foreground_threshold` | `240` | `0` – `255` | Only used when `alpha_matting` is true. |
 | `background_threshold` | `10` | `0` – `255` | Only used when `alpha_matting` is true. |

@@ -79,7 +79,16 @@ def test_process_folder_reports_results(tmp_path: Path, stub_session: None) -> N
     assert report.total == 1
     assert report.successes == 1
     assert report.failures == 0
-    assert report.entries[0].path_out is not None
+    # Validate that the generated file path matches expectations and that the
+    # processed image is actually written to disk.
+    path_out = report.entries[0].path_out
+    assert path_out is not None
+    assert path_out.exists()
+    assert path_out.stem.endswith("_no_bg")
+
+    # Attempt to open the generated file to catch silent write failures.
+    with Image.open(path_out) as processed_image:
+        processed_image.verify()
 
 
 def test_process_folder_clamps_workers_for_gpu(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog):

@@ -1071,8 +1071,10 @@ class BackgroundRemoverApp(_TkRoot):
         notebook.add(self.batch_tab, text="Batch Folder")
         self._build_batch_tab(self.batch_tab)
 
-        advanced_frame = tb.Frame(control_frame)
-        advanced_frame.pack(fill=BOTH, expand=False, pady=(0, 10))
+        advanced_frame = tb.Frame(control_frame,
+                                  borderwidth=2,
+                                  relief="groove")
+        advanced_frame.pack(fill=BOTH, expand=False, pady=(2, 10))
         self._build_advanced_panel(advanced_frame)
 
         preview_frame = tb.Labelframe(top_frame, text="Preview", padding=10)
@@ -1211,38 +1213,55 @@ class BackgroundRemoverApp(_TkRoot):
     def _build_single_tab(self, parent: tb.Frame) -> None:
         """Create widgets for single image processing."""
 
-        input_frame = tb.Frame(parent)
-        input_frame.pack(fill=BOTH, expand=False, pady=5)
+        # --- Input / Output with tall Process Button ---
+        io_frame = tb.Frame(parent)
+        io_frame.pack(fill="x", pady=5)
 
-        tb.Label(input_frame, text="Input image").pack(anchor="w")
-        control = tb.Frame(input_frame)
-        control.pack(fill=BOTH, expand=False)
+        # Shared styling for tighter layout
+        label_opts = dict(sticky="w", padx=(0, 4))
+        entry_opts = dict(sticky="ew", padx=(0, 4))
+        button_opts = dict(padx=(0, 8))
+
+        # Input row
+        tb.Label(io_frame, text="Input image").grid(row=0, column=0, **label_opts)
         self.single_input_var = tb.StringVar(value="")
-        tb.Entry(control, textvariable=self.single_input_var, width=60).pack(side=LEFT, padx=(0, 8))
-        tb.Button(control, text="Browse", command=self._choose_single_file).pack(side=LEFT)
+        tb.Entry(io_frame, textvariable=self.single_input_var).grid(row=0, column=1, **entry_opts)
+        tb.Button(io_frame, text="Browse", command=self._choose_single_file).grid(row=0, column=2, **button_opts)
 
-        output_frame = tb.Frame(parent)
-        output_frame.pack(fill=BOTH, expand=False, pady=5)
-        tb.Label(output_frame, text="Output file (optional)").pack(anchor="w")
+        # Output row
+        tb.Label(io_frame, text="Output file").grid(row=1, column=0, **label_opts, pady=(4, 0))
         self.single_output_var = tb.StringVar(value="")
-        tb.Entry(output_frame, textvariable=self.single_output_var, width=60).pack(side=LEFT, padx=(0, 8))
-        tb.Button(output_frame, text="Browse", command=self._choose_single_output).pack(side=LEFT)
+        tb.Entry(io_frame, textvariable=self.single_output_var).grid(row=1, column=1, **entry_opts, pady=(4, 0))
+        tb.Button(io_frame, text="Browse", command=self._choose_single_output).grid(row=1, column=2, **button_opts,
+                                                                                    pady=(4, 0))
+
+        # Process Image button (tall, with internal spinner)
+        process_frame = tb.Frame(io_frame)
+        process_frame.grid(row=0, column=3, rowspan=2, sticky="ns", padx=(6, 0))
 
         self.single_process_button = tb.Button(
-            parent,
+            process_frame,
             text="Process Image",
             bootstyle="primary",
             command=self._process_single,
+            width=16,
         )
-        self.single_process_button.pack(pady=(10, 0))
+        self.single_process_button.pack(fill="both", expand=True)
 
-        self.single_spinner = tb.Progressbar(parent, mode="indeterminate", length=220)
-        self.single_spinner.pack(fill="x", pady=(6, 0))
+        # Small spinner (inside button area)
+        self.single_spinner = tb.Progressbar(
+            process_frame, mode="indeterminate", length=120, bootstyle="info-striped"
+        )
+        self.single_spinner.pack(pady=(4, 0))
         self.single_spinner.stop()
         self.single_spinner.pack_forget()
 
-        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame")
-        drop_zone.pack(fill=BOTH, expand=True, pady=(15, 5))
+        # Make entry fields expand properly
+        io_frame.columnconfigure(1, weight=1)
+
+        # --- Drop Zone ---
+        drop_zone = tb.Frame(parent, padding=16, style="DropZone.TFrame", relief="ridge", borderwidth=2)
+        drop_zone.pack(fill=BOTH, expand=True, pady=(10, 5))
         drop_zone.columnconfigure(0, weight=1)
         drop_zone.rowconfigure(0, weight=1)
 

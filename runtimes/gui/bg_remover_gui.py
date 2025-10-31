@@ -251,10 +251,6 @@ class BackgroundRemoverApp(
         notebook.add(self.batch_tab, text="Batch Folder")
         self._build_batch_tab(self.batch_tab)
 
-        advanced_frame = tb.Frame(control_frame, borderwidth=2, relief="groove")
-        advanced_frame.pack(fill=BOTH, expand=False, pady=(2, 10))
-        self._build_advanced_panel(advanced_frame)
-
         preview_frame = tb.Labelframe(top_frame, text="Preview", padding=10)
         preview_frame.pack(side=RIGHT, fill=BOTH, expand=True, padx=(12, 0))
         preview_frame.rowconfigure(2, weight=1)
@@ -289,6 +285,7 @@ class BackgroundRemoverApp(
         self.preview_canvas = Canvas(canvas_container, highlightthickness=0, background="#111827")
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
 
+        # --- universal bindings for zoom + pan ---
         self.preview_canvas.bind("<Enter>", self._on_preview_canvas_enter)
         self.preview_canvas.bind("<Leave>", lambda e: self.preview_canvas.config(cursor=""))
         self.preview_canvas.bind("<ButtonPress-1>", self._on_preview_drag_start)
@@ -296,6 +293,7 @@ class BackgroundRemoverApp(
         self.preview_canvas.bind("<ButtonRelease-1>", self._on_preview_drag_end)
         self.preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
 
+        # Zoom (Windows/macOS = <MouseWheel>, Linux = <Button-4/5>)
         self.preview_canvas.bind("<MouseWheel>", self._on_preview_mouse_wheel)
         self.preview_canvas.bind("<Button-4>", self._on_preview_mouse_wheel)
         self.preview_canvas.bind("<Button-5>", self._on_preview_mouse_wheel)
@@ -375,11 +373,53 @@ class BackgroundRemoverApp(
         )
         self.view_full_button.pack(side=LEFT)
 
-        log_frame = tb.Labelframe(container, text="Activity Log", padding=10)
-        log_frame.pack(fill=BOTH, expand=True, pady=(12, 0))
+        # Bottom row: Advanced Settings + Log Window (Resizable)
+        bottom_pane = tb.Panedwindow(container, orient="horizontal", bootstyle="default")
+        bottom_pane.pack(fill=BOTH, expand=True, pady=(12, 0))
+
+        # --- Left: Advanced Settings (scrollable) ---
+        advanced_frame_container = tb.Labelframe(bottom_pane, text="Advanced Settings", padding=12)
+        bottom_pane.add(advanced_frame_container)
+
+        # Canvas + Scrollbar
+        canvas = tk.Canvas(advanced_frame_container, highlightthickness=0)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+
+        scrollbar = tb.Scrollbar(advanced_frame_container, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side=RIGHT, fill="y")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Inner frame (actual content)
+        scrollable_frame = tb.Frame(canvas)
+        scrollable_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(scrollable_window, width=event.width)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        scrollable_frame.bind("<Configure>", _on_frame_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Build advanced settings content here
+        self._build_advanced_panel(scrollable_frame)
+
+        # --- Right: Log Window ---
+        log_frame = tb.Labelframe(bottom_pane, text="Activity Log", padding=10)
+        bottom_pane.add(log_frame)  # add to same PanedWindow
         self.log_widget = ScrolledText(log_frame, height=10)
-        self.log_widget.pack(fill=BOTH, expand=True)
+        self.log_widget.pack(fill=BOTH, expand=False)
         self.log_widget.tag_config("error", foreground="#b91c1c")
+
+        # Make sure settings takes up most width
+        bottom_pane.update_idletasks()  # ensures accurate width info
+        total_width = bottom_pane.winfo_width()
+        bottom_pane.sashpos(0, int(total_width * 2 / 3))  # 2/3 for advanced settings
 
     def _build_single_tab(self, parent: tb.Frame) -> None:
         """Create widgets for single image processing."""

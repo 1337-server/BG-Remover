@@ -15,8 +15,8 @@ import ttkbootstrap as tb
 from PIL import Image, ImageTk
 
 try:
-    from bgremover_core import Config
-    from bgremover_core.background_remover import process_folder, process_image
+    from bgremover_core import Config, process_folder
+    from bgremover_core.background_remover import process_image
     from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
     from bgremover_core.paths import OUTPUT_DIR
     from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry
@@ -25,8 +25,8 @@ except ImportError:  # pragma: no cover - allow running from source without pack
     ROOT_DIR = Path(__file__).resolve().parents[2]
     if str(ROOT_DIR) not in sys.path:
         sys.path.insert(0, str(ROOT_DIR))
-    from bgremover_core import Config
-    from bgremover_core.background_remover import process_folder, process_image
+    from bgremover_core import Config, process_folder
+    from bgremover_core.background_remover import process_image
     from bgremover_core.io.image_io import image_to_numpy, save_image_to_path
     from bgremover_core.paths import OUTPUT_DIR
     from bgremover_core.processing.pipeline import ProcessingResult, ReportEntry

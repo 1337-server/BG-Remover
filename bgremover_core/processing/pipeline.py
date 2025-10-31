@@ -4,6 +4,8 @@ from __future__ import annotations
 import fnmatch
 import gc
 import logging
+import multiprocessing
+import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -20,6 +22,7 @@ from bgremover_core.io.image_io import load_image_from_array, save_image_to_path
 from bgremover_core.io.paths import resolve_batch_output_dir
 from bgremover_core.models.loader import (
     BackgroundRemovalSession,
+    SessionPool,
     detect_providers,
     get_session,
     release_session,
@@ -32,6 +35,12 @@ from bgremover_core.utils.gpu_memory import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+try:  # pragma: no cover - depends on onnxruntime internals
+    from onnxruntime.capi.onnxruntime_pybind11_state import Fail as OrtFail
+except Exception:  # pragma: no cover - fallback when symbol is unavailable
+    OrtFail = RuntimeError  # type: ignore[assignment]
 
 
 @dataclass(slots=True)
@@ -159,11 +168,16 @@ class ProcessingOptions:
         background_color = _coerce_color(kwargs.get("background_color"))
         output_format = str(kwargs.get("output_format") or "PNG").upper()
         preserve_names = bool(kwargs.get("preserve_names", False))
+        try:
+            cpu_cap = multiprocessing.cpu_count()
+        except NotImplementedError:  # pragma: no cover - platform specific
+            cpu_cap = 1
+        dynamic_max = max(1, max(16, cpu_cap))
         max_workers = _coerce_int(
             kwargs.get("max_workers") or kwargs.get("parallel_threads"),
             default=1,
             minimum=1,
-            maximum=16,
+            maximum=dynamic_max,
         )
         post_process_mask = bool(kwargs.get("post_process_mask", True))
         only_mask = bool(kwargs.get("only_mask", False))
@@ -354,12 +368,39 @@ def _prepare_session(
     *,
     config: Config,
     providers: Sequence[str] | None = None,
+    thread_isolated: bool = False,
 ) -> BackgroundRemovalSession:
     providers = list(providers or detect_providers(config.provider_hints))
-    return get_session(model_key, providers=providers, model_dir=config.resolved_model_dir())
+    return get_session(
+        model_key,
+        providers=providers,
+        model_dir=config.resolved_model_dir(),
+        max_performance=config.max_performance,
+        thread_isolated=thread_isolated,
+    )
 
 
 _GPU_MEMORY_ERROR_TOKENS = ("bfcarena", "available memory")
+_CUDA_CAPTURE_ERROR_TOKENS = (
+    "operation not permitted when stream is capturing",
+    "operation failed due to a previous error during capture",
+    "bfcarena::allocaterawinternal",
+)
+
+
+def _session_identifier(session: BackgroundRemovalSession) -> str:
+    """Return a stable identifier for ``session`` useful for logging."""
+
+    inner = getattr(session, "inner", None)
+    target = inner if inner is not None else session
+    return hex(id(target))
+
+
+def _is_cuda_capture_error(error: Exception) -> bool:
+    """Return ``True`` when ``error`` indicates CUDA graph capture conflicts."""
+
+    message = str(error).lower()
+    return any(token in message for token in _CUDA_CAPTURE_ERROR_TOKENS)
 
 
 def preprocess(img_rgb: np.ndarray, spec: Any) -> np.ndarray:
@@ -403,6 +444,11 @@ def _run_session(session: BackgroundRemovalSession, tensor: np.ndarray) -> np.nd
     providers = getattr(session, "providers_available", ())
     input_name = getattr(session, "input_name", None)
     LOGGER.info("RUN providers=%s input=%s", providers, input_name)
+    LOGGER.debug(
+        "Invoking session_id=%s on thread=%s",
+        _session_identifier(session),
+        threading.current_thread().name,
+    )
     if input_name and hasattr(session, "inner"):
         outputs = session.inner.run(None, {input_name: tensor})
     else:
@@ -426,13 +472,22 @@ def _retry_inference_on_cpu(
     session: BackgroundRemovalSession,
     tensor: np.ndarray,
     error: Exception,
+    *,
+    capture_violation: bool = False,
 ) -> np.ndarray:
     """Retry inference on CPU after GPU memory exhaustion."""
 
-    LOGGER.warning(
-        "GPU inference failed due to memory constraints (%s); retrying on CPUExecutionProvider.",
-        error,
-    )
+    if capture_violation:
+        LOGGER.warning(
+            "GPU session %s encountered CUDA capture violation (%s); running isolated CPU fallback.",
+            _session_identifier(session),
+            error,
+        )
+    else:
+        LOGGER.warning(
+            "GPU inference failed due to memory constraints (%s); retrying on CPUExecutionProvider.",
+            error,
+        )
     cpu_session: BackgroundRemovalSession | None = None
     try:
         model_path = getattr(session, "model_path", None)
@@ -444,6 +499,11 @@ def _retry_inference_on_cpu(
             providers=["CPUExecutionProvider"],
         )
         outputs = cpu_session.run(tensor)
+        LOGGER.debug(
+            "CPU fallback session id=%s executed for source session id=%s",
+            _session_identifier(cpu_session),
+            _session_identifier(session),
+        )
         return np.asarray(outputs, dtype=np.float32)
     finally:
         release_session(cpu_session)
@@ -458,6 +518,17 @@ def _run_session_with_cpu_fallback(
 
     try:
         return _run_session(session, tensor)
+    except OrtFail as error:
+        if _is_cuda_capture_error(error):
+            LOGGER.error(
+                "CUDA capture error detected for session %s: %s — GPU session not reused for this call.",
+                _session_identifier(session),
+                error,
+            )
+            return _retry_inference_on_cpu(session, tensor, error, capture_violation=True)
+        if not _should_retry_on_cpu(error, session):
+            raise
+        return _retry_inference_on_cpu(session, tensor, error)
     except Exception as error:
         if not _should_retry_on_cpu(error, session):
             raise
@@ -702,9 +773,15 @@ def _process_single_path(
             progress_callback(entry)
         return entry
     finally:
-        release_session(session)
-        gc.collect()
-        del session
+        if session is not None:
+            if getattr(session, "_from_pool", False):
+                LOGGER.debug(
+                    "Session %s managed by pool; skipping release in worker cleanup.",
+                    _session_identifier(session),
+                )
+            elif not getattr(session, "_thread_isolated", False):
+                release_session(session)
+            del session
         gc.collect()
 
 
@@ -729,13 +806,21 @@ def process_folder(
     active_config = config or load_config()
     resolved_model = model_key or active_config.default_model
     output_root = resolve_batch_output_dir(source_dir, output_dir)
-    session = _prepare_session(resolved_model, config=active_config)
+    provider_candidates = detect_providers(active_config.provider_hints)
+    session = _prepare_session(
+        resolved_model,
+        config=active_config,
+        providers=provider_candidates,
+    )
     options = ProcessingOptions.from_kwargs(feather_radius=feather_radius, **advanced_options)
 
     primary_provider = getattr(session, "primary_provider", "")
     gpu_keywords = ("CUDA", "GPU", "DML", "ROCM")
     is_gpu_provider = any(keyword in primary_provider.upper() for keyword in gpu_keywords)
-    if options.max_workers > 1 and is_gpu_provider:
+    aggressive_gpu = bool(active_config.max_performance and is_gpu_provider)
+    thread_isolated = bool(options.max_workers > 1 and aggressive_gpu)
+
+    if options.max_workers > 1 and is_gpu_provider and not aggressive_gpu:
         snapshot = query_gpu_memory()
         recommended = recommend_worker_count(
             options.max_workers,
@@ -752,7 +837,11 @@ def process_folder(
     def session_factory() -> BackgroundRemovalSession:
         """Return a fresh session for batch processing."""
 
-        return _prepare_session(resolved_model, config=active_config)
+        return _prepare_session(
+            resolved_model,
+            config=active_config,
+            thread_isolated=thread_isolated,
+        )
     entries: list[ReportEntry] = []
     candidates = [
         path
@@ -789,57 +878,114 @@ def process_folder(
         pending = iter(candidates)
         exhausted = False
         waiting_for_memory = False
-        with ThreadPoolExecutor(max_workers=options.max_workers) as executor:
-            while active_futures or not exhausted:
-                while not exhausted and len(active_futures) < options.max_workers:
-                    if is_gpu_provider:
-                        snapshot = query_gpu_memory()
-                        if snapshot is not None and snapshot.free < GPU_MEMORY_PER_IMAGE_BYTES:
-                            if active_futures:
-                                if not waiting_for_memory:
-                                    LOGGER.debug(
-                                        "Delaying new submissions until %.2f GiB VRAM frees up.",
-                                        snapshot.free / (1024 ** 3),
-                                    )
-                                    waiting_for_memory = True
-                                break
-                            LOGGER.debug(
-                                "Proceeding with reduced free VRAM: %.2f GiB remaining.",
-                                snapshot.free / (1024 ** 3),
-                            )
-                    try:
-                        path = next(pending)
-                    except StopIteration:
-                        exhausted = True
-                        break
-                    future = executor.submit(
+        session_pool: SessionPool | None = None
+        try:
+            if aggressive_gpu:
+                filtered_providers = [
+                    provider
+                    for provider in provider_candidates
+                    if str(provider).upper() != "TENSORRTEXECUTIONPROVIDER"
+                ]
+                concurrent_providers: list[str] = []
+                if "CUDAExecutionProvider" in filtered_providers:
+                    concurrent_providers.append("CUDAExecutionProvider")
+                if "CPUExecutionProvider" not in concurrent_providers:
+                    concurrent_providers.append("CPUExecutionProvider")
+                if not concurrent_providers:
+                    concurrent_providers = list(filtered_providers) or ["CPUExecutionProvider"]
+                LOGGER.debug(
+                    "Initialising SessionPool with providers=%s for %s workers",
+                    concurrent_providers,
+                    options.max_workers,
+                )
+                session_pool = SessionPool(
+                    resolved_model,
+                    size=options.max_workers,
+                    providers=concurrent_providers,
+                    model_dir=active_config.resolved_model_dir(),
+                    max_performance=active_config.max_performance,
+                    disable_cuda_graph=True,
+                )
+
+            def _pooled_worker(target_path: Path, pool: SessionPool) -> ReportEntry:
+                with pool.acquire() as leased_session:
+                    LOGGER.debug(
+                        "Worker thread=%s leased session %s",
+                        threading.current_thread().name,
+                        _session_identifier(leased_session),
+                    )
+                    return _process_single_path(
+                        target_path,
+                        destination_dir=output_root,
+                        options=options,
+                        progress_callback=progress_callback,
+                        session=leased_session,
+                        session_factory=None,
+                    )
+
+            with ThreadPoolExecutor(max_workers=options.max_workers) as executor:
+                def submit_job(target_path: Path) -> Future:
+                    if session_pool is not None:
+                        return executor.submit(
+                            _pooled_worker,
+                            target_path,
+                            session_pool,
+                        )
+                    return executor.submit(
                         _process_single_path,
-                        path,
+                        target_path,
                         destination_dir=output_root,
                         options=options,
                         progress_callback=progress_callback,
                         session_factory=session_factory,
                     )
-                    active_futures[future] = path
+
+                while active_futures or not exhausted:
+                    while not exhausted and len(active_futures) < options.max_workers:
+                        if is_gpu_provider and not aggressive_gpu:
+                            snapshot = query_gpu_memory()
+                            if snapshot is not None and snapshot.free < GPU_MEMORY_PER_IMAGE_BYTES:
+                                if active_futures:
+                                    if not waiting_for_memory:
+                                        LOGGER.debug(
+                                            "Delaying new submissions until %.2f GiB VRAM frees up.",
+                                            snapshot.free / (1024 ** 3),
+                                        )
+                                        waiting_for_memory = True
+                                    break
+                                LOGGER.debug(
+                                    "Proceeding with reduced free VRAM: %.2f GiB remaining.",
+                                    snapshot.free / (1024 ** 3),
+                                )
+                        try:
+                            path = next(pending)
+                        except StopIteration:
+                            exhausted = True
+                            break
+                        future = submit_job(path)
+                        active_futures[future] = path
+                        waiting_for_memory = False
+
+                    if not active_futures:
+                        if exhausted:
+                            break
+                        time.sleep(0.1)
+                        continue
+
+                    done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
+                    for future in done:
+                        entry = future.result()
+                        entries.append(entry)
+                        active_futures.pop(future, None)
                     waiting_for_memory = False
 
-                if not active_futures:
-                    if exhausted:
-                        break
-                    time.sleep(0.1)
-                    continue
-
-                done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
-                for future in done:
-                    entry = future.result()
-                    entries.append(entry)
-                    active_futures.pop(future, None)
-                waiting_for_memory = False
-
-            if active_futures:
-                done, _ = wait(active_futures.keys())
-                for future in done:
-                    entries.append(future.result())
+                if active_futures:
+                    done, _ = wait(active_futures.keys())
+                    for future in done:
+                        entries.append(future.result())
+        finally:
+            if session_pool is not None:
+                session_pool.close()
     return Report(entries)
 
 

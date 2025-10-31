@@ -28,6 +28,7 @@ class Config:
     default_model: str = DEFAULT_MODEL_KEY
     provider_hints: tuple[str, ...] = ()
     log_level: str = "INFO"
+    max_performance: bool = False
     config_path: Path | None = None
 
     def with_updates(self, **kwargs: Any) -> Config:
@@ -98,11 +99,14 @@ def load_config(
     provider_hints = _normalise_provider_hints(data.get("provider_hints"))
     log_level = str(data.get("log_level") or "INFO").upper()
 
+    max_performance = bool(data.get("max_performance", False))
+
     return Config(
         model_dir=model_dir,
         default_model=default_model,
         provider_hints=provider_hints,
         log_level=log_level,
+        max_performance=max_performance,
         config_path=path,
     )
 
@@ -125,6 +129,7 @@ def persist_config(config: Config, *, path: Path | None = None) -> Path:
         "default_model": config.default_model,
         "provider_hints": list(config.provider_hints),
         "log_level": config.log_level,
+        "max_performance": bool(config.max_performance),
     }
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

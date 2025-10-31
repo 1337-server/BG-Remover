@@ -4,6 +4,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import sys
@@ -78,6 +79,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "device": "Auto",
     "recursive": False,
     "parallel_threads": 4,
+    "max_performance": False,
     "model_dir": str(MODELS_DIR),
     "theme": "flatly",
 }
@@ -906,6 +908,7 @@ class BackgroundRemoverApp(_TkRoot):
         settings.setdefault("model_dir", str(base_config.model_dir))
         settings["input_resize"] = _resolve_resize_mode(settings.get("input_resize"))
         settings["smoothing"] = _coerce_smoothing(settings.get("smoothing", 0.0))
+        settings["max_performance"] = bool(settings.get("max_performance", False))
         return settings
 
     def _save_settings(self) -> None:
@@ -930,6 +933,26 @@ class BackgroundRemoverApp(_TkRoot):
         self.settings[key] = value
         if persist:
             self._save_settings()
+
+    def _max_performance_enabled(self) -> bool:
+        """Return ``True`` when Max Performance mode is currently active."""
+
+        var = getattr(self, "__dict__", {}).get("max_perf_var")
+        if var is not None:
+            try:
+                return bool(var.get())
+            except Exception:  # pragma: no cover - fall back to stored state
+                pass
+        settings = getattr(self, "__dict__", {}).get("settings") or {}
+        if "max_performance" in settings:
+            return bool(settings.get("max_performance"))
+        config = getattr(self, "__dict__", {}).get("config")
+        if config is not None and hasattr(config, "max_performance"):
+            try:
+                return bool(config.max_performance)
+            except Exception:  # pragma: no cover - safeguard
+                return False
+        return False
 
     def _provider_hints(self) -> tuple[str, ...]:
         """Return provider hints derived from current settings."""
@@ -960,12 +983,13 @@ class BackgroundRemoverApp(_TkRoot):
         provider_hints = self._provider_hints()
         if provider_hints != self.config.provider_hints:
             updates["provider_hints"] = provider_hints
-        return self.config.with_updates(**updates) if updates else self.config
+        updates["max_performance"] = self._max_performance_enabled()
+        return self.config.with_updates(**updates)
 
     def _processing_kwargs(self) -> dict[str, Any]:
         """Return advanced processing keyword arguments."""
 
-        return {
+        kwargs: dict[str, Any] = {
             "resize_mode": _resolve_resize_mode(self.settings.get("input_resize")),
             "alpha_matting": bool(self.settings.get("alpha_matting", False)),
             "alpha_foreground_threshold": self.settings.get("alpha_foreground_threshold", 240),
@@ -977,6 +1001,13 @@ class BackgroundRemoverApp(_TkRoot):
             "preserve_names": bool(self.settings.get("preserve_names", False)),
             "parallel_threads": int(self.settings.get("parallel_threads", 1)),
         }
+        if self._max_performance_enabled():
+            try:
+                cpu_total = multiprocessing.cpu_count()
+            except NotImplementedError:  # pragma: no cover - platform specific
+                cpu_total = 1
+            kwargs["max_workers"] = max(1, cpu_total)
+        return kwargs
 
     # ------------------------------------------------------------------
     # UI builders
@@ -1009,6 +1040,25 @@ class BackgroundRemoverApp(_TkRoot):
         self.theme_toggle_btn.pack(side=RIGHT, padx=(0, 10))
         self._add_tooltip(self.theme_toggle_btn, "Toggle dark/light mode")
         self._add_tooltip(self.badge, "Providers: detecting…")
+
+        self.max_perf_var = tk.BooleanVar(
+            value=bool(self.settings.get("max_performance", False))
+        )
+        self.max_perf_check = tb.Checkbutton(
+            control_frame,
+            text="Max Performance (use all CPU/GPU resources)",
+            variable=self.max_perf_var,
+            bootstyle="danger-round-toggle",
+            command=self._on_max_performance_toggle,
+        )
+        self.max_perf_check.pack(fill="x", pady=(10, 0))
+        self._add_tooltip(
+            self.max_perf_check,
+            (
+                "When enabled, the app will use all available GPU VRAM, CPU cores, "
+                "and concurrent workers for fastest processing."
+            ),
+        )
 
         notebook = tb.Notebook(control_frame, bootstyle="tabs")
         notebook.pack(fill=BOTH, expand=True, pady=(20, 10))
@@ -1716,6 +1766,13 @@ class BackgroundRemoverApp(_TkRoot):
         except AttributeError:  # pragma: no cover - fallback
             tooltip.text = text
 
+    def _on_max_performance_toggle(self) -> None:
+        """Persist the Max Performance toggle and refresh indicators."""
+
+        enabled = self._max_performance_enabled()
+        self._update_setting("max_performance", enabled)
+        self._update_batch_progress_label()
+
     def _toggle_theme(self) -> None:
         """Toggle between light and dark themes and persist selection."""
 
@@ -2025,6 +2082,8 @@ class BackgroundRemoverApp(_TkRoot):
             source_image = self._load_source_image(input_path)
             array = image_to_numpy(source_image)
             config = self._active_config()
+            config.max_performance = self._max_performance_enabled()
+            logging.info("Max Performance Mode: %s", config.max_performance)
             kwargs = self._processing_kwargs()
             kwargs["feather_radius"] = int(self.settings.get("feather_radius", 3))
             result = process_image(
@@ -2500,14 +2559,22 @@ class BackgroundRemoverApp(_TkRoot):
         processed = max(0, min(int(self._batch_processed_count), total))
         widgets = getattr(self, "_batch_progress_widgets", [])
         maximum = total if total else 1
+        max_perf = self._max_performance_enabled()
         for widget in widgets:
             widget.bar.configure(maximum=maximum, value=processed)
+            if hasattr(widget.label, "configure"):
+                bootstyle = "danger" if max_perf else ""
+                try:
+                    widget.label.configure(bootstyle=bootstyle)
+                except Exception:  # pragma: no cover - visual hint best-effort
+                    pass
         if total <= 0:
-            self.batch_progress_text.set("")
+            self.batch_progress_text.set("⚡ MAX" if max_perf else "")
             return
         percentage = int((processed / total) * 100)
+        prefix = "⚡ MAX — " if max_perf else ""
         self.batch_progress_text.set(
-            f"{percentage}% — {processed} / {total} processed"
+            f"{prefix}{percentage}% — {processed} / {total} processed"
         )
 
     def _hide_batch_progress(self) -> None:
@@ -2518,6 +2585,11 @@ class BackgroundRemoverApp(_TkRoot):
             if widget.container.winfo_manager():
                 widget.container.pack_forget()
             widget.bar.configure(value=0, maximum=1)
+            if hasattr(widget.label, "configure"):
+                try:
+                    widget.label.configure(bootstyle="")
+                except Exception:  # pragma: no cover - visual hint best-effort
+                    pass
         self.batch_progress_text.set("")
 
     def _run_batch(self, input_dir: Path, output_dir: Path | None) -> None:
@@ -2525,6 +2597,8 @@ class BackgroundRemoverApp(_TkRoot):
 
         try:
             config = self._active_config()
+            config.max_performance = self._max_performance_enabled()
+            logging.info("Max Performance Mode: %s", config.max_performance)
             kwargs = self._processing_kwargs()
             kwargs.update(
                 {
@@ -2541,6 +2615,22 @@ class BackgroundRemoverApp(_TkRoot):
             self.after(0, lambda: self._show_batch_progress(total_items))
             batch_output_dir = output_dir or OUTPUT_DIR
             batch_output_dir.mkdir(parents=True, exist_ok=True)
+            if config.max_performance:
+                try:
+                    cpu_total = multiprocessing.cpu_count()
+                except NotImplementedError:  # pragma: no cover - platform specific
+                    cpu_total = 1
+                requested_workers = kwargs.get("max_workers") or cpu_total
+                if not isinstance(requested_workers, int):
+                    try:
+                        requested_workers = int(requested_workers)
+                    except (TypeError, ValueError):
+                        requested_workers = cpu_total
+                if total_items > 0:
+                    requested_workers = max(1, min(requested_workers, total_items))
+                kwargs["max_workers"] = max(1, requested_workers)
+            else:
+                kwargs.pop("max_workers", None)
             report = process_folder(
                 input_dir,
                 batch_output_dir,

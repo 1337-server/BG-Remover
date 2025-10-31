@@ -4,7 +4,9 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import logging
+import multiprocessing
 import os
+import queue
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -73,44 +75,87 @@ DOWNLOAD_IN_PROGRESS = "in-progress"
 DOWNLOAD_FAILED = "failed"
 
 
-_SESSION_CACHE: dict[tuple[Path, str], BackgroundRemovalSession] = {}
+CacheKey = tuple[Path, str, int | None]
+
+
+_SESSION_CACHE: dict[CacheKey, BackgroundRemovalSession] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 _DOWNLOAD_STATUS_LOCK = threading.Lock()
 _DOWNLOAD_STATUSES: dict[tuple[Path, str], DownloadStatus] = {}
 
+try:  # pragma: no cover - depends on onnxruntime internals
+    from onnxruntime.capi.onnxruntime_pybind11_state import Fail as OrtFail
+except Exception:  # pragma: no cover - fall back when symbol not exposed
+    OrtFail = RuntimeError  # type: ignore[assignment]
 
-def _normalise_cuda_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return CUDA provider options augmented with safe defaults."""
+
+def _normalise_cuda_options(
+    options: Mapping[str, Any] | None,
+    *,
+    max_performance: bool = False,
+) -> dict[str, Any]:
+    """Return CUDA provider options augmented with performance aware defaults.
+
+    The function keeps the defaults permissive so that inference can saturate
+    modern GPUs. When ``max_performance`` is ``True`` every soft restriction is
+    removed and additional cuDNN/graph optimisations are enabled to keep the
+    device fully utilised. In conservative mode a VRAM limit derived from the
+    currently available memory is retained to reduce the likelihood of OOM
+    errors on shared systems.
+    """
 
     merged: dict[str, Any] = {}
     if options:
         merged.update({str(key): value for key, value in options.items()})
 
     merged.setdefault("arena_extend_strategy", "kSameAsRequested")
-    merged.setdefault("cudnn_conv_use_max_workspace", "1")
     merged.setdefault("do_copy_in_default_stream", "1")
 
+    if max_performance:
+        # Remove every VRAM restriction and lean on the CUDA provider to grab
+        # as much memory as it needs. Additional tunable op features give
+        # recent GPUs the flexibility to pick the fastest kernels.
+        merged.pop("gpu_mem_limit", None)
+        merged["cudnn_conv_use_max_workspace"] = "1"
+        merged["cudnn_conv_algo_search"] = "EXHAUSTIVE"
+        merged["tunable_op_enable"] = "1"
+        merged["tunable_op_tuning_enable"] = "1"
+        merged["enable_cuda_graph"] = "1"
+        LOGGER.info(
+            "Max Performance: enabling unrestricted CUDAExecutionProvider with exhaustive "
+            "algorithms.",
+        )
+        return merged
+
+    merged.setdefault("cudnn_conv_use_max_workspace", "1")
+    merged.setdefault("cudnn_conv_algo_search", "HEURISTIC")
+
     snapshot = query_gpu_memory()
+    limit_bytes: int | None = None
     if snapshot is not None and snapshot.free > 0:
         limit_bytes = int(snapshot.free * 0.8)
-        if limit_bytes > 0:
-            merged["gpu_mem_limit"] = str(limit_bytes)
-            LOGGER.info(
-                "Configuring CUDAExecutionProvider gpu_mem_limit to %s MiB based on NVML free memory.",
-                limit_bytes // (1024 * 1024),
-            )
+        LOGGER.info(
+            "Configuring CUDAExecutionProvider gpu_mem_limit to %s MiB based on NVML free memory.",
+            limit_bytes // (1024 * 1024),
+        )
+    if limit_bytes is not None and limit_bytes > 0:
+        merged["gpu_mem_limit"] = str(limit_bytes)
     elif "gpu_mem_limit" in merged:
         merged["gpu_mem_limit"] = str(merged["gpu_mem_limit"])
     else:
         LOGGER.info(
-            "CUDAExecutionProvider memory limit could not be determined from NVML; "
-            "proceeding without an explicit limit.",
+            "CUDAExecutionProvider memory limit could not be determined from NVML; proceeding "
+            "without an explicit limit.",
         )
 
     return merged
 
 
-def _apply_cuda_provider_defaults(entry: ProviderEntry) -> ProviderEntry:
+def _apply_cuda_provider_defaults(
+    entry: ProviderEntry,
+    *,
+    max_performance: bool = False,
+) -> ProviderEntry:
     """Return ``entry`` with adaptive CUDA provider defaults applied."""
 
     if isinstance(entry, tuple):
@@ -124,10 +169,14 @@ def _apply_cuda_provider_defaults(entry: ProviderEntry) -> ProviderEntry:
         raw_options: Mapping[str, Any] = options
     else:  # pragma: no cover - defensive fallback for unexpected sequences
         raw_options = dict(options)  # type: ignore[arg-type]
-    return (name, _normalise_cuda_options(raw_options))
+    return (name, _normalise_cuda_options(raw_options, max_performance=max_performance))
 
 
-def _normalise_providers(providers: Sequence[ProviderEntry]) -> list[ProviderEntry]:
+def _normalise_providers(
+    providers: Sequence[ProviderEntry],
+    *,
+    max_performance: bool = False,
+) -> list[ProviderEntry]:
     """Return ``providers`` augmented with safe defaults for GPU execution."""
 
     normalised: list[ProviderEntry] = []
@@ -137,7 +186,9 @@ def _normalise_providers(providers: Sequence[ProviderEntry]) -> list[ProviderEnt
         else:
             name = entry
         if name == "CUDAExecutionProvider":
-            normalised.append(_apply_cuda_provider_defaults(entry))
+            normalised.append(
+                _apply_cuda_provider_defaults(entry, max_performance=max_performance)
+            )
         else:
             normalised.append(entry)
     return normalised
@@ -483,7 +534,12 @@ def _download_model(
 
 
 class BackgroundRemovalSession:
-    """Small wrapper around an :class:`onnxruntime.InferenceSession`."""
+    """Small wrapper around an :class:`onnxruntime.InferenceSession`.
+
+    The ``disable_cuda_graph`` flag instructs ONNX Runtime to skip CUDA graph
+    capture, which improves stability when multiple GPU-bound sessions execute
+    concurrently on dedicated worker threads.
+    """
 
     def __init__(
         self,
@@ -491,22 +547,68 @@ class BackgroundRemovalSession:
         model_path: Path,
         *,
         providers: Sequence[str],
+        max_performance: bool = False,
+        disable_cuda_graph: bool = False,
     ) -> None:
         self.spec = spec
         self.model_path = Path(model_path)
         session_options = ort.SessionOptions()
-        threads = os.getenv("OMP_NUM_THREADS")
-        if threads:
+        max_perf_enabled = bool(max_performance)
+        thread_override: int | None = None
+        if max_perf_enabled:
+            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            session_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
+            session_options.enable_mem_pattern = True
+            session_options.enable_mem_reuse = True
+            session_options.add_session_config_entry("session.intra_op_allow_spinning", "1")
+            session_options.add_session_config_entry("session.use_env_allocators", "1")
             try:
-                value = int(threads)
-            except ValueError:
-                value = None
-            else:
-                session_options.inter_op_num_threads = value
-                session_options.intra_op_num_threads = value
-        provider_entries = _normalise_providers(list(providers) or ["CPUExecutionProvider"])
+                thread_override = multiprocessing.cpu_count()
+            except NotImplementedError:  # pragma: no cover - platform specific
+                thread_override = None
+            if thread_override and thread_override > 0:
+                session_options.inter_op_num_threads = thread_override
+                session_options.intra_op_num_threads = thread_override
+        else:
+            threads = os.getenv("OMP_NUM_THREADS")
+            if threads:
+                try:
+                    thread_override = int(threads)
+                except ValueError:
+                    thread_override = None
+                else:
+                    session_options.inter_op_num_threads = thread_override
+                    session_options.intra_op_num_threads = thread_override
+
+        if disable_cuda_graph:
+            session_options.add_session_config_entry("session.disable_cuda_graph", "1")
+            with contextlib.suppress(Exception):
+                session_options.add_session_config_entry("session.use_cuda_graph", "0")
+
+        provider_entries = _normalise_providers(
+            list(providers) or ["CPUExecutionProvider"],
+            max_performance=max_perf_enabled,
+        )
         provider_names = [_provider_name(entry) for entry in provider_entries]
         LOGGER.info("Using providers: %s", provider_names)
+        if max_perf_enabled:
+            gpu_mem_limit: str | None = None
+            for entry in provider_entries:
+                if isinstance(entry, tuple) and entry[0] == "CUDAExecutionProvider":
+                    options = entry[1]
+                    if isinstance(options, Mapping):
+                        raw_limit = options.get("gpu_mem_limit")
+                        if raw_limit is not None:
+                            try:
+                                gpu_mem_limit = str(int(raw_limit))
+                            except (TypeError, ValueError):
+                                gpu_mem_limit = str(raw_limit)
+                    break
+            LOGGER.info(
+                "Max Performance: GPU VRAM limit=%s, threads=%s",
+                gpu_mem_limit or "unrestricted",
+                thread_override if thread_override else "default",
+            )
         try:
             self.inner = ort.InferenceSession(
                 str(self.model_path),
@@ -544,6 +646,11 @@ class BackgroundRemovalSession:
         self.primary_provider = (
             providers_available[0] if providers_available else "CPUExecutionProvider"
         )
+        LOGGER.debug(
+            "Initialised BackgroundRemovalSession id=%s providers=%s",
+            hex(id(getattr(self, "inner", self))),
+            self.providers_available,
+        )
 
     def run(self, tensor: np.ndarray) -> np.ndarray:
         """Execute inference using ``tensor`` and return the first output."""
@@ -564,25 +671,23 @@ def _resolve_spec(model_key: str) -> ModelSpec:
     return spec
 
 
-def get_session(
+def _initialise_session(
     model_key: str,
     *,
-    providers: Sequence[str] | None = None,
-    model_dir: Path | None = None,
+    providers: Sequence[ProviderEntry] | None,
+    model_dir: Path,
+    max_performance: bool,
+    disable_cuda_graph: bool,
 ) -> BackgroundRemovalSession:
-    """Return a cached :class:`BackgroundRemovalSession` for ``model_key``."""
+    """Return a freshly initialised :class:`BackgroundRemovalSession`."""
 
-    resolved_dir = Path(model_dir or _default_model_dir()).expanduser()
+    resolved_dir = model_dir.expanduser()
     resolved_dir.mkdir(parents=True, exist_ok=True)
-    cache_key = (resolved_dir, model_key)
-
-    with _SESSION_CACHE_LOCK:
-        cached = _SESSION_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-
     spec = _resolve_spec(model_key)
-    providers = _normalise_providers(list(providers or detect_providers()))
+    provider_entries = _normalise_providers(
+        list(providers or detect_providers()),
+        max_performance=max_performance,
+    )
     try:
         model_path = _download_model(spec, resolved_dir)
     except ModelUnavailableError:
@@ -591,11 +696,166 @@ def get_session(
         message = f"Failed to prepare model {spec.key}: {error}"
         raise ModelUnavailableError(message) from error
 
-    session = BackgroundRemovalSession(spec, model_path, providers=providers)
+    return BackgroundRemovalSession(
+        spec,
+        model_path,
+        providers=provider_entries,
+        max_performance=max_performance,
+        disable_cuda_graph=disable_cuda_graph,
+    )
+
+
+def get_session(
+    model_key: str,
+    *,
+    providers: Sequence[ProviderEntry] | None = None,
+    model_dir: Path | None = None,
+    max_performance: bool = False,
+    thread_isolated: bool = False,
+) -> BackgroundRemovalSession:
+    """Return a cached :class:`BackgroundRemovalSession` for ``model_key``.
+
+    When ``thread_isolated`` is :data:`True` a unique session instance is
+    created per calling thread to avoid sharing CUDA streams across workers.
+    """
+
+    resolved_dir = Path(model_dir or _default_model_dir()).expanduser()
+    thread_key = threading.get_ident() if thread_isolated else None
+    cache_key: CacheKey = (resolved_dir, model_key, thread_key)
+
+    with _SESSION_CACHE_LOCK:
+        cached = _SESSION_CACHE.get(cache_key)
+    if cached is not None:
+        if thread_isolated and not getattr(cached, "_thread_isolated", False):
+            cached._thread_isolated = True  # type: ignore[attr-defined]
+        elif not thread_isolated and getattr(cached, "_thread_isolated", False):
+            cached._thread_isolated = False  # type: ignore[attr-defined]
+        return cached
+
+    session = _initialise_session(
+        model_key,
+        providers=providers,
+        model_dir=resolved_dir,
+        max_performance=max_performance,
+        disable_cuda_graph=thread_isolated,
+    )
+    if thread_isolated:
+        session._thread_isolated = True  # type: ignore[attr-defined]
+        LOGGER.debug(
+            "Created isolated ONNX session for thread %s",
+            threading.current_thread().name,
+        )
+    else:
+        session._thread_isolated = False  # type: ignore[attr-defined]
     with _SESSION_CACHE_LOCK:
         _SESSION_CACHE[cache_key] = session
     return session
 
+
+class SessionPool:
+    """Pool of reusable :class:`BackgroundRemovalSession` instances."""
+
+    def __init__(
+        self,
+        model_key: str,
+        *,
+        size: int,
+        providers: Sequence[ProviderEntry] | None = None,
+        model_dir: Path | None = None,
+        max_performance: bool = False,
+        disable_cuda_graph: bool = False,
+    ) -> None:
+        if size <= 0:
+            raise ValueError("SessionPool size must be a positive integer")
+        self._model_key = model_key
+        self._model_dir = Path(model_dir or _default_model_dir()).expanduser()
+        self._providers: Sequence[ProviderEntry] | None = tuple(providers or ()) or None
+        self._max_performance = bool(max_performance)
+        self._disable_cuda_graph = bool(disable_cuda_graph)
+        self._sessions: list[BackgroundRemovalSession] = []
+        self._queue: queue.LifoQueue[BackgroundRemovalSession] = queue.LifoQueue()
+        self._lock = threading.Lock()
+        self._closed = False
+        for index in range(size):
+            session = _initialise_session(
+                model_key,
+                providers=self._providers,
+                model_dir=self._model_dir,
+                max_performance=self._max_performance,
+                disable_cuda_graph=self._disable_cuda_graph,
+            )
+            self._sessions.append(session)
+            self._queue.put(session)
+            session_id = hex(id(getattr(session, "inner", session)))
+            LOGGER.debug("SessionPool initialised session #%s id=%s", index, session_id)
+
+    def acquire(self) -> SessionLease:
+        """Return a context manager leasing a session from the pool."""
+
+        return SessionLease(self)
+
+    def _acquire(self) -> BackgroundRemovalSession:
+        if self._closed:
+            raise RuntimeError("SessionPool has been closed")
+        session = self._queue.get()
+        LOGGER.debug(
+            "Leased session id=%s to thread=%s",
+            hex(id(getattr(session, "inner", session))),
+            threading.current_thread().name,
+        )
+        session._from_pool = True  # type: ignore[attr-defined]
+        return session
+
+    def _release(self, session: BackgroundRemovalSession) -> None:
+        if self._closed:
+            release_session(session)
+            return
+        session._from_pool = False  # type: ignore[attr-defined]
+        self._queue.put(session)
+        LOGGER.debug(
+            "Returned session id=%s to pool by thread=%s",
+            hex(id(getattr(session, "inner", session))),
+            threading.current_thread().name,
+        )
+
+    def close(self) -> None:
+        """Release all sessions managed by the pool."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        for session in self._sessions:
+            release_session(session)
+        self._sessions.clear()
+
+    def __enter__(self) -> SessionPool:
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb) -> None:
+        self.close()
+
+
+class SessionLease(contextlib.AbstractContextManager[BackgroundRemovalSession]):
+    """Context manager for leasing a session from :class:`SessionPool`."""
+
+    def __init__(self, pool: SessionPool) -> None:
+        self._pool = pool
+        self._session: BackgroundRemovalSession | None = None
+
+    def __enter__(self) -> BackgroundRemovalSession:
+        self._session = self._pool._acquire()
+        return self._session
+
+    def __exit__(self, exc_type, exc, exc_tb) -> None:
+        if self._session is not None:
+            self._pool._release(self._session)
+            self._session = None
 
 def release_session(session: BackgroundRemovalSession | None) -> None:
     """Remove ``session`` from caches and drop references to release resources."""
@@ -624,5 +884,7 @@ __all__ = [
     "ModelUnavailableError",
     "detect_providers",
     "get_session",
+    "SessionPool",
+    "SessionLease",
     "release_session",
 ]

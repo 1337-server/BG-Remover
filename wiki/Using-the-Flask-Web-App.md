@@ -5,12 +5,22 @@
 
 ## Starting the server
 
+### Development
+
 ```bash
-export FLASK_APP=runtimes.flask.app
-python -m flask run --debug
+flask --app runtimes.flask.app run --debug
 ```
 
-For production deployments use Gunicorn or another WSGI server:
+You can also bypass the Flask CLI entirely:
+
+```bash
+python -m runtimes.flask.app
+```
+
+Both commands start the development server on `http://127.0.0.1:5000` and enable
+the single-image and batch pages described below.
+
+### Production
 
 ```bash
 gunicorn "runtimes.flask.app:create_app()" --bind 0.0.0.0:8080 --workers 4

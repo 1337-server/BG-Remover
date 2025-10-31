@@ -7,7 +7,8 @@ executable is launched.
 
 ## Building from source
 
-Start by installing shared dependencies:
+Start by creating an isolated environment and installing the shared
+dependencies:
 
 ```bash
 python -m venv .venv
@@ -33,8 +34,14 @@ Useful flags:
 Run the development server with auto-reload:
 
 ```bash
-export FLASK_APP=runtimes.flask.app
-python -m flask run --debug
+flask --app runtimes.flask.app run --debug
+```
+
+Alternatively, execute the module directly when you do not need Flask's CLI
+wrappers:
+
+```bash
+python -m runtimes.flask.app
 ```
 
 For production, create a WSGI server configuration:
@@ -66,7 +73,12 @@ valid ranges, and lets users choose the ONNX model storage directory.
 Use PyInstaller to build a standalone executable with the project icon:
 
 ```bash
-pyinstaller runtimes/gui/bg_remover_gui.py --noconfirm --onefile --windowed --paths=. --hidden-import=onnxruntime --additional-hooks-dir=hooks --icon=runtimes/gui/bg_icon.ico --add-data "runtimes/gui/bg_icon.ico;." --name=bg_remover_gui_cpu --clean
+pyinstaller runtimes/gui/bg_remover_gui.py \
+  --noconfirm --onefile --windowed --paths=. \
+  --hidden-import=onnxruntime --additional-hooks-dir=hooks \
+  --icon=runtimes/gui/bg_icon.ico \
+  --add-data "runtimes/gui/bg_icon.ico;." \
+  --name=bg_remover_gui_cpu --clean
 ```
 
 The generated binary reads and writes configuration to `config/config.json` in

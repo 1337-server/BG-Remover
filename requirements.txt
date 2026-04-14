@@ -6,7 +6,7 @@ onnxruntime==1.20.1
 #onnxruntime-gpu==1.20.1
 pynvml==11.5.0
 ttkbootstrap==1.10.1
-pytest==8.3.4
+pytest==9.0.3
 ruff==0.7.4
 mypy==1.11.1
 pyinstaller==6.11.0
